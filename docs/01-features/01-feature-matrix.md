@@ -15,7 +15,7 @@
 | :--- | :--- | :--- |
 | **模块标识 (`ModuleKey`)** | `archdoc` | CodeBench 门户路由前缀 `/archdoc`，Vite Federation `name: 'archdoc'`（避开保留字 `docs`） |
 | **服务与二进制名** | `Code-Archdoc` / `code-archdoc-server` | Go Module: `code-archdoc`；内嵌 `frontend/dist` 单二进制交付 |
-| **端口分配** | 后端 `:8092` / Vite 调试 `5182` | 避开已分配端口（`bench :8000`、`shield :8080`、`pipeline :8082`、`pdm :8085`、`gate :8088`、`template :8090`、`traefik :8091`） |
+| **端口分配** | 后端 `:8092` / Vite 调试 `5182` | 避开已分配端口（`bench :8000`、`shield :8080`、`pipeline :8082`、`pdm :8085`、`gate :8088`、`template :8090`、`contract :8091`） |
 | **数据库表前缀** | `archdoc_` | 共享 CodeBench PostgreSQL 实例，复用 `users`、`departments`、`repositories`、`audit_logs`，自有表强制以 `archdoc_` 开头 |
 | **管理员角色** | `archdoc_admin` | 管理接口挂载 `commonAuth.RequireAdmin("archdoc_admin")`，`super_admin` 拥有同等最高权限 |
 
@@ -64,7 +64,7 @@
 
 | 编号 | 特性名称 | 涉及层级 | 优先级 | 功能描述与技术规范 | TDD 验收指标 / 衡量标准 |
 | :--- | :--- | :---: | :---: | :--- | :--- |
-| **F-04** | **L1 确定性静态事实抽取（Code IR）** | `Backend` | **P0** | 对每个 `(repo_id, subdir, commit_sha)` **仅抽取并缓存 1 次**结构化硬事实：<br>• **通用**：目录树职责、构建脚本（`CMake`/`Makefile`/`pom.xml`/`requirements.txt`/`pyproject.toml`）、配置文件键清单；<br>• **C/C++**：头文件/源文件映射、宏/结构体/类定义、`.proto` 与 CROS RPC 服务契约（有 `code-traefik` 资产时支持复用）；<br>• **Java / Python**：Spring/FastAPI/Flask 路由签名、Entity/ORM 模型、入口点与关键依赖拓扑。 | 1. 针对 C/C++、Java、Python 测试夹具仓库，确定性提取目录、类/结构体、接口与配置键覆盖率 100%，零 LLM 调用即可产出 Code IR JSON。<br>2. 相同 `(repo_id, subdir, commit_sha)` 命中缓存不重复解析。 |
+| **F-04** | **L1 确定性静态事实抽取（Code IR）** | `Backend` | **P0** | 对每个 `(repo_id, subdir, commit_sha)` **仅抽取并缓存 1 次**结构化硬事实：<br>• **通用**：目录树职责、构建脚本（`CMake`/`Makefile`/`pom.xml`/`requirements.txt`/`pyproject.toml`）、配置文件键清单；<br>• **C/C++**：头文件/源文件映射、宏/结构体/类定义、`.proto` 与 CROS RPC 服务契约（有 `code-contract` 资产时支持复用）；<br>• **Java / Python**：Spring/FastAPI/Flask 路由签名、Entity/ORM 模型、入口点与关键依赖拓扑。 | 1. 针对 C/C++、Java、Python 测试夹具仓库，确定性提取目录、类/结构体、接口与配置键覆盖率 100%，零 LLM 调用即可产出 Code IR JSON。<br>2. 相同 `(repo_id, subdir, commit_sha)` 命中缓存不重复解析。 |
 | **F-05** | **L2 分层语义摘要与多视角并发反推** | `Backend`<br>`Models` | **P0** | 针对大仓按模块/目录做语义分片（Map）生成模块职责摘要与术语表，再按选定 Doc Pack 的各视角模板并发填充章节槽位（Reduce）；支持按视角挂载文件 Scope 过滤器（如运维篇聚焦构建与配置，契约篇聚焦接口与模型）；支持单仓单篇、单仓全套件或批量多仓排队执行与任务取消/断点恢复。 | 1. 跨视角共享同一 `RepoSnapshot` 的 Code IR 与术语表，不重复拉码。<br>2. 任务状态机严格遵循 `pending -> extracting -> generating -> verifying -> ready/failed`，支持取消与异常恢复。 |
 | **F-06** | **历史过时文档 Gap 诊断报告** | `Backend`<br>`Frontend` | **P0** | 自动发现仓内既有 `docs/` / `README.md` 或支持用户上传历史设计文档作为对照输入；在代码反推完成后独立比对输出 **Gap Report**（标注过时描述、缺失章节、已变更符号），并谨慎提取仅存于旧文档的业务背景放入 `[待人工确认]` 区块，严禁覆盖源码事实。 | 1. 测试用例注入过时接口名/旧配置项时，Gap Report 准确检出不一致条目。<br>2. 生成草稿中的硬事实现实符号完全来自 Code IR，不被旧文档误导。 |
 | **F-07** | **证据锚定与自动化防幻觉校验门禁** | `Backend`<br>`Frontend` | **P0** | 为生成结论绑定代码证据元数据（`file_path`、`line_start~line_end`、`symbol`、`commit_sha`）；落库前执行自动化 Verifier：校验文中提及的文件路径、类名、接口/表名是否存在于 Code IR、校验 Mermaid 语法块合法性、计算模板必填槽位覆盖率并给出可信度标记。 | 1. 若 LLM 输出包含 Code IR 中不存在的伪造路径或符号，Verifier 准确拦截并标记 `unverified` 告警。<br>2. 必填槽位缺失或 Mermaid 语法错误可准确识别并触发局部修复或告警。 |
