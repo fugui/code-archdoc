@@ -15,15 +15,21 @@ docs/
 │   └── 04-tdd-implementation-prompt.md    # 阶段四：TDD 红-绿-重构编码实施与全链路交付验证提示词
 ├── 01-features/     # 特性与需求边界：特性清单矩阵 (Feature Matrix)、P0~P2 优先级与 Non-Goals
 │   └── 01-feature-matrix.md               # 阶段一：需求范围、核心特性矩阵与验收场景定义
-├── 02-design/       # 系统技术架构 (SDD)：微前端双模拓扑、archdoc_* 数据表模型与核心业务流程
-│   └── 01-system-architecture.md          # 【总览篇】系统总体架构、数据模型与前端组件分层设计
+├── 02-design/       # 系统技术架构 (SDD)：五专篇系统架构、L1/L2 引擎、领域治理、微前端工作台与数据模型
+│   ├── 01-system-architecture.md               # 【总览篇】双模拓扑、运行时五层架构、跨模块协同(D-01~D-04)与包分层防腐
+│   ├── 02-extraction-and-generation-engine.md  # 【核心引擎篇】Git 沙箱降噪、Code IR 多语言 SPI、L2 编排熔断、Verifier 与资源调度
+│   ├── 03-doctype-drift-and-publishing.md      # 【领域治理篇】DocType 目录 SSOT、章节锁定、publish_dir 落盘、双维漂移与质量度量
+│   ├── 04-workbench-and-security.md            # 【应用与安全篇】Canvas Studio 组件树、双轨修订与 SSE 协议、三层 RBAC 与审计
+│   └── 05-database-schema.md                   # 【数据模型篇】共享只读契约、全局 ER 图与 16 张 archdoc_* GORM 建模字典
 ├── 03-api/          # 接口与数据契约：RESTful API 签名、请求/响应 Schema、RBAC 权限与审计规范
 │   └── 01-http-api-contract.md            # 【API 契约】HTTP 接口字典、角色守卫 (archdoc_admin) 与状态码规范
 ├── 04-tasks/        # TDD 实施规划与验收：Milestone 拆解、任务作战卡与自动化验收测试标准 (AC)
 │   ├── 01-roadmap.md                      # 【工程路线图】Milestone 1~4 依赖拓扑图与 TDD 质量门禁
 │   └── 02-m1-domain-model-and-api.md      # 【M1 作战卡】核心领域模型、API 与物理隔离单元测试
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
-│   └── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
+│   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
+│   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型
+│   └── 03-evidence-anchor-and-publish-mount.md        # ADR-03：跨提交稳定证据锚点与 code-bench 符号链接挂载发布契约
 └── 06-ops/          # 交付与验证：双模联调、物理隔离数据库测试与生产环境单二进制部署手册
     └── 01-verification-and-deployment-guide.md # 联调验证、自动化回归测试与生产部署操作指南
 ```

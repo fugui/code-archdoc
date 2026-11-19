@@ -22,12 +22,20 @@
 code-archdoc/
 ├── docs/                # SDD + TDD 规范文档库 (00-prompt ~ 06-ops)
 ├── config/              # 配置加载与模块常量定义
-├── models/              # GORM 数据模型（强制 archdoc_ 表前缀隔离）
-├── handlers/            # HTTP 控制器、RBAC 守卫、审计 Diff 与 *_test.go 隔离单测
+├── models/              # 共享只读映射与 16 张 archdoc_* GORM 数据模型及仓储实现
+├── services/            # 领域编排与调度服务（持有仓储接口与纯引擎实例，禁用全局 models.DB）
+├── pkg/                 # 纯领域引擎包（sandbox/codeir/doctype/llm/verifier/publisher/drift/security）
+├── handlers/            # HTTP/SSE 控制器、三层 RBAC 守卫、审计 Diff 与 *_test.go 隔离单测
 └── frontend/            # React 18 微前端工程（暴露 ./App 与 ./menu）
 ```
 
-* **本模块专有架构红线**：*(随阶段二 `docs/02-design/` 演进在此补充领域防腐约束)*
+* **本模块专有架构红线（由阶段二 `docs/02-design/` 与 `docs/05-adr/` 冻结，纳入 `make lint-arch` 强制检查）**：
+  1. **核心引擎零数据库耦合**：`pkg/` 下所有引擎包（Code IR、`DocType` 注册表、LLM 客户端、Verifier、发布渲染器、漂移计算器）严禁导入 `code-archdoc/models`、`gorm.io/gorm` 或 `github.com/gin-gonic/gin`；`pkg/` 与 `services/` 严禁直接访问 `models.DB` 全局单例，必须通过领域仓储接口依赖注入。
+  2. **CGO 解析器严格边界隔离（ADR-02）**：`tree-sitter` CGO 依赖必须严格隔离在 `pkg/codeir/treesitter/` 内，对外仅暴露纯 Go `LanguageExtractor` SPI；`.proto` 解析采用纯 Go AST 解析器保障 100% 精确率。
+  3. **共享库零膨胀与只读边界（ADR-01 / ADR-02）**：严禁对共享表（`users`、`departments`、`repositories`、`architecture_elements`）执行 DDL 变更或创建冗余仓库主表；Code IR 大载荷必须压缩落盘至本地 `FacetStore`（`ir_cache/`），PG 仅存元数据索引与 LRU 字段。
+  4. **单事实源与原子落盘红线（ADR-03）**：`DocType` 以 `doc_types/<slug>/` 目录为唯一事实源（零可执行脚本），写盘须持 `slug` 锁并采用临时文件 + `fsync` + 原子 `rename`；定稿发布仅限 `Approved` 修订写入 `publish_dir/`（经 `.staging/` 原子落位），未审批草稿严禁落盘。
+  5. **沙箱路径安全与跨模块复用（D-04 / Non-Goal 8）**：Git 同步统一复用 `code-common/backend/gitsync`，严禁在模块内复制粘贴 Git 同步代码；所有沙箱文件访问须经 `SafeJoin` + `EvalSymlinks` 阻断目录穿越与符号链接逃逸；对 `code-bench` 与 `code-common` 的协同改造严禁引入 `archdoc` 专有业务逻辑。
+  6. **凭据防泄漏与不可信数据隔离**：`APIKey` 必须经 AES-256-GCM 加密落库并在接口/日志/审计中脱敏为 `sk-****`；L1 抽取与独立 Verifier 执行双重明文凭据/高熵拦截；仓库源码与注释一律包裹于随机 `nonce` 数据栅栏中防范提示词注入。
 
 ---
 
