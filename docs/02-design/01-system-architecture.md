@@ -96,4 +96,4 @@ erDiagram
 | C/C++ 解析 | tree-sitter（Go 绑定，需 CGO）/ universal-ctags / libclang | 容错能力、CGO 对单二进制交付的影响、宏与条件编译处理 |
 | Code IR 存储 | PG `jsonb`（按 facet 分行）/ 对象文件 + PG 索引 | 大仓体积、按 facet 增量读取、LRU 回收（`F-27`） |
 | 证据锚点 | 符号全限定名 + 文件路径 + 内容指纹 | 跨提交定位稳定性（`F-12`） |
-| 发布挂载 | `code-bench` 多挂载目录 / symlink 子树 / 网关 API 拉取 | `D-01`~`D-03` 承接方式与部署形态 |
+| 发布目录与挂载契约 | `publish_dir` 目录树布局 + `code-bench` 符号链接子树挂载（P0 同机）/ 网关 API 拉取（P1 跨机） | 发布目录原子更新、撤回清理及与 `D-02`/`D-03` 的 Frontmatter/深链契约 |
