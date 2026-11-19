@@ -427,12 +427,14 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 
 	// 3. 加载全部选中 DocType 的目录资产、DB 最新修订 ID 及既有文档的锁定槽位
 	type docTypePlan struct {
-		slug          string
-		asset         *doctype.AssetBundle
-		revID         uint
-		existingDoc   *models.Document
-		priorSections map[string]models.DocumentSectionSnapshot
-		priorEvidence map[string]models.SectionEvidence
+		slug           string
+		asset          *doctype.AssetBundle
+		revID          uint
+		existingDoc    *models.Document
+		priorCommitSHA string
+		priorOrdered   []models.DocumentSectionSnapshot
+		priorSections  map[string]models.DocumentSectionSnapshot
+		priorEvAnchors map[string][]models.EvidenceAnchor
 	}
 
 	plans := make([]*docTypePlan, 0, len(slugs))
@@ -452,20 +454,21 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		}
 
 		plan := &docTypePlan{
-			slug:          slug,
-			asset:         asset,
-			revID:         dtRev.ID,
-			priorSections: make(map[string]models.DocumentSectionSnapshot),
-			priorEvidence: make(map[string]models.SectionEvidence),
+			slug:           slug,
+			asset:          asset,
+			revID:          dtRev.ID,
+			priorSections:  make(map[string]models.DocumentSectionSnapshot),
+			priorEvAnchors: make(map[string][]models.EvidenceAnchor),
 		}
 
-		// 检查已有文档的 locked 槽位以便豁免覆盖并免计预算
+		// 检查已有文档的 locked 槽位（叠加 SectionEvidence 实时所有权）以便豁免覆盖并免计预算
 		if exDoc, exErr := o.docRepo.GetByScope(dbCtx, repo.ID, task.Subdirectory, snapReady.Snapshot.RefName, slug); exErr == nil && exDoc != nil {
 			plan.existingDoc = exDoc
 			if exDoc.CurrentRevisionNo > 0 {
 				if prevRev, prevEvs, pErr := o.docRepo.GetRevisionWithSections(dbCtx, exDoc.ID, exDoc.CurrentRevisionNo); pErr == nil && prevRev != nil {
-					var snaps []models.DocumentSectionSnapshot
-					_ = json.Unmarshal(prevRev.SectionsJSON, &snaps)
+					plan.priorCommitSHA = prevRev.CommitSHA
+					snaps := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
+					plan.priorOrdered = snaps
 					for _, sn := range snaps {
 						plan.priorSections[sn.SlotID] = sn
 						if sn.Ownership == models.OwnershipLocked && strings.TrimSpace(sn.Markdown) != "" {
@@ -476,7 +479,9 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 						}
 					}
 					for _, ev := range prevEvs {
-						plan.priorEvidence[ev.SlotID] = ev
+						var anchors []models.EvidenceAnchor
+						_ = json.Unmarshal(ev.EvidencesJSON, &anchors)
+						plan.priorEvAnchors[ev.SlotID] = anchors
 					}
 				}
 			}
@@ -732,7 +737,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 	// 11. 为每个 DocType 组装草稿章节、运行 Verifier 四重门禁并落库不可变 Revision
 	for _, p := range plans {
 		doc, docErr := o.persistGeneratedDocument(
-			dbCtx, repo, task, snapReady, p.asset, p.revID, slotTaskMap, p.priorSections, operatorID,
+			dbCtx, repo, task, snapReady, p.asset, p.revID, slotTaskMap, p.priorOrdered, p.priorEvAnchors, p.priorCommitSHA, operatorID,
 		)
 		if docErr != nil {
 			o.markTaskFailed(dbCtx, taskID, models.TaskStatusVerifying, "VERIFY_PERSIST_FAILED", docErr.Error(), nil, budgetRes.Advice.EstimatedTokens)
@@ -763,7 +768,9 @@ func (o *GenerationOrchestrator) persistGeneratedDocument(
 	asset *doctype.AssetBundle,
 	docTypeRevID uint,
 	slotTaskMap map[string]*models.GenSlotTask,
-	priorSections map[string]models.DocumentSectionSnapshot,
+	priorOrdered []models.DocumentSectionSnapshot,
+	priorEvAnchors map[string][]models.EvidenceAnchor,
+	priorCommitSHA string,
 	operatorID uint,
 ) (*models.Document, error) {
 	title := buildDocumentTitle(repo.Name, task.Subdirectory, asset.Meta.DisplayName)
@@ -780,73 +787,29 @@ func (o *GenerationOrchestrator) persistGeneratedDocument(
 		return nil, err
 	}
 
-	sectionInputs := make([]verifier.SectionInput, 0, len(asset.Meta.Slots))
-	sectionSnapshots := make([]models.DocumentSectionSnapshot, 0, len(asset.Meta.Slots))
-	newSlotSet := make(map[string]bool, len(asset.Meta.Slots))
-
-	for idx, sl := range asset.Meta.Slots {
-		newSlotSet[sl.SlotID] = true
-		st := slotTaskMap[asset.Slug+"::"+sl.SlotID]
-
-		md := ""
-		var cited []verifier.CitedAnchorCandidate
-		ownership := sl.Ownership
-		manuallyEdited := false
-		if st != nil {
-			md = st.OutputMarkdown
+	generated := make(map[string]GeneratedSlotPayload, len(asset.Meta.Slots))
+	for _, sl := range asset.Meta.Slots {
+		if st := slotTaskMap[asset.Slug+"::"+sl.SlotID]; st != nil {
+			var cited []verifier.CitedAnchorCandidate
 			_ = json.Unmarshal(st.CitedAnchorsJSON, &cited)
-			if st.Status == models.SlotTaskSkippedLocked {
-				if prev, ok := priorSections[sl.SlotID]; ok {
-					ownership = prev.Ownership
-					manuallyEdited = prev.ManuallyEdited
-					md = prev.Markdown
-				}
+			generated[sl.SlotID] = GeneratedSlotPayload{
+				Markdown:     st.OutputMarkdown,
+				CitedAnchors: cited,
 			}
 		}
-
-		sectionInputs = append(sectionInputs, verifier.SectionInput{
-			SlotID:       sl.SlotID,
-			Title:        sl.Title,
-			Markdown:     md,
-			CitedAnchors: cited,
-		})
-		sectionSnapshots = append(sectionSnapshots, models.DocumentSectionSnapshot{
-			SlotID:         sl.SlotID,
-			SectionOrder:   idx + 1,
-			Title:          sl.Title,
-			Ownership:      ownership,
-			IsOrphan:       false,
-			ManuallyEdited: manuallyEdited,
-			Markdown:       md,
-			ContentSHA256:  sha256Hex(md),
-		})
 	}
 
-	// 模板升级孤立章节保护（03-doctype-drift-and-publishing.md §2.2）：保留被删槽位中的 locked / manually_edited 章节
-	for oldSlotID, prev := range priorSections {
-		if newSlotSet[oldSlotID] {
-			continue
-		}
-		if prev.Ownership == models.OwnershipLocked || prev.ManuallyEdited {
-			sectionSnapshots = append(sectionSnapshots, models.DocumentSectionSnapshot{
-				SlotID:         prev.SlotID,
-				SectionOrder:   len(sectionSnapshots) + 1,
-				Title:          prev.Title,
-				Ownership:      prev.Ownership,
-				IsOrphan:       true,
-				ManuallyEdited: prev.ManuallyEdited,
-				Markdown:       prev.Markdown,
-				ContentSHA256:  sha256Hex(prev.Markdown),
-			})
-			sectionInputs = append(sectionInputs, verifier.SectionInput{
-				SlotID:   prev.SlotID,
-				Title:    prev.Title,
-				Markdown: prev.Markdown,
-			})
-		}
-	}
+	merged := MergeGeneratedWithLockedAndOrphans(MergeGeneratedInput{
+		NewSlots:       asset.Meta.Slots,
+		Generated:      generated,
+		PriorSections:  priorOrdered,
+		PriorEvidences: priorEvAnchors,
+		PriorCommitSHA: priorCommitSHA,
+		NewCommitSHA:   snapReady.Snapshot.CommitSHA,
+		NewIR:          snapReady.IR,
+	})
 
-	return o.verifyAndAppendRevision(ctx, doc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, docTypeRevID, asset, snapReady.IR, sectionSnapshots, sectionInputs, models.RevSourceAIGenerate, &task.ID, "AI 反推生成初稿", operatorID)
+	return o.verifyAndAppendRevision(ctx, doc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, docTypeRevID, asset, snapReady.IR, merged.Sections, merged.SectionInputs, models.RevSourceAIGenerate, &task.ID, "AI 反推生成初稿", operatorID)
 }
 
 func (o *GenerationOrchestrator) executeSingleSlotRetry(

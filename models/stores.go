@@ -776,6 +776,57 @@ func (s *DocumentStore) ListApprovedDocuments(ctx context.Context) ([]Document, 
 	return docs, nil
 }
 
+func (s *DocumentStore) ListByIDs(ctx context.Context, docIDs []uint, approvedOnly bool) ([]Document, error) {
+	if len(docIDs) == 0 {
+		return []Document{}, nil
+	}
+	q := s.db.WithContext(ctx).Model(&Document{}).Where("id IN ?", docIDs)
+	if approvedOnly {
+		q = q.Where("status = ?", DocStatusApproved)
+	}
+	var docs []Document
+	if err := q.Order("id ASC").Find(&docs).Error; err != nil {
+		return nil, err
+	}
+	return docs, nil
+}
+
+func (s *DocumentStore) GetRevisionByIDWithSections(ctx context.Context, docID, revID uint) (*DocumentRevision, []SectionEvidence, error) {
+	var rev DocumentRevision
+	err := s.db.WithContext(ctx).
+		Where("document_id = ? AND id = ?", docID, revID).
+		First(&rev).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var sections []SectionEvidence
+	if err := s.db.WithContext(ctx).
+		Where("document_id = ? AND revision_id = ?", docID, rev.ID).
+		Order("section_order ASC, id ASC").
+		Find(&sections).Error; err != nil {
+		return nil, nil, err
+	}
+	return &rev, sections, nil
+}
+
+func (s *DocumentStore) GetFirstAIGenerateRevision(ctx context.Context, docID uint) (*DocumentRevision, error) {
+	var rev DocumentRevision
+	err := s.db.WithContext(ctx).
+		Where("document_id = ? AND source = ?", docID, RevSourceAIGenerate).
+		Order("revision_no ASC").
+		First(&rev).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rev, nil
+}
+
 func (s *DocumentStore) GetRevisionWithSections(ctx context.Context, docID uint, revisionNo int) (*DocumentRevision, []SectionEvidence, error) {
 	var rev DocumentRevision
 	err := s.db.WithContext(ctx).

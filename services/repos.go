@@ -66,7 +66,10 @@ type DocumentRepo interface {
 	ListByRepos(ctx context.Context, repoIDs []uint) ([]models.Document, error)
 	ListRevisionsByIDs(ctx context.Context, revIDs []uint) (map[uint]models.DocumentRevision, error)
 	ListApprovedDocuments(ctx context.Context) ([]models.Document, error)
+	ListByIDs(ctx context.Context, docIDs []uint, approvedOnly bool) ([]models.Document, error)
 	GetRevisionWithSections(ctx context.Context, docID uint, revisionNo int) (*models.DocumentRevision, []models.SectionEvidence, error)
+	GetRevisionByIDWithSections(ctx context.Context, docID, revID uint) (*models.DocumentRevision, []models.SectionEvidence, error)
+	GetFirstAIGenerateRevision(ctx context.Context, docID uint) (*models.DocumentRevision, error)
 	ListRevisions(ctx context.Context, docID uint) ([]models.DocumentRevision, error)
 	AppendRevisionWithOptimisticLock(ctx context.Context, doc *models.Document, baseRevisionNo int, rev *models.DocumentRevision, sections []models.SectionEvidence) error
 	UpdateSectionOwnership(ctx context.Context, docID, revID uint, slotID, ownership string, clearDriftReview bool) error

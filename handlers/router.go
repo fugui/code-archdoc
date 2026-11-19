@@ -16,6 +16,9 @@ type AppHandlers struct {
 	llmSvc     *services.LLMConfigService
 	docTypeSvc *services.DocTypeService
 	genSvc     *services.GenerationOrchestrator
+	revSvc     *services.RevisionService
+	previewSvc *services.SourcePreviewService
+	publishSvc *services.PublishService
 }
 
 // NewAppHandlers 构造处理器聚合对象。
@@ -33,6 +36,18 @@ func NewAppHandlers(
 		docTypeSvc: docTypeSvc,
 		genSvc:     genSvc,
 	}
+}
+
+// WithDocumentServices 注入文档修订、只读源码证据预览与定稿发布导出服务（M3）。
+func (h *AppHandlers) WithDocumentServices(
+	revSvc *services.RevisionService,
+	previewSvc *services.SourcePreviewService,
+	publishSvc *services.PublishService,
+) *AppHandlers {
+	h.revSvc = revSvc
+	h.previewSvc = previewSvc
+	h.publishSvc = publishSvc
+	return h
 }
 
 // RegisterRoutes 集中注册免密开放路由、受保护业务路由与模块管理员路由（供 main.go 与集成测试统一复用）。
@@ -81,6 +96,29 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.GET("/tasks/:task_id", h.GetTaskDetail)
 			protected.POST("/tasks/:task_id/cancel", h.CancelTask)
 			protected.POST("/tasks/:task_id/slots/:slot_task_id/retry", h.RetrySlotTask)
+		}
+
+		// 域 4：Canvas Studio 文档审校、手工直编、锁定/孤立保护与只读源码预览 (F-08/F-09/F-10)
+		if h.revSvc != nil {
+			protected.GET("/documents", h.ListDocuments)
+			protected.GET("/documents/:id", h.GetDocument)
+			protected.GET("/documents/:id/revisions", h.ListDocumentRevisions)
+			protected.GET("/documents/:id/revisions/diff", h.DiffDocumentRevisions)
+			protected.PUT("/documents/:id/sections/:slot_id", h.UpdateDocumentSection)
+			protected.PATCH("/documents/:id/sections/:slot_id/ownership", h.UpdateSectionOwnership)
+			protected.POST("/documents/:id/sections/:slot_id/orphan-resolve", h.ResolveOrphanSection)
+			protected.POST("/documents/:id/rollback", h.RollbackDocument)
+		}
+		if h.revSvc != nil && h.previewSvc != nil {
+			protected.GET("/documents/:id/source-preview", h.GetSourcePreview)
+		}
+
+		// 域 6：定稿发布、一键撤回与 Markdown/ZIP 导出 (F-11)
+		if h.revSvc != nil && h.publishSvc != nil {
+			protected.POST("/documents/:id/publish", h.PublishDocument)
+			protected.POST("/documents/:id/unpublish", h.UnpublishDocument)
+			protected.GET("/documents/:id/export", h.ExportDocument)
+			protected.POST("/exports/zip", h.ExportZip)
 		}
 
 		// 3. 模块管理员专属路由 (RequireAdmin - 仅 super_admin 或 archdoc_admin 可访问)

@@ -60,6 +60,6 @@
 
 ## 4. 自动化验收标准与执行命令 (Acceptance Criteria)
 
-- [ ] **AC-M3-01**：`TEST_DB_DSN=... make test` 与 `make lint-arch` 100% 通过，`SC-06`、`SC-07`(W1)、`SC-10` 全绿。
-- [ ] **AC-M3-02**：`cd ../code-bench/frontend && npm run lint && npm run build`（及对应单测）100% 通过，且 `code-bench` 中零 `archdoc` 专有业务分支（遵守 `Non-Goal 8`）。
-- [ ] **AC-M3-03**：手工或测试脚本将 `publish_dir` 符号链接至本地 `code-bench` 测试文档目录验证时，含 Frontmatter 文档正文不显示 YAML 原文，点击 `/archdoc/...` 深链正确触发路由跳转。
+- [x] **AC-M3-01**：`TEST_DB_DSN=... make test` 与 `make lint-arch` 100% 通过，`SC-06`、`SC-07`(W1)、`SC-10` 全绿。
+- [x] **AC-M3-02**：`cd ../code-bench/frontend && npm run lint && npm run build`（及对应单测）100% 通过，且 `code-bench` 中零 `archdoc` 专有业务分支（遵守 `Non-Goal 8`）。
+- [x] **AC-M3-03**：手工或测试脚本将 `publish_dir` 符号链接至本地 `code-bench` 测试文档目录验证时，含 Frontmatter 文档正文不显示 YAML 原文，点击 `/archdoc/...` 深链正确触发路由跳转。

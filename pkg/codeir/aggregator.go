@@ -51,6 +51,28 @@ func (a *Aggregator) RegisterExtractor(ext LanguageExtractor) {
 	}
 }
 
+// ExtractSingleFileSymbols 对单个源码文件执行轻量符号抽取（供源码抽屉按符号重定位及 M6 符号级 Code Drift 复用）。
+func (a *Aggregator) ExtractSingleFileSymbols(ctx context.Context, relPath, lang string, content []byte) []SymbolFact {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	normLang := strings.ToLower(strings.TrimSpace(lang))
+	entry := FileEntry{
+		RelPath:  relPath,
+		Language: normLang,
+		Size:     int64(len(content)),
+	}
+	var out []SymbolFact
+	for _, ext := range a.langExtractors[normLang] {
+		res, err := ext.ExtractFile(ctx, entry, content)
+		if err != nil || res == nil {
+			continue
+		}
+		out = append(out, res.Symbols...)
+	}
+	return out
+}
+
 // ExtractDirectory 扫描目标仓库（或子目录），执行零 LLM 确定性抽取并输出完整 CodeIRBundle。
 func (a *Aggregator) ExtractDirectory(ctx context.Context, repoRoot, subdir string, walkOpts sandbox.WalkOptions) (*CodeIRBundle, error) {
 	start := time.Now()

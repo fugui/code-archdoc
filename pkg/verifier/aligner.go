@@ -154,6 +154,43 @@ func BuildIRIndex(ir *codeir.CodeIRBundle) *IRIndex {
 	return idx
 }
 
+// LookupAnchorFingerprint 在 IRIndex 中按 (symbolKind, filePath, fqSymbol) 查找当前语义指纹及存在性。
+func (idx *IRIndex) LookupAnchorFingerprint(symbolKind, filePath, fqSymbol string) (string, bool) {
+	if idx == nil {
+		return "", false
+	}
+	if filePath != "" {
+		if _, ok := idx.Files[filePath]; !ok {
+			return "", false
+		}
+	}
+	if symbolKind == "file" || fqSymbol == "" {
+		if filePath == "" {
+			return "", false
+		}
+		return hashShort("file::" + filePath), true
+	}
+	if sym, ok := idx.SymbolsByFQ[fqSymbol]; ok {
+		return sym.Meta.ContentFingerprint, true
+	}
+	if ref, ok := idx.ProtoRPCs[fqSymbol]; ok {
+		return ref.rpc.Meta.ContentFingerprint, true
+	}
+	if rt, ok := idx.HTTPRoutes[fqSymbol]; ok {
+		return rt.Meta.ContentFingerprint, true
+	}
+	if dm, ok := idx.DataModels[fqSymbol]; ok {
+		return dm.Meta.ContentFingerprint, true
+	}
+	if ck, ok := idx.ConfigKeys[fqSymbol]; ok {
+		return ck.Meta.ContentFingerprint, true
+	}
+	if prims := idx.Primitives[fqSymbol]; len(prims) > 0 {
+		return prims[0].Meta.ContentFingerprint, true
+	}
+	return "", false
+}
+
 // AlignCandidates 将 L2 输出的候选引用与 L1 Code IR 确定性对齐，返回规范化 EvidenceAnchor 列表及未能对齐的候选。
 func AlignCandidates(idx *IRIndex, commitSHA string, candidates []CitedAnchorCandidate) ([]EvidenceAnchor, []CitedAnchorCandidate) {
 	if idx == nil || len(candidates) == 0 {
