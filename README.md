@@ -57,7 +57,7 @@ code-archdoc/
 ## 3. SDD + TDD 研发路线图 (Lifecycle Checklist)
 
 - [ ] **阶段一：特性清单与边界明确** (`docs/01-features/`)
-  - [ ] [`01-feature-matrix.md`](./docs/01-features/01-feature-matrix.md)（初版特性矩阵基线已就位：含 `P0~P2` 功能矩阵、`SC-01~SC-07` 验收场景与 `Non-Goals`，待补充团队设计文档模板后定稿）
+  - [ ] [`01-feature-matrix.md`](./docs/01-features/01-feature-matrix.md)（v0.2.0 特性矩阵基线已就位：含可管理 `DocType` 注册表、架构/研发双视角深度、`P0~P2` 功能矩阵 `F-01~F-23`、`SC-01~SC-10` 验收场景与 `Non-Goals`，待补充团队设计文档模板样例后冻结）
 - [ ] **阶段二：系统架构与模型设计** (`docs/02-design/`)
   - [ ] [`01-system-architecture.md`](./docs/02-design/01-system-architecture.md)（双模运行架构、`archdoc_*` 数据表结构设计与前后端分层）
 - [ ] **阶段三：接口契约与 TDD 任务分解** (`docs/03-api/`, `docs/04-tasks/`)
