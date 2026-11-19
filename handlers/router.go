@@ -11,9 +11,11 @@ import (
 
 // AppHandlers 聚合本模块全部 HTTP/SSE 处理器及其依赖的编排服务。
 type AppHandlers struct {
-	rbacSvc *services.RBACService
-	repoSvc *services.RepoService
-	llmSvc  *services.LLMConfigService
+	rbacSvc    *services.RBACService
+	repoSvc    *services.RepoService
+	llmSvc     *services.LLMConfigService
+	docTypeSvc *services.DocTypeService
+	genSvc     *services.GenerationOrchestrator
 }
 
 // NewAppHandlers 构造处理器聚合对象。
@@ -21,11 +23,15 @@ func NewAppHandlers(
 	rbacSvc *services.RBACService,
 	repoSvc *services.RepoService,
 	llmSvc *services.LLMConfigService,
+	docTypeSvc *services.DocTypeService,
+	genSvc *services.GenerationOrchestrator,
 ) *AppHandlers {
 	return &AppHandlers{
-		rbacSvc: rbacSvc,
-		repoSvc: repoSvc,
-		llmSvc:  llmSvc,
+		rbacSvc:    rbacSvc,
+		repoSvc:    repoSvc,
+		llmSvc:     llmSvc,
+		docTypeSvc: docTypeSvc,
+		genSvc:     genSvc,
 	}
 }
 
@@ -60,6 +66,22 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 		// 域 1：仓库与 Monorepo 子目录覆盖视图 (F-01)
 		protected.GET("/repos", h.ListRepos)
 		protected.GET("/repos/:repo_id/scopes", h.GetRepoScopes)
+
+		// 域 2：可管理文档类型注册表 W1 只读查询 (F-03)
+		if h.docTypeSvc != nil {
+			protected.GET("/doc-types", h.ListDocTypes)
+			protected.GET("/doc-types/:slug", h.GetDocType)
+			protected.GET("/doc-types/:slug/revisions", h.ListDocTypeRevisions)
+		}
+
+		// 域 3：反推生成任务编排与监控 (F-05)
+		if h.genSvc != nil {
+			protected.POST("/tasks/generate", h.TriggerGenerateTask)
+			protected.GET("/tasks", h.ListTasks)
+			protected.GET("/tasks/:task_id", h.GetTaskDetail)
+			protected.POST("/tasks/:task_id/cancel", h.CancelTask)
+			protected.POST("/tasks/:task_id/slots/:slot_task_id/retry", h.RetrySlotTask)
+		}
 
 		// 3. 模块管理员专属路由 (RequireAdmin - 仅 super_admin 或 archdoc_admin 可访问)
 		admin := protected.Group("/admin")

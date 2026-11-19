@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package order.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option (cros.service_name) = "order.core.v1";
+option (cros.timeout_ms) = 3000;
+
+// 订单生命周期状态枚举
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_CREATED = 1;
+  ORDER_STATUS_PAID = 2;
+  ORDER_STATUS_CANCELED = 3;
+}
+
+// 创建订单请求
+message CreateOrderRequest {
+  string user_id = 1;
+  string sku_id = 2;
+  int64 amount_cents = 3;
+}
+
+// 创建订单响应
+message CreateOrderResponse {
+  string order_id = 1;
+  OrderStatus status = 2;
+  int32 err_code = 3;
+}
+
+// 支付订单请求
+message PayRequest {
+  string order_id = 1;
+  string payment_channel = 2;
+  int64 amount_cents = 3;
+}
+
+// 支付订单响应
+message PayResponse {
+  bool success = 1;
+  string tx_id = 2;
+  int32 err_code = 3;
+}
+
+// 取消订单请求
+message CancelOrderRequest {
+  string order_id = 1;
+  string reason = 2;
+}
+
+// 取消订单响应
+message CancelOrderResponse {
+  bool canceled = 1;
+  int32 err_code = 2;
+}
+
+// 订单状态变更流事件
+message OrderEvent {
+  string order_id = 1;
+  OrderStatus status = 2;
+  int64 timestamp_ms = 3;
+}
+
+// 核心订单 CROS RPC 服务契约
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse) {
+    option (cros.timeout_ms) = 2000;
+    option (cros.route_strategy) = "consistent_hash";
+  }
+
+  rpc Pay(PayRequest) returns (PayResponse) {
+    option (cros.timeout_ms) = 5000;
+    option (cros.idempotent) = true;
+  }
+
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
+    option (cros.timeout_ms) = 2000;
+  }
+
+  rpc StreamOrderEvents(CreateOrderRequest) returns (stream OrderEvent) {
+    option (cros.streaming_mode) = "server_push";
+  }
+}

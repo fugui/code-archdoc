@@ -1,0 +1,78 @@
+{
+  "name": "data-and-contract",
+  "display_name": "数据模型与接口契约",
+  "description": "面向接口消费方与核心研发的 RPC/Proto/HTTP 契约签名、数据存储模型、协议边界与统一错误码体系文档",
+  "is_active": true,
+  "is_builtin": true,
+  "model_tier": "flagship",
+  "timeout_seconds": 300,
+  "scope_profile": {
+    "max_depth": 12,
+    "include_tests": false,
+    "include_legacy_docs": false
+  },
+  "ir_facets": [
+    "idl_contracts",
+    "http_routes",
+    "data_models",
+    "symbols",
+    "runtime_primitives"
+  ],
+  "slots": [
+    {
+      "slot_id": "service_interfaces",
+      "title": "1. 对外接口契约（RPC / Proto / HTTP 签名）",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["idl_contracts", "http_routes"],
+      "token_budget": 12000,
+      "min_chars": 40,
+      "instruction_hint": "结构化列出所有 .proto 服务/RPC（含流式标记与 CROS option）及 HTTP 路由签名。"
+    },
+    {
+      "slot_id": "data_storage_models",
+      "title": "2. 核心数据实体与存储/消息模型",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["data_models", "idl_contracts", "symbols"],
+      "token_budget": 10000,
+      "min_chars": 40,
+      "instruction_hint": "汇总 SQL 数据表、主键/索引、Protobuf 核心消息体及内存聚合结构体。"
+    },
+    {
+      "slot_id": "protocol_error_codes",
+      "title": "3. 协议边界、版本兼容性与错误码体系",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["idl_contracts", "runtime_primitives", "symbols"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "总结协议版本语法、超时路由选项及全量业务错误码枚举与宏定义。"
+    },
+    {
+      "slot_id": "contract_invariants",
+      "title": "4. 契约演进约定与人工补充说明",
+      "ownership": "locked",
+      "required": false,
+      "ir_facets": ["idl_contracts"],
+      "token_budget": 3000,
+      "min_chars": 20,
+      "instruction_hint": "默认人工锁定槽位：记录幂等性、兼容演进约定及跨团队接口 SLA。"
+    }
+  ],
+  "verify_policy": {
+    "strict_symbol_check": false,
+    "require_mermaid": false,
+    "allowed_mermaid_types": [
+      "flowchart",
+      "graph",
+      "sequenceDiagram",
+      "stateDiagram-v2",
+      "classDiagram",
+      "erDiagram"
+    ],
+    "max_mermaid_nodes": 35,
+    "max_mermaid_edges": 60,
+    "block_on_secret_leak": true
+  }
+}

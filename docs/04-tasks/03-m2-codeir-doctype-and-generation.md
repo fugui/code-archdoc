@@ -67,7 +67,7 @@
 
 ## 4. 自动化验收标准与执行命令 (Acceptance Criteria)
 
-- [ ] **AC-M2-01**：`make lint-arch` 通过，确认 `tree-sitter` CGO 依赖 100% 隔离在 `pkg/codeir/treesitter/`，`pkg/*` 零 DB/Gin 依赖。
-- [ ] **AC-M2-02**：`make eval-baseline` 通过，达到 `F-04` 全部 C/C++/Proto 分级准确率指标且明文密钥 0 残留。
-- [ ] **AC-M2-03**：`TEST_DB_DSN=... make test` 全绿，`SC-02`、`SC-04`、`SC-09`、`SC-13` 自动化测试全部通过。
-- [ ] **AC-M2-04**：服务启动幂等初始化 5 类内置 `DocType`，`GET /api/doc-types` 返回完整槽位与修订元信息。
+- [x] **AC-M2-01**：`make lint-arch` 通过，确认 `tree-sitter` CGO 依赖 100% 隔离在 `pkg/codeir/treesitter/`，`pkg/*` 零 DB/Gin 依赖。
+- [x] **AC-M2-02**：`make eval-baseline` 通过，达到 `F-04` 全部 C/C++/Proto 分级准确率指标且明文密钥 0 残留。
+- [x] **AC-M2-03**：`TEST_DB_DSN=... make test` 全绿，`SC-02`、`SC-04`、`SC-09`、`SC-13` 自动化测试全部通过。
+- [x] **AC-M2-04**：服务启动幂等初始化 5 类内置 `DocType`，`GET /api/doc-types` 返回完整槽位与修订元信息。

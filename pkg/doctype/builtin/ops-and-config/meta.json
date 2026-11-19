@@ -1,0 +1,79 @@
+{
+  "name": "ops-and-config",
+  "display_name": "配置、部署与研发上手",
+  "description": "面向研发新人与运维值班的脱敏配置清单、部署拓扑、本地构建编译开关及高频故障排障手册",
+  "is_active": true,
+  "is_builtin": true,
+  "model_tier": "fast",
+  "timeout_seconds": 240,
+  "scope_profile": {
+    "max_depth": 12,
+    "include_tests": false,
+    "include_legacy_docs": false
+  },
+  "ir_facets": [
+    "config_keys",
+    "tree",
+    "build",
+    "deps",
+    "runtime_primitives",
+    "symbols"
+  ],
+  "slots": [
+    {
+      "slot_id": "config_inventory",
+      "title": "1. 脱敏配置项全量清单与环境变量映射",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["config_keys", "tree"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "以表格形式列出全部配置键、值类型、安全默认值与敏感标记，严禁输出明文凭据。"
+    },
+    {
+      "slot_id": "deploy_topology",
+      "title": "2. 部署拓扑、运行依赖与端口/资源清单",
+      "ownership": "hybrid",
+      "required": true,
+      "ir_facets": ["build", "deps", "config_keys", "runtime_primitives"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "说明可执行产物、监听端口、外部数据库/中间件及操作系统级资源（共享内存/信号/事件循环）。"
+    },
+    {
+      "slot_id": "local_build_dev",
+      "title": "3. 本地构建、编译开关、单测与调试指南",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["build", "tree"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "基于构建脚本与 compile_commands.json 说明依赖工具链、宏开关与本地编译命令。"
+    },
+    {
+      "slot_id": "troubleshooting_logs",
+      "title": "4. 关键日志、错误码与高频故障排障手册",
+      "ownership": "hybrid",
+      "required": true,
+      "ir_facets": ["runtime_primitives", "config_keys", "symbols"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "结合错误码枚举与宏定义提供高频报错原因及排查定位路径。"
+    }
+  ],
+  "verify_policy": {
+    "strict_symbol_check": false,
+    "require_mermaid": false,
+    "allowed_mermaid_types": [
+      "flowchart",
+      "graph",
+      "sequenceDiagram",
+      "stateDiagram-v2",
+      "classDiagram",
+      "erDiagram"
+    ],
+    "max_mermaid_nodes": 35,
+    "max_mermaid_edges": 60,
+    "block_on_secret_leak": true
+  }
+}

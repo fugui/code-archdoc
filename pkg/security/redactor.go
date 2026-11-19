@@ -135,16 +135,26 @@ func (r *SecretRedactor) RedactText(input string) (string, []Finding) {
 			updated = rePEMLine.ReplaceAllString(updated, RedactedPlaceholder)
 		}
 
-		// 2a. URL 内嵌凭据（postgres://user:pass@host/db）
-		if reURLCred.MatchString(updated) {
+		// 2a. URL 内嵌凭据（postgres://user:pass@host/db；跳过已脱敏的 ***:*** 或占位符）
+		updated = reURLCred.ReplaceAllStringFunc(updated, func(match string) string {
+			sub := reURLCred.FindStringSubmatch(match)
+			if len(sub) < 4 {
+				return match
+			}
+			scheme, userPart, passPart := sub[1], sub[2], sub[3]
+			if (userPart == "***" && passPart == "***") ||
+				(isSafePlaceholder(userPart) && isSafePlaceholder(passPart)) ||
+				passPart == RedactedPlaceholder {
+				return match
+			}
 			findings = append(findings, Finding{
 				RuleID:      "url_credential",
 				MatchedMask: "://***:***@",
 				LineOffset:  lineNo,
 				Severity:    "blocker",
 			})
-			updated = reURLCred.ReplaceAllString(updated, "${1}***:***@")
-		}
+			return scheme + "***:***@"
+		})
 
 		// 2b. 平台 Token 前缀（sk- / ghp_ / glpat- / AKIA / JWT）
 		updated = reTokenPrefix.ReplaceAllStringFunc(updated, func(match string) string {

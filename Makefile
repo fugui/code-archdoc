@@ -15,7 +15,7 @@ COMMON_SRCS     := $(shell find $(COMMON_DIR) -type f 2>/dev/null)
 FRONTEND_SRCS   := $(shell find $(FRONTEND_DIR) -type f -not -path "*/node_modules/*" -not -path "*/dist/*" 2>/dev/null) $(COMMON_SRCS)
 BACKEND_SRCS    := $(shell find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" \) -not -path "*/$(FRONTEND_DIR)/*" -not -path "*/.git/*")
 
-.PHONY: all build install frontend backend clean run test lint lint-arch check-cgo
+.PHONY: all build install frontend backend clean run test lint lint-arch check-cgo eval-baseline
 
 # 默认运行目标
 all: build
@@ -119,6 +119,13 @@ test:
 # 快捷启动命令
 run: build
 	./$(BINARY)
+
+# 运行 F-26 Golden Sample 量化回归评测基线（零 LLM C/C++/Proto 分级准确率 + 0 密钥残留 + 5 类样例 Verifier 门禁）
+eval-baseline: check-cgo
+	@echo "Running F-26 Golden Sample Evaluation Baseline..."
+	CGO_ENABLED=1 go test -v -count=1 ./pkg/codeir -run TestEval
+	CGO_ENABLED=1 go test -v -count=1 ./pkg/verifier -run TestEvalGoldenSamplesVerifierBaseline
+	@echo "✅ [Eval Baseline Passed] All F-04 / F-26 accuracy, security & golden sample assertions passed."
 
 # 执行架构防腐检查与前端静态代码/类型校验
 lint: lint-arch $(NODE_MODULES)

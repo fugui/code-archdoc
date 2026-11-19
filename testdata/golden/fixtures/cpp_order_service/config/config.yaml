@@ -1,0 +1,26 @@
+server:
+  host: "127.0.0.1"
+  port: 9080
+  worker_threads: 4
+
+redis:
+  host: "10.0.0.15"
+  port: 6379
+  pool_size: 32
+
+order:
+  timeout_ms: 3000
+  max_retry: 2
+
+metrics:
+  enabled: true
+  shm_name: "/order_pay_ring"
+
+database:
+  host: "10.0.0.12"
+  port: 5432
+  db_password: "secret123"
+  dsn: "postgres://order_user:secret123@10.0.0.12:5432/orders"
+
+payment:
+  api_key: "sk-live-order-9876543210abcdef"

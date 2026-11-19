@@ -407,6 +407,18 @@ func NewSnapshotStore(db *gorm.DB) *SnapshotStore {
 	return &SnapshotStore{db: db}
 }
 
+func (s *SnapshotStore) GetByID(ctx context.Context, snapshotID uint) (*RepoSnapshot, error) {
+	var snap RepoSnapshot
+	err := s.db.WithContext(ctx).First(&snap, snapshotID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
 func (s *SnapshotStore) FindByKey(ctx context.Context, repoID uint, subdir, refName, commitSHA, irSchemaVer string) (*RepoSnapshot, error) {
 	var snap RepoSnapshot
 	err := s.db.WithContext(ctx).
@@ -604,6 +616,13 @@ func (s *TaskStore) TransitionTaskStatus(ctx context.Context, taskID uint, from,
 	return nil
 }
 
+func (s *TaskStore) UpdateTaskFields(ctx context.Context, taskID uint, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&GenTask{}).Where("id = ?", taskID).Updates(updates).Error
+}
+
 func (s *TaskStore) CreateSlotTasks(ctx context.Context, slots []GenSlotTask) error {
 	if len(slots) == 0 {
 		return nil
@@ -649,6 +668,38 @@ func (s *DocumentStore) GetByID(ctx context.Context, docID uint) (*Document, err
 		return nil, err
 	}
 	return &doc, nil
+}
+
+func (s *DocumentStore) GetOrCreateDocument(ctx context.Context, doc *Document) (*Document, error) {
+	var existing Document
+	err := s.db.WithContext(ctx).
+		Where("repo_id = ? AND subdirectory = ? AND ref_name = ? AND doc_type_slug = ?",
+			doc.RepoID, doc.Subdirectory, doc.RefName, doc.DocTypeSlug).
+		First(&existing).Error
+	if err == nil {
+		return &existing, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if createErr := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "repo_id"},
+			{Name: "subdirectory"},
+			{Name: "ref_name"},
+			{Name: "doc_type_slug"},
+		},
+		DoNothing: true,
+	}).Create(doc).Error; createErr != nil {
+		return nil, createErr
+	}
+	if err := s.db.WithContext(ctx).
+		Where("repo_id = ? AND subdirectory = ? AND ref_name = ? AND doc_type_slug = ?",
+			doc.RepoID, doc.Subdirectory, doc.RefName, doc.DocTypeSlug).
+		First(&existing).Error; err != nil {
+		return nil, err
+	}
+	return &existing, nil
 }
 
 func (s *DocumentStore) GetByScope(ctx context.Context, repoID uint, subdir, refName, docTypeSlug string) (*Document, error) {

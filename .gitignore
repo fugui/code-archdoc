@@ -13,8 +13,8 @@ public/version.json
 frontend/vite.config.js
 frontend/vite.config.d.ts
 
-# 本地运行时配置与日志（切勿提交含真实密钥的 config.yaml）
-config.yaml
+# 本地运行时配置与日志（切勿提交含真实密钥的根 config.yaml）
+/config.yaml
 *.log
 *.db
 *.sqlite

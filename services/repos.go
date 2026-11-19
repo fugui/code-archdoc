@@ -33,6 +33,7 @@ type DocTypeRepo interface {
 
 // SnapshotRepo 管理 archdoc_repo_snapshots 与 archdoc_code_ir_facets
 type SnapshotRepo interface {
+	GetByID(ctx context.Context, snapshotID uint) (*models.RepoSnapshot, error)
 	FindByKey(ctx context.Context, repoID uint, subdir, refName, commitSHA, irSchemaVer string) (*models.RepoSnapshot, error)
 	ListLatestByRepos(ctx context.Context, repoIDs []uint) ([]models.RepoSnapshot, error)
 	UpsertSnapshot(ctx context.Context, snap *models.RepoSnapshot) error
@@ -50,6 +51,7 @@ type TaskRepo interface {
 	ListTasks(ctx context.Context, filter models.TaskListFilter) ([]models.GenTask, int64, error)
 	ListActiveTasksByRepos(ctx context.Context, repoIDs []uint) ([]models.GenTask, error)
 	TransitionTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error
+	UpdateTaskFields(ctx context.Context, taskID uint, updates map[string]any) error
 	CreateSlotTasks(ctx context.Context, slots []models.GenSlotTask) error
 	UpdateSlotTask(ctx context.Context, slotTask *models.GenSlotTask) error
 	GetSlotTask(ctx context.Context, taskID, slotTaskID uint) (*models.GenSlotTask, error)
@@ -58,6 +60,7 @@ type TaskRepo interface {
 // DocumentRepo 管理 archdoc_documents / archdoc_document_revisions / archdoc_section_evidences
 type DocumentRepo interface {
 	GetByID(ctx context.Context, docID uint) (*models.Document, error)
+	GetOrCreateDocument(ctx context.Context, doc *models.Document) (*models.Document, error)
 	GetByScope(ctx context.Context, repoID uint, subdir, refName, docTypeSlug string) (*models.Document, error)
 	ListByScope(ctx context.Context, repoID uint, subdir, refName string, approvedOnly bool) ([]models.Document, error)
 	ListByRepos(ctx context.Context, repoIDs []uint) ([]models.Document, error)

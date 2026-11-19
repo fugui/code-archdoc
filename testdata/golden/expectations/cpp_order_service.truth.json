@@ -1,0 +1,144 @@
+{
+  "fixture_name": "cpp_order_service",
+  "expected_files": [
+    "CMakeLists.txt",
+    "compile_commands.json",
+    "config/config.yaml",
+    "include/order/error_codes.h",
+    "include/order/export.h",
+    "include/order/order_service.h",
+    "proto/order.proto",
+    "sql/schema.sql",
+    "src/main.cpp",
+    "src/order/c_metrics_helper.c",
+    "src/order/order_service.cpp"
+  ],
+  "forbidden_files": [
+    "third_party/zlib/zlib.h",
+    "third_party/zlib/inflate.c",
+    "proto/order.pb.cc",
+    "proto/order.pb.h"
+  ],
+  "expected_build": {
+    "build_systems": ["cmake"],
+    "targets": ["order_core", "order_service"],
+    "compile_options_contains": ["CMAKE_CXX_STANDARD=17", "ENABLE_METRICS=1", "CROS_ENABLED=1", "-DCROS_PROTOCOL_V2"]
+  },
+  "expected_protos": [
+    {
+      "file_path": "proto/order.proto",
+      "package": "order.v1",
+      "imports": ["google/protobuf/timestamp.proto"],
+      "file_cros_options": {
+        "cros.service_name": "order.core.v1",
+        "cros.timeout_ms": "3000"
+      },
+      "services": [
+        {
+          "name": "OrderService",
+          "rpcs": [
+            {
+              "method_name": "CreateOrder",
+              "request_type": "CreateOrderRequest",
+              "response_type": "CreateOrderResponse",
+              "client_streaming": false,
+              "server_streaming": false,
+              "cros_options": {
+                "cros.timeout_ms": "2000",
+                "cros.route_strategy": "consistent_hash"
+              }
+            },
+            {
+              "method_name": "Pay",
+              "request_type": "PayRequest",
+              "response_type": "PayResponse",
+              "client_streaming": false,
+              "server_streaming": false,
+              "cros_options": {
+                "cros.timeout_ms": "5000",
+                "cros.idempotent": "true"
+              }
+            },
+            {
+              "method_name": "CancelOrder",
+              "request_type": "CancelOrderRequest",
+              "response_type": "CancelOrderResponse",
+              "client_streaming": false,
+              "server_streaming": false,
+              "cros_options": {
+                "cros.timeout_ms": "2000"
+              }
+            },
+            {
+              "method_name": "StreamOrderEvents",
+              "request_type": "CreateOrderRequest",
+              "response_type": "OrderEvent",
+              "client_streaming": false,
+              "server_streaming": true,
+              "cros_options": {
+                "cros.streaming_mode": "server_push"
+              }
+            }
+          ]
+        }
+      ],
+      "messages": [
+        "CreateOrderRequest",
+        "CreateOrderResponse",
+        "PayRequest",
+        "PayResponse",
+        "CancelOrderRequest",
+        "CancelOrderResponse",
+        "OrderEvent"
+      ],
+      "enums": ["OrderStatus"]
+    }
+  ],
+  "expected_symbols": [
+    { "fq_symbol": "order::OrderErrorCode", "kind": "enum", "conditional": false },
+    { "fq_symbol": "order::OrderRecord", "kind": "struct", "conditional": false },
+    { "fq_symbol": "order::OrderService", "kind": "class", "conditional": false },
+    { "fq_symbol": "order::OrderService::CreateOrder", "kind": "method", "conditional": false },
+    { "fq_symbol": "order::OrderService::Pay", "kind": "method", "conditional": false },
+    { "fq_symbol": "order::OrderService::CancelOrder", "kind": "method", "conditional": false },
+    { "fq_symbol": "order::OrderService::GetOrderMetrics", "kind": "method", "conditional": true, "condition_expr": "ENABLE_METRICS" },
+    { "fq_symbol": "order::OrderService::StartBackgroundWorker", "kind": "method", "conditional": false },
+    { "fq_symbol": "MetricBucket", "kind": "struct", "conditional": false },
+    { "fq_symbol": "metrics_init", "kind": "function", "conditional": false },
+    { "fq_symbol": "metrics_record_latency", "kind": "function", "conditional": false },
+    { "fq_symbol": "SimpleRouter", "kind": "struct", "conditional": false },
+    { "fq_symbol": "RegisterHttpRoutes", "kind": "function", "conditional": false },
+    { "fq_symbol": "main", "kind": "function", "conditional": false }
+  ],
+  "expected_primitives": [
+    { "category": "lock", "api_name": "std::mutex" },
+    { "category": "lock", "api_name": "std::shared_mutex" },
+    { "category": "lock", "api_name": "std::lock_guard" },
+    { "category": "lock", "api_name": "std::unique_lock" },
+    { "category": "lock", "api_name": "std::shared_lock" },
+    { "category": "lock", "api_name": "pthread_mutex_lock" },
+    { "category": "thread", "api_name": "std::thread" },
+    { "category": "thread", "api_name": "pthread_create" },
+    { "category": "shm_ipc", "api_name": "shm_open" },
+    { "category": "shm_ipc", "api_name": "mmap" },
+    { "category": "event_loop", "api_name": "epoll_wait" },
+    { "category": "timer", "api_name": "timerfd_create" },
+    { "category": "signal", "api_name": "sigaction" },
+    { "category": "signal", "api_name": "signal" },
+    { "category": "error_code", "api_name": "OrderErrorCode" },
+    { "category": "error_code", "api_name": "ERR_ORDER_TIMEOUT" }
+  ],
+  "expected_config_keys": [
+    { "key_path": "server.port", "is_sensitive": false },
+    { "key_path": "redis.pool_size", "is_sensitive": false },
+    { "key_path": "database.db_password", "is_sensitive": true },
+    { "key_path": "database.dsn", "is_sensitive": true },
+    { "key_path": "payment.api_key", "is_sensitive": true }
+  ],
+  "expected_data_models": ["orders", "order_payments"],
+  "expected_http_routes": ["/api/v1/health", "/v2/orders/pay"],
+  "forbidden_secrets": [
+    "secret123",
+    "sk-live-order-9876543210abcdef"
+  ]
+}

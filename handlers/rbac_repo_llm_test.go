@@ -67,7 +67,7 @@ func setupM1TestEnv(t *testing.T) (*gorm.DB, *gin.Engine, *services.RBACService)
 		_ = commonAudit.Close(context.Background())
 	})
 
-	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc)
+	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, nil, nil)
 	r := gin.New()
 	r.Use(commonAudit.Middleware(config.ModuleKey))
 	appHandlers.RegisterRoutes(r, db)

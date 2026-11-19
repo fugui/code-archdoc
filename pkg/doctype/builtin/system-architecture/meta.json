@@ -1,0 +1,91 @@
+{
+  "name": "system-architecture",
+  "display_name": "系统架构与核心链路",
+  "description": "面向架构师与研发骨干的运行时分层、并发/锁/共享内存模型、端到端核心链路时序图、外部依赖容错矩阵与架构约束文档",
+  "is_active": true,
+  "is_builtin": true,
+  "model_tier": "flagship",
+  "timeout_seconds": 300,
+  "scope_profile": {
+    "max_depth": 12,
+    "include_tests": false,
+    "include_legacy_docs": false
+  },
+  "ir_facets": [
+    "tree",
+    "deps",
+    "build",
+    "runtime_primitives",
+    "symbols",
+    "idl_contracts",
+    "http_routes",
+    "config_keys"
+  ],
+  "slots": [
+    {
+      "slot_id": "overview_boundaries",
+      "title": "1. 系统定位与模块分层边界",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["tree", "deps", "build"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "结合目录树、构建目标与模块依赖边说明系统职责边界，并输出 Mermaid flowchart 模块拓扑图。"
+    },
+    {
+      "slot_id": "runtime_concurrency",
+      "title": "2. 运行时并发、进程/线程、锁与共享内存模型",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["runtime_primitives", "symbols"],
+      "token_budget": 10000,
+      "min_chars": 40,
+      "instruction_hint": "基于 runtime_primitives 与 symbols 详述线程、锁粒度、原子操作、共享内存/IPC、事件循环、定时器与信号处理机制。"
+    },
+    {
+      "slot_id": "core_request_flows",
+      "title": "3. 端到端核心业务链路与时序图",
+      "ownership": "hybrid",
+      "required": true,
+      "ir_facets": ["idl_contracts", "http_routes", "symbols", "deps"],
+      "token_budget": 12000,
+      "min_chars": 40,
+      "instruction_hint": "从对外 RPC/HTTP 入口追踪至核心服务实现与存储/IPC，给出清晰的 Mermaid sequenceDiagram 时序图。"
+    },
+    {
+      "slot_id": "fault_tolerance_deps",
+      "title": "4. 外部依赖拓扑、容错机制与故障影响面矩阵",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["deps", "idl_contracts", "runtime_primitives", "config_keys"],
+      "token_budget": 10000,
+      "min_chars": 40,
+      "instruction_hint": "列出外部依赖、超时与幂等策略、错误码映射及单点故障影响面分析。"
+    },
+    {
+      "slot_id": "adr_constraints_debt",
+      "title": "5. 架构约束、关键 ADR 与已知技术债",
+      "ownership": "locked",
+      "required": false,
+      "ir_facets": ["tree", "deps"],
+      "token_budget": 4000,
+      "min_chars": 20,
+      "instruction_hint": "默认人工锁定槽位：仅在首次生成时基于代码结构提炼初始约束与待核对技术债。"
+    }
+  ],
+  "verify_policy": {
+    "strict_symbol_check": false,
+    "require_mermaid": true,
+    "allowed_mermaid_types": [
+      "flowchart",
+      "graph",
+      "sequenceDiagram",
+      "stateDiagram-v2",
+      "classDiagram",
+      "erDiagram"
+    ],
+    "max_mermaid_nodes": 35,
+    "max_mermaid_edges": 60,
+    "block_on_secret_leak": true
+  }
+}

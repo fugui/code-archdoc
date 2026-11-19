@@ -1,0 +1,70 @@
+{
+  "name": "code-walkthrough",
+  "display_name": "代码导读与改码指南",
+  "description": "面向研发迭代的仓库目录职责地图、核心请求逐跳源码导航与典型二次开发修改清单",
+  "is_active": true,
+  "is_builtin": true,
+  "model_tier": "fast",
+  "timeout_seconds": 240,
+  "scope_profile": {
+    "max_depth": 12,
+    "include_tests": false,
+    "include_legacy_docs": false
+  },
+  "ir_facets": [
+    "tree",
+    "deps",
+    "idl_contracts",
+    "http_routes",
+    "symbols",
+    "data_models",
+    "build"
+  ],
+  "slots": [
+    {
+      "slot_id": "directory_map",
+      "title": "1. 仓库目录职责与核心模块地图",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["tree", "deps"],
+      "token_budget": 8000,
+      "min_chars": 40,
+      "instruction_hint": "按顶层目录与关键文件说明职责分工与依赖流向。"
+    },
+    {
+      "slot_id": "call_chain_guide",
+      "title": "2. 核心请求逐跳源码导航",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["idl_contracts", "http_routes", "symbols", "deps"],
+      "token_budget": 12000,
+      "min_chars": 40,
+      "instruction_hint": "按入口函数 -> 服务方法 -> 底层原语/存储顺序逐跳导航，精确标注文件路径与全限定符号。"
+    },
+    {
+      "slot_id": "modification_recipes",
+      "title": "3. 典型二次开发修改清单（新增接口/字段/配置）",
+      "ownership": "hybrid",
+      "required": true,
+      "ir_facets": ["tree", "idl_contracts", "http_routes", "data_models", "build"],
+      "token_budget": 10000,
+      "min_chars": 40,
+      "instruction_hint": "针对新增接口、新增字段/表、新增错误码或配置项，给出按文件顺序排列的改码步骤清单。"
+    }
+  ],
+  "verify_policy": {
+    "strict_symbol_check": false,
+    "require_mermaid": false,
+    "allowed_mermaid_types": [
+      "flowchart",
+      "graph",
+      "sequenceDiagram",
+      "stateDiagram-v2",
+      "classDiagram",
+      "erDiagram"
+    ],
+    "max_mermaid_nodes": 35,
+    "max_mermaid_edges": 60,
+    "block_on_secret_leak": true
+  }
+}

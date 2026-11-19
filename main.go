@@ -9,6 +9,10 @@ import (
 	"code-archdoc/config"
 	"code-archdoc/handlers"
 	"code-archdoc/models"
+	"code-archdoc/pkg/codeir"
+	"code-archdoc/pkg/codeir/treesitter"
+	"code-archdoc/pkg/doctype"
+	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
@@ -64,8 +68,21 @@ func main() {
 		log.Printf("[%s] WARNING: 凭据加密器未启用（未配置 ARCHDOC_ENCRYPTION_KEY），写入新 APIKey 将被拒绝: %v", config.ServiceName, err)
 	}
 
-	// 5. 依赖注入组合根：Store -> Service -> Handler
+	// 5. 初始化纯领域引擎（DocType 目录注册表 + Code IR FacetStore + Tree-Sitter 隔离提取器）
+	docTypeRegistry, err := doctype.NewRegistry(config.AppConfig.Storage.DocTypesDir())
+	if err != nil {
+		log.Fatalf("[%s] 初始化 DocType 注册表失败: %v", config.ServiceName, err)
+	}
+	facetStore, err := codeir.NewLocalFSFacetStore(config.AppConfig.Storage.IRCacheDir(), 0)
+	if err != nil {
+		log.Fatalf("[%s] 初始化 Code IR FacetStore 失败: %v", config.ServiceName, err)
+	}
+	irAggregator := codeir.NewAggregator(treesitter.DefaultExtractors()...)
+	llmClient := llm.NewClient()
+
+	// 6. 依赖注入组合根：Store -> Service -> Handler
 	masterStore := models.NewSharedMasterStore(models.DB)
+	docTypeStore := models.NewDocTypeStore(models.DB)
 	docStore := models.NewDocumentStore(models.DB)
 	snapStore := models.NewSnapshotStore(models.DB)
 	taskStore := models.NewTaskStore(models.DB)
@@ -75,9 +92,38 @@ func main() {
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
 	llmSvc := services.NewLLMConfigService(govStore, keyCipher)
-	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc)
+	docTypeSvc := services.NewDocTypeService(docTypeRegistry, docTypeStore)
 
-	// 6. 基于 code-common/backend/server 启动服务（自动处理 /<ModuleKey> 网关前缀剥离与前端静态产物内嵌托管）
+	// 启动幂等 Seed 内置 5 类 DocType 并同步至数据库索引（AC-M2-04）
+	syncRes, err := docTypeSvc.SeedAndSyncAll(context.Background())
+	if err != nil {
+		log.Fatalf("[%s] 初始化内置 DocType 注册表失败: %v", config.ServiceName, err)
+	}
+	log.Printf("[%s] DocType 注册表已同步: synced=%d, new_revisions=%d", config.ServiceName, syncRes.SyncedCount, syncRes.NewRevisions)
+
+	snapSvc := services.NewSnapshotService(
+		snapStore,
+		facetStore,
+		irAggregator,
+		services.DefaultGitSyncer{},
+		config.AppConfig.Storage.SandboxDir(),
+		config.AppConfig.Storage.MaxFileBytes,
+	)
+	genSvc := services.NewGenerationOrchestrator(
+		masterStore,
+		docTypeStore,
+		docTypeSvc,
+		snapSvc,
+		taskStore,
+		docStore,
+		govStore,
+		keyCipher,
+		llmClient,
+		config.AppConfig.Scheduler.MaxLLMConcurrency,
+	)
+	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, genSvc)
+
+	// 7. 基于 code-common/backend/server 启动服务（自动处理 /<ModuleKey> 网关前缀剥离与前端静态产物内嵌托管）
 	// TODO(security): 若独立直接暴露于公网环境，请在网关层配置严格 CORS 白名单与全局 API 速率限制
 	err = commonServer.Run(commonServer.Options{
 		ServiceName:       config.ServiceName,

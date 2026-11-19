@@ -1,0 +1,72 @@
+{
+  "name": "agents-context",
+  "display_name": "AI Coding Agent 上下文包",
+  "description": "面向 AI 编程助手（受 4000 Token 预算硬约束）的高密度模块边界、架构红线、构建命令与高频改码入口包",
+  "is_active": true,
+  "is_builtin": true,
+  "model_tier": "fast",
+  "timeout_seconds": 180,
+  "max_output_tokens": 4000,
+  "scope_profile": {
+    "max_depth": 10,
+    "include_tests": false,
+    "include_legacy_docs": false
+  },
+  "ir_facets": [
+    "tree",
+    "build",
+    "deps",
+    "config_keys",
+    "symbols",
+    "idl_contracts",
+    "http_routes",
+    "runtime_primitives"
+  ],
+  "slots": [
+    {
+      "slot_id": "agent_module_summary",
+      "title": "1. 模块边界与核心目录速览",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["tree", "build"],
+      "token_budget": 4000,
+      "min_chars": 30,
+      "instruction_hint": "以极简要点列出语言栈、构建目标与核心路径映射。"
+    },
+    {
+      "slot_id": "agent_hard_constraints",
+      "title": "2. 不可违背的架构红线与构建测试命令",
+      "ownership": "locked",
+      "required": true,
+      "ir_facets": ["build", "deps", "config_keys"],
+      "token_budget": 3000,
+      "min_chars": 30,
+      "instruction_hint": "默认人工锁定槽位：列出禁止触碰的生成目录/三方依赖、并发锁约束、密钥安全红线与标准构建命令。"
+    },
+    {
+      "slot_id": "agent_change_checklist",
+      "title": "3. 高频改码入口、关键符号与常见坑点",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["symbols", "idl_contracts", "http_routes", "runtime_primitives"],
+      "token_budget": 5000,
+      "min_chars": 30,
+      "instruction_hint": "提炼高频改码入口符号、条件编译边界与契约约束，保持高信息密度以契合 4000 Token 预算。"
+    }
+  ],
+  "verify_policy": {
+    "strict_symbol_check": false,
+    "require_mermaid": false,
+    "allowed_mermaid_types": [
+      "flowchart",
+      "graph",
+      "sequenceDiagram",
+      "stateDiagram-v2",
+      "classDiagram",
+      "erDiagram"
+    ],
+    "max_mermaid_nodes": 35,
+    "max_mermaid_edges": 60,
+    "block_on_secret_leak": true
+  }
+}
