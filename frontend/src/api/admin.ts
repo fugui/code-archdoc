@@ -1,9 +1,19 @@
 import type {
+  CloneDocTypePayload,
+  CreateDocTypePayload,
+  DocTypeDeleteResultVO,
+  DocTypeDetailVO,
+  DocTypeRevisionSummaryVO,
+  DocTypeSummaryVO,
+  DocTypeSyncResultVO,
+  DocTypeUpdateVO,
   ItemsResponse,
   LLMConfigVO,
   LLMProbeResultVO,
   ModelTier,
   ProbeLLMConfigPayload,
+  ToggleDocTypeStatusPayload,
+  UpdateDocTypePayload,
   UpdateLLMConfigPayload,
 } from '../types';
 import { apiRequest } from './client';
@@ -30,5 +40,73 @@ export async function probeLLMConfig(
   return apiRequest<LLMProbeResultVO>(`/admin/llm-configs/${tier}/probe`, {
     method: 'POST',
     bodyData: payload,
+  });
+}
+
+// ─── DocType 管理员全生命周期 API (F-03 W2) ───
+
+export async function listAdminDocTypes(activeOnly = false): Promise<DocTypeSummaryVO[]> {
+  const query = activeOnly ? '?active_only=true' : '';
+  const res = await apiRequest<ItemsResponse<DocTypeSummaryVO>>(`/doc-types${query}`);
+  return Array.isArray(res.items) ? res.items : [];
+}
+
+export async function getDocTypeDetail(slug: string): Promise<DocTypeDetailVO> {
+  return apiRequest<DocTypeDetailVO>(`/doc-types/${encodeURIComponent(slug)}`);
+}
+
+export async function listDocTypeRevisions(slug: string): Promise<DocTypeRevisionSummaryVO[]> {
+  const res = await apiRequest<ItemsResponse<DocTypeRevisionSummaryVO>>(
+    `/doc-types/${encodeURIComponent(slug)}/revisions`,
+  );
+  return Array.isArray(res.items) ? res.items : [];
+}
+
+export async function createDocType(payload: CreateDocTypePayload): Promise<DocTypeDetailVO> {
+  return apiRequest<DocTypeDetailVO>('/admin/doc-types', {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
+export async function cloneDocType(
+  slug: string,
+  payload: CloneDocTypePayload,
+): Promise<DocTypeDetailVO> {
+  return apiRequest<DocTypeDetailVO>(`/admin/doc-types/${encodeURIComponent(slug)}/clone`, {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
+export async function updateDocType(
+  slug: string,
+  payload: UpdateDocTypePayload,
+): Promise<DocTypeUpdateVO> {
+  return apiRequest<DocTypeUpdateVO>(`/admin/doc-types/${encodeURIComponent(slug)}`, {
+    method: 'PUT',
+    bodyData: payload,
+  });
+}
+
+export async function toggleDocTypeStatus(
+  slug: string,
+  payload: ToggleDocTypeStatusPayload,
+): Promise<DocTypeDetailVO> {
+  return apiRequest<DocTypeDetailVO>(`/admin/doc-types/${encodeURIComponent(slug)}/status`, {
+    method: 'PATCH',
+    bodyData: payload,
+  });
+}
+
+export async function deleteDocType(slug: string): Promise<DocTypeDeleteResultVO> {
+  return apiRequest<DocTypeDeleteResultVO>(`/admin/doc-types/${encodeURIComponent(slug)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function syncDocTypes(): Promise<DocTypeSyncResultVO> {
+  return apiRequest<DocTypeSyncResultVO>('/admin/doc-types/sync', {
+    method: 'POST',
   });
 }

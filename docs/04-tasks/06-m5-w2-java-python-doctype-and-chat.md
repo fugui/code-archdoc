@@ -54,6 +54,6 @@
 
 ## 4. 自动化验收标准与执行命令 (Acceptance Criteria)
 
-- [ ] **AC-M5-01**：`make eval-baseline` 覆盖 C/C++/Proto + Java + Python 全部夹具并 100% 达标。
-- [ ] **AC-M5-02**：`TEST_DB_DSN=... make test` 与 `make lint-arch` 全绿，`SC-05`、`SC-08` 自动化测试全部通过。
-- [ ] **AC-M5-03**：`make lint && make build` 零错误通过，前端 `AdminDocTypesPage` 与 `ChatRefineTab` 在亮/暗双主题下无硬编码色值、零 `any`。
+- [x] **AC-M5-01**：`make eval-baseline` 覆盖 C/C++/Proto + Java + Python 全部夹具并 100% 达标。
+- [x] **AC-M5-02**：`TEST_DB_DSN=... make test` 与 `make lint-arch` 全绿，`SC-05`、`SC-08` 自动化测试全部通过。
+- [x] **AC-M5-03**：`make lint && make build` 零错误通过，前端 `AdminDocTypesPage` 与 `ChatRefineTab` 在亮/暗双主题下无硬编码色值、零 `any`。

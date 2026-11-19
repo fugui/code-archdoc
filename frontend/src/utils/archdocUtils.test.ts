@@ -11,6 +11,7 @@ import {
 } from './urlQuery.ts';
 import { ArchdocApiError, formatApiError, formatTaskErrorCode } from './errorMessages.ts';
 import { isSafeLinkHref, parseMarkdownBlocks } from './markdown.ts';
+import { parseChatSSEBlock } from './sseParser.ts';
 
 describe('URL Search Params 分页与筛选序列化/反序列化 (Verification Checklist §3.2.1)', () => {
   it('默认回退 page=1、pageSize=25 且正确解析全部筛选参数', () => {
@@ -215,5 +216,29 @@ describe('安全 Markdown AST 解析器与 XSS 链接拦截', () => {
       }
     }
     assert.equal(blocks[2].type, 'mermaid');
+  });
+});
+
+describe('SSE Chat 局部精修帧解析器 (T-M5-05)', () => {
+  it('正确解析 meta / delta / diff_proposal / verifier_preview / done / error 帧并忽略非法帧', () => {
+    const meta = parseChatSSEBlock(
+      'event: meta\ndata: {"session_id":12,"message_id":88,"slot_id":"core_request_flows","base_revision_no":4,"model_tier":"flagship"}',
+    );
+    assert.ok(meta && meta.event === 'meta');
+    assert.equal(meta.data.message_id, 88);
+
+    const delta = parseChatSSEBlock('event: delta\ndata: {"text":"补充重试逻辑"}');
+    assert.ok(delta && delta.event === 'delta');
+    assert.equal(delta.data.text, '补充重试逻辑');
+
+    const preview = parseChatSSEBlock(
+      'event: verifier_preview\ndata: {"can_approve":true,"blocker_count":0,"error_count":0,"warning_count":1,"issues":[{"kind":"unverified_ref","severity":"warning","message":"未验证符号"}]}',
+    );
+    assert.ok(preview && preview.event === 'verifier_preview');
+    assert.equal(preview.data.warning_count, 1);
+
+    assert.equal(parseChatSSEBlock(': keepalive comment'), null);
+    assert.equal(parseChatSSEBlock('event: unknown\ndata: {}'), null);
+    assert.equal(parseChatSSEBlock('event: delta\ndata: not-json'), null);
   });
 });

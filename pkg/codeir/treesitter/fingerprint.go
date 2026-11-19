@@ -27,7 +27,7 @@ func collectNormalizedTokens(node *tree_sitter.Node, src []byte, out *[]string) 
 		return
 	}
 	kind := node.Kind()
-	if kind == "comment" {
+	if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
 		return
 	}
 	childCount := node.ChildCount()

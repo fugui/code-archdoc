@@ -5,6 +5,7 @@ import {
   Code2,
   Edit3,
   Lock,
+  MessageSquareText,
   Sparkles,
   UserCog,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ export interface SectionCardProps {
   onReloadDocument: () => Promise<void>;
   onInspectEvidence: (anchor: EvidenceAnchor) => void;
   onInspectEvidenceLink: (params: { docId: number } & EvidenceDeepLinkParams) => void;
+  onOpenChatRefine?: (slotId: string) => void;
 }
 
 const OWNERSHIP_OPTIONS: Array<{ value: SectionOwnership; label: string; title: string }> = [
@@ -46,6 +48,7 @@ export const SectionCard: React.FC<SectionCardProps> = ({
   onReloadDocument,
   onInspectEvidence,
   onInspectEvidenceLink,
+  onOpenChatRefine,
 }) => {
   const [editing, setEditing] = useState<boolean>(false);
   const [updatingOwn, setUpdatingOwn] = useState<boolean>(false);
@@ -133,6 +136,23 @@ export const SectionCard: React.FC<SectionCardProps> = ({
               );
             })}
           </div>
+
+          {canWrite && !editing && onOpenChatRefine && (
+            <button
+              type="button"
+              className="btn btn-outline btn-small"
+              disabled={section.ownership === 'locked'}
+              onClick={() => onOpenChatRefine(section.slot_id)}
+              title={
+                section.ownership === 'locked'
+                  ? '已锁定章节不可执行 AI 精修，请先切换所有权或改用手工直编'
+                  : '在右侧面板针对当前章节发起 SSE Chat 局部精修'
+              }
+            >
+              <MessageSquareText size={13} />
+              <span>Chat 精修</span>
+            </button>
+          )}
 
           {canWrite && !editing && (
             <button

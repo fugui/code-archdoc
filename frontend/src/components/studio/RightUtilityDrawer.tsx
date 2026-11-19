@@ -1,27 +1,32 @@
 import React from 'react';
-import { Code2, History, X } from 'lucide-react';
+import { Code2, History, MessageSquareText, X } from 'lucide-react';
 import type { DocumentDetailVO } from '../../types';
+import ChatRefineTab from './ChatRefineTab';
 import EvidenceSourceTab, { type EvidenceInspectRequest } from './EvidenceSourceTab';
 import RevisionHistoryTab from './RevisionHistoryTab';
 
-export type RightDrawerTab = 'evidence' | 'history';
+export type RightDrawerTab = 'evidence' | 'history' | 'chat';
 
 export interface RightUtilityDrawerProps {
   activeTab: RightDrawerTab;
   doc: DocumentDetailVO | null;
   evidenceRequest: EvidenceInspectRequest | null;
+  chatTargetSlotId?: string;
   onChangeTab: (tab: RightDrawerTab) => void;
   onClose: () => void;
   onRolledBack: (updatedDoc: DocumentDetailVO) => void;
+  onReloadDocument: () => Promise<void>;
 }
 
 export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
   activeTab,
   doc,
   evidenceRequest,
+  chatTargetSlotId,
   onChangeTab,
   onClose,
   onRolledBack,
+  onReloadDocument,
 }) => {
   return (
     <aside className="code-archdoc-studio-right">
@@ -52,6 +57,19 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
             <History size={14} />
             <span>修订历史</span>
           </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'chat'}
+            className={`code-archdoc-right-tab ${
+              activeTab === 'chat' ? 'code-archdoc-right-tab--active' : ''
+            }`}
+            onClick={() => onChangeTab('chat')}
+          >
+            <MessageSquareText size={14} />
+            <span>Chat 精修</span>
+          </button>
         </div>
 
         <button
@@ -68,6 +86,15 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
       <div className="code-archdoc-right-body">
         {activeTab === 'evidence' ? (
           <EvidenceSourceTab request={evidenceRequest} />
+        ) : activeTab === 'chat' ? (
+          doc ? (
+            <ChatRefineTab
+              doc={doc}
+              initialSlotId={chatTargetSlotId}
+              onDocumentUpdated={onRolledBack}
+              onReloadDocument={onReloadDocument}
+            />
+          ) : null
         ) : doc ? (
           <RevisionHistoryTab doc={doc} onRolledBack={onRolledBack} />
         ) : null}

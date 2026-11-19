@@ -19,6 +19,7 @@ type AppHandlers struct {
 	revSvc     *services.RevisionService
 	previewSvc *services.SourcePreviewService
 	publishSvc *services.PublishService
+	chatSvc    *services.ChatService
 }
 
 // NewAppHandlers 构造处理器聚合对象。
@@ -47,6 +48,12 @@ func (h *AppHandlers) WithDocumentServices(
 	h.revSvc = revSvc
 	h.previewSvc = previewSvc
 	h.publishSvc = publishSvc
+	return h
+}
+
+// WithChatService 注入 SSE Chat 局部协同精修服务（M5）。
+func (h *AppHandlers) WithChatService(chatSvc *services.ChatService) *AppHandlers {
+	h.chatSvc = chatSvc
 	return h
 }
 
@@ -113,6 +120,14 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.GET("/documents/:id/source-preview", h.GetSourcePreview)
 		}
 
+		// 域 5：SSE Chat 局部协同精修与 Accept/Reject 状态机 (F-09 W2)
+		if h.revSvc != nil && h.chatSvc != nil {
+			protected.GET("/documents/:id/chat/sessions", h.ListChatSessions)
+			protected.POST("/documents/:id/chat/refine", h.StreamChatRefine)
+			protected.POST("/documents/:id/chat/messages/:msg_id/accept", h.AcceptChatProposal)
+			protected.POST("/documents/:id/chat/messages/:msg_id/reject", h.RejectChatProposal)
+		}
+
 		// 域 6：定稿发布、一键撤回与 Markdown/ZIP 导出 (F-11)
 		if h.revSvc != nil && h.publishSvc != nil {
 			protected.POST("/documents/:id/publish", h.PublishDocument)
@@ -125,6 +140,16 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 		admin := protected.Group("/admin")
 		admin.Use(commonAuth.RequireAdmin(config.AdminRole))
 		{
+			// 域 2：DocType 管理员全生命周期写操作 (F-03 W2)
+			if h.docTypeSvc != nil {
+				admin.POST("/doc-types", h.CreateDocType)
+				admin.POST("/doc-types/sync", h.SyncDocTypes)
+				admin.POST("/doc-types/:slug/clone", h.CloneDocType)
+				admin.PUT("/doc-types/:slug", h.UpdateDocType)
+				admin.PATCH("/doc-types/:slug/status", h.ToggleDocTypeStatus)
+				admin.DELETE("/doc-types/:slug", h.DeleteDocType)
+			}
+
 			// 域 9：OpenAI Compatible 分层 LLM 配置管理与探活 (F-14)
 			admin.GET("/llm-configs", h.ListLLMConfigs)
 			admin.PUT("/llm-configs/:tier", h.UpdateLLMConfig)

@@ -287,6 +287,69 @@ export interface DocTypeDetailVO extends DocTypeSummaryVO {
   latest_revision: DocTypeRevisionSummaryVO | null;
 }
 
+export interface DocTypeUpdateVO extends DocTypeDetailVO {
+  revision_created: boolean;
+}
+
+export interface DocTypeSyncResultVO {
+  synced_count: number;
+  new_revisions: number;
+  slugs: string[];
+}
+
+export interface DocTypeDeleteResultVO {
+  deleted: boolean;
+  slug: string;
+}
+
+export interface ChatVerifierIssueVO {
+  kind: string;
+  severity: string;
+  message: string;
+  slot_id?: string;
+}
+
+export interface ChatVerifierPreviewVO {
+  can_approve: boolean;
+  blocker_count: number;
+  error_count: number;
+  warning_count: number;
+  issues: ChatVerifierIssueVO[];
+}
+
+export interface ChatMessageVO {
+  id: number;
+  session_id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  target_slot_id: string;
+  base_revision_no: number;
+  proposed_before_md: string;
+  proposed_after_md: string;
+  unified_diff: string;
+  verifier_preview?: ChatVerifierPreviewVO | null;
+  proposal_status: ProposalStatus;
+  applied_revision_id?: number | null;
+  model_tier: string;
+  created_at: string;
+}
+
+export interface ChatSessionWithMessagesVO {
+  id: number;
+  document_id: number;
+  target_slot_id: string;
+  title: string;
+  created_by: number;
+  created_at: string;
+  updated_at: string;
+  messages: ChatMessageVO[];
+}
+
+export interface ChatRejectResultVO {
+  message_id: number;
+  proposal_status: ProposalStatus;
+}
+
 export interface BudgetDirectoryItem {
   path: string;
   estimated_tokens: number;

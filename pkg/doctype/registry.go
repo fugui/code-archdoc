@@ -11,8 +11,6 @@ import (
 	"sync"
 
 	"code-archdoc/pkg/sandbox"
-
-	"github.com/google/uuid"
 )
 
 // AssetBundle 表示从 doc_types/<slug>/ 目录加载的完整不可变资产快照。
@@ -162,103 +160,4 @@ func (r *Registry) LoadAll() ([]*AssetBundle, error) {
 		bundles = append(bundles, b)
 	}
 	return bundles, nil
-}
-
-// WriteAssetAtomic 持 slug 锁校验并原子写盘（tmp + fsync + rename），供 W2 在线管理与单测复用。
-func (r *Registry) WriteAssetAtomic(slug string, meta Meta, templateMD, genPromptMD, refinePromptMD string) (*AssetBundle, error) {
-	if err := ValidateSlug(slug); err != nil {
-		return nil, err
-	}
-	if err := meta.Validate(slug); err != nil {
-		return nil, err
-	}
-	if err := ValidateTemplateSlots(templateMD, meta.Slots); err != nil {
-		return nil, err
-	}
-
-	mu := r.lockSlug(slug)
-	mu.Lock()
-	defer mu.Unlock()
-
-	dirPath, err := sandbox.SafeJoin(r.rootDir, slug)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(dirPath, 0750); err != nil {
-		return nil, err
-	}
-
-	metaBytes, err := meta.MarshalPrettyJSON()
-	if err != nil {
-		return nil, err
-	}
-
-	toWrite := map[string][]byte{
-		"meta.json":            metaBytes,
-		"template.md":          NormalizeCRLFToLF([]byte(templateMD)),
-		"generation_prompt.md": NormalizeCRLFToLF([]byte(genPromptMD)),
-		"refine_prompt.md":     NormalizeCRLFToLF([]byte(refinePromptMD)),
-	}
-	for _, name := range OrderedAssetFiles {
-		fp, joinErr := sandbox.SafeJoin(dirPath, name)
-		if joinErr != nil {
-			return nil, joinErr
-		}
-		if err := atomicWriteAssetFile(fp, toWrite[name]); err != nil {
-			return nil, err
-		}
-	}
-
-	return r.loadOneUnlocked(slug)
-}
-
-// DeleteDirectory 持 slug 锁安全删除 doc_types/<slug>/ 目录。
-func (r *Registry) DeleteDirectory(slug string) error {
-	if err := ValidateSlug(slug); err != nil {
-		return err
-	}
-	mu := r.lockSlug(slug)
-	mu.Lock()
-	defer mu.Unlock()
-
-	dirPath, err := sandbox.SafeJoin(r.rootDir, slug)
-	if err != nil {
-		return err
-	}
-	return os.RemoveAll(dirPath)
-}
-
-func atomicWriteAssetFile(finalPath string, data []byte) error {
-	dir := filepath.Dir(finalPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return err
-	}
-	tmpPath := filepath.Join(dir, ".tmp-"+filepath.Base(finalPath)+"-"+uuid.NewString())
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0640)
-	if err != nil {
-		return err
-	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Cpu, FolderGit2, LogOut, Moon, Sun } from 'lucide-react';
+import { Cpu, FileText, FolderGit2, LogOut, Moon, Sun } from 'lucide-react';
 import {
   AUTH_TOKEN_KEY,
   ConfirmProvider,
@@ -19,6 +19,7 @@ import {
   MODULE_TITLE,
 } from './constants';
 import { ModuleUserProvider, useModuleUser } from './context/ModuleUserContext';
+import AdminDocTypesPage from './pages/AdminDocTypesPage';
 import AdminLLMConfigPage from './pages/AdminLLMConfigPage';
 import CanvasStudioPage from './pages/CanvasStudioPage';
 import RepoCoveragePage from './pages/RepoCoveragePage';
@@ -65,6 +66,9 @@ const EmbeddedRoutes: React.FC = () => {
       <Route path="/admin/llm" element={<AdminLLMConfigPage />} />
       <Route path={`${MODULE_BASE_PATH}/admin/llm`} element={<AdminLLMConfigPage />} />
 
+      <Route path="/admin/doc-types" element={<AdminDocTypesPage />} />
+      <Route path={`${MODULE_BASE_PATH}/admin/doc-types`} element={<AdminDocTypesPage />} />
+
       <Route path="*" element={<Navigate to={defaultTarget} replace />} />
     </Routes>
   );
@@ -99,12 +103,15 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const isRepos = pathname === '/' || pathname.startsWith('/repos');
   const isStudio = pathname.startsWith('/studio') || pathname.startsWith('/docs/');
   const isAdminLLM = pathname.startsWith('/admin/llm');
+  const isAdminDocTypes = pathname.startsWith('/admin/doc-types');
 
-  const topbarTitle = isAdminLLM
-    ? 'LLM 模型配置与探活'
-    : isStudio
-      ? 'Canvas Studio 协同审校工作台'
-      : '仓库与文档覆盖矩阵';
+  const topbarTitle = isAdminDocTypes
+    ? '文档类型管理 (DocType 注册表)'
+    : isAdminLLM
+      ? 'LLM 模型配置与探活'
+      : isStudio
+        ? 'Canvas Studio 协同审校工作台'
+        : '仓库与文档覆盖矩阵';
 
   return (
     <div className="code-archdoc-shell">
@@ -142,6 +149,15 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               >
                 <Cpu size={17} />
                 <span>LLM 模型配置</span>
+              </Link>
+              <Link
+                to="/admin/doc-types"
+                className={`code-archdoc-nav-link ${
+                  isAdminDocTypes ? 'code-archdoc-nav-link--active' : ''
+                }`}
+              >
+                <FileText size={17} />
+                <span>文档类型管理</span>
               </Link>
             </div>
           )}
@@ -181,6 +197,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             <Route path="/studio/:repoId/docs/:docId" element={<CanvasStudioPage />} />
             <Route path="/docs/:docId/evidence" element={<CanvasStudioPage evidenceDeepLink />} />
             <Route path="/admin/llm" element={<AdminLLMConfigPage />} />
+            <Route path="/admin/doc-types" element={<AdminDocTypesPage />} />
             <Route path="*" element={<Navigate to="/repos" replace />} />
           </Routes>
         </div>

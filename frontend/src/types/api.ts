@@ -1,7 +1,10 @@
 import type {
+  FacetName,
+  ModelTier,
   RepoScopeFilter,
   RepoStatusFilter,
   SectionOwnership,
+  SlotDefinition,
 } from './domain';
 
 export type ArchdocErrorCode =
@@ -108,6 +111,48 @@ export interface ProbeLLMConfigPayload {
   base_url?: string;
   model_name?: string;
   api_key?: string;
+}
+
+export interface CreateDocTypePayload {
+  slug: string;
+  display_name: string;
+  description: string;
+  is_active?: boolean;
+  model_tier: ModelTier;
+  timeout_seconds: number;
+  max_output_tokens?: number;
+  ir_facets: FacetName[];
+  slots: SlotDefinition[];
+  template_md: string;
+  generation_prompt_md: string;
+  refine_prompt_md: string;
+}
+
+export interface CloneDocTypePayload {
+  new_slug: string;
+  display_name: string;
+}
+
+export interface UpdateDocTypePayload {
+  meta: Record<string, unknown>;
+  template_md: string;
+  generation_prompt_md: string;
+  refine_prompt_md: string;
+}
+
+export interface ToggleDocTypeStatusPayload {
+  is_active: boolean;
+}
+
+export interface ChatRefinePayload {
+  session_id?: number;
+  target_slot_id: string;
+  base_revision_no: number;
+  prompt: string;
+}
+
+export interface AcceptChatProposalPayload {
+  base_revision_no: number;
 }
 
 export interface ItemsResponse<T> {

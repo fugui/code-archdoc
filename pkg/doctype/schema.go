@@ -22,6 +22,8 @@ var (
 	ErrInvalidTemplate = errors.New("DocType template.md 槽位标记不一致")
 	// ErrDocTypeNotFound 表示目标 DocType 目录不存在。
 	ErrDocTypeNotFound = errors.New("DocType 目录不存在")
+	// ErrDocTypeExists 表示目标 DocType 目录已存在（对应 HTTP 409 CONFLICT）。
+	ErrDocTypeExists = errors.New("DocType slug 已存在")
 
 	SlugPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,62}$`)
 	SlotIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{1,48}$`)

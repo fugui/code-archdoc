@@ -22,10 +22,14 @@ func (e *BuildExtractor) SupportedLanguages() []string { return []string{"build"
 func (e *BuildExtractor) CanHandle(relPath string) bool {
 	base := strings.ToLower(path.Base(relPath))
 	switch base {
-	case "cmakelists.txt", "compile_commands.json", "makefile", "gnumakefile", "build", "build.bazel":
+	case "cmakelists.txt", "compile_commands.json", "makefile", "gnumakefile", "build", "build.bazel",
+		"pom.xml", "build.gradle", "build.gradle.kts", "pyproject.toml", "requirements.txt":
 		return true
 	default:
-		return strings.HasSuffix(base, ".cmake")
+		if strings.HasSuffix(base, ".cmake") {
+			return true
+		}
+		return strings.HasPrefix(base, "requirements") && strings.HasSuffix(base, ".txt")
 	}
 }
 
@@ -44,6 +48,14 @@ func (e *BuildExtractor) ExtractFile(ctx context.Context, file FileEntry, conten
 		return e.parseMakefile(file.RelPath, string(content)), nil
 	case base == "build" || base == "build.bazel":
 		return e.parseBazel(file.RelPath, string(content)), nil
+	case base == "pom.xml":
+		return e.parseMavenPom(file.RelPath, content), nil
+	case base == "build.gradle" || base == "build.gradle.kts":
+		return e.parseGradle(file.RelPath, string(content)), nil
+	case base == "pyproject.toml":
+		return e.parsePyProjectToml(file.RelPath, string(content)), nil
+	case base == "requirements.txt" || (strings.HasPrefix(base, "requirements") && strings.HasSuffix(base, ".txt")):
+		return e.parseRequirementsTxt(file.RelPath, string(content)), nil
 	default:
 		return &ExtractionResult{}, nil
 	}

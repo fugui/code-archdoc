@@ -60,10 +60,12 @@ func (e *CExtractor) ExtractFile(ctx context.Context, file codeir.FileEntry, con
 	return w.res, nil
 }
 
-// DefaultExtractors 返回 W1 阶段内置的 C/C++ tree-sitter 提取器列表。
+// DefaultExtractors 返回内置的 C/C++/Java/Python tree-sitter 提取器列表。
 func DefaultExtractors() []codeir.LanguageExtractor {
 	return []codeir.LanguageExtractor{
 		NewCppExtractor(),
 		NewCExtractor(),
+		NewJavaExtractor(),
+		NewPythonExtractor(),
 	}
 }

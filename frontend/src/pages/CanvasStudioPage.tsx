@@ -69,10 +69,11 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const [loadError, setLoadError] = useState<{ title: string; message: string } | null>(null);
   const [activeSlotId, setActiveSlotId] = useState<string>('');
 
-  // 右侧辅助抽屉状态（证据查看器 / 修订历史）
+  // 右侧辅助抽屉状态（源码证据 / 修订历史 / Chat 精修）
   const [drawerOpen, setDrawerOpen] = useState<boolean>(evidenceDeepLink);
   const [drawerTab, setDrawerTab] = useState<RightDrawerTab>('evidence');
   const [evidenceRequest, setEvidenceRequest] = useState<EvidenceInspectRequest | null>(null);
+  const [chatTargetSlotId, setChatTargetSlotId] = useState<string>('');
 
   // 操作态
   const [publishing, setPublishing] = useState<boolean>(false);
@@ -382,6 +383,13 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
           setDrawerTab('history');
           setDrawerOpen(true);
         }}
+        onOpenChatRefine={() => {
+          if (activeSlotId) {
+            setChatTargetSlotId(activeSlotId);
+          }
+          setDrawerTab('chat');
+          setDrawerOpen(true);
+        }}
         onRegenerate={() => setGenModalOpen(true)}
         onPublish={() => void handlePublish()}
         onUnpublish={() => void handleUnpublish()}
@@ -470,6 +478,12 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
                   onReloadDocument={loadStudioData}
                   onInspectEvidence={handleInspectEvidence}
                   onInspectEvidenceLink={handleInspectEvidenceLink}
+                  onOpenChatRefine={(slotId) => {
+                    setActiveSlotId(slotId);
+                    setChatTargetSlotId(slotId);
+                    setDrawerTab('chat');
+                    setDrawerOpen(true);
+                  }}
                 />
               ))}
 
@@ -488,9 +502,11 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
             activeTab={drawerTab}
             doc={doc}
             evidenceRequest={evidenceRequest}
+            chatTargetSlotId={chatTargetSlotId}
             onChangeTab={setDrawerTab}
             onClose={() => setDrawerOpen(false)}
             onRolledBack={(updatedDoc) => setDoc(updatedDoc)}
+            onReloadDocument={loadStudioData}
           />
         )}
       </div>

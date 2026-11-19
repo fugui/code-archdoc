@@ -89,11 +89,13 @@ func main() {
 	taskStore := models.NewTaskStore(models.DB)
 	driftStore := models.NewDriftStore(models.DB)
 	govStore := models.NewGovernanceStore(models.DB)
+	chatStore := models.NewChatStore(models.DB)
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
 	llmSvc := services.NewLLMConfigService(govStore, keyCipher)
-	docTypeSvc := services.NewDocTypeService(docTypeRegistry, docTypeStore)
+	docTypeSvc := services.NewDocTypeService(docTypeRegistry, docTypeStore).
+		WithSpecDriftNotifier(docStore, driftStore)
 
 	// 启动幂等 Seed 内置 5 类 DocType 并同步至数据库索引（AC-M2-04）
 	syncRes, err := docTypeSvc.SeedAndSyncAll(context.Background())
@@ -129,9 +131,11 @@ func main() {
 	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, irAggregator, config.AppConfig.Storage.SandboxDir())
 	publishSvc := services.NewPublishService(docStore, docTypeStore, masterStore, govStore, publishSink)
+	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, keyCipher, llmClient)
 
 	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, genSvc).
-		WithDocumentServices(revSvc, previewSvc, publishSvc)
+		WithDocumentServices(revSvc, previewSvc, publishSvc).
+		WithChatService(chatSvc)
 
 	// 7. 基于 code-common/backend/server 启动服务（自动处理 /<ModuleKey> 网关前缀剥离与前端静态产物内嵌托管）
 	// TODO(security): 若独立直接暴露于公网环境，请在网关层配置严格 CORS 白名单与全局 API 速率限制

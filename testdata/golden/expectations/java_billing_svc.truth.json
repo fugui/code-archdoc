@@ -1,0 +1,59 @@
+{
+  "fixture_name": "java_billing_svc",
+  "expected_files": [
+    "pom.xml",
+    "src/main/java/com/acme/billing/controller/BillingController.java",
+    "src/main/java/com/acme/billing/job/BillingReconcileJob.java",
+    "src/main/java/com/acme/billing/mapper/InvoiceMapper.java",
+    "src/main/java/com/acme/billing/model/InvoiceEntity.java",
+    "src/main/resources/application.properties"
+  ],
+  "forbidden_files": [
+    "target/ignored_artifact.java"
+  ],
+  "expected_build_systems": ["maven"],
+  "expected_targets": ["billing-service"],
+  "expected_deps": [
+    {"name": "org.springframework.boot:spring-boot-starter-web", "version": "3.3.2", "scope": "compile"},
+    {"name": "org.springframework.boot:spring-boot-starter-data-jpa", "version": "3.3.2", "scope": "compile"},
+    {"name": "org.mybatis.spring.boot:mybatis-spring-boot-starter", "version": "3.0.3", "scope": "compile"},
+    {"name": "org.junit.jupiter:junit-jupiter", "version": "5.10.2", "scope": "test"}
+  ],
+  "expected_routes": [
+    {"method": "GET", "path": "/api/v1/billing/invoices/{id}", "handler_fq_symbol": "com.acme.billing.controller.BillingController.getInvoice", "framework": "spring"},
+    {"method": "POST", "path": "/api/v1/billing/invoices", "handler_fq_symbol": "com.acme.billing.controller.BillingController.createInvoice", "framework": "spring"},
+    {"method": "PUT", "path": "/api/v1/billing/invoices/{id}/settle", "handler_fq_symbol": "com.acme.billing.controller.BillingController.settleInvoice", "framework": "spring"},
+    {"method": "DELETE", "path": "/api/v1/billing/invoices/{id}", "handler_fq_symbol": "com.acme.billing.controller.BillingController.cancelInvoice", "framework": "spring"},
+    {"method": "GET", "path": "/api/v1/billing/summary", "handler_fq_symbol": "com.acme.billing.controller.BillingController.getSummary", "framework": "spring"}
+  ],
+  "expected_data_models": [
+    {
+      "entity_name": "InvoiceEntity",
+      "table": "billing_invoices",
+      "fields": ["invoice_id", "invoice_no", "amount_cents", "status"]
+    },
+    {
+      "entity_name": "InvoiceMapper",
+      "table": "billing_ledger",
+      "fields": []
+    }
+  ],
+  "expected_schedulers": [
+    {"category": "scheduler", "api_name": "@Scheduled", "enclosing_fq_symbol": "com.acme.billing.job.BillingReconcileJob.reconcileDailyInvoices"},
+    {"category": "scheduler", "api_name": "@Scheduled", "enclosing_fq_symbol": "com.acme.billing.job.BillingReconcileJob.retryFailedSettlements"}
+  ],
+  "expected_symbols": [
+    "com.acme.billing.controller.BillingController",
+    "com.acme.billing.controller.BillingController.getInvoice",
+    "com.acme.billing.controller.BillingController.createInvoice",
+    "com.acme.billing.model.InvoiceEntity",
+    "com.acme.billing.mapper.InvoiceMapper",
+    "com.acme.billing.mapper.InvoiceMapper.findByInvoiceNo",
+    "com.acme.billing.job.BillingReconcileJob",
+    "com.acme.billing.job.BillingReconcileJob.reconcileDailyInvoices"
+  ],
+  "forbidden_secrets": [
+    "JavaBillingSecret998!",
+    "sk-java-live-secret-1234567890abcdef"
+  ]
+}

@@ -1025,6 +1025,24 @@ func (s *ChatStore) CreateMessage(ctx context.Context, msg *ChatMessage) error {
 	return s.db.WithContext(ctx).Create(msg).Error
 }
 
+func (s *ChatStore) UpdateMessage(ctx context.Context, msg *ChatMessage) error {
+	return s.db.WithContext(ctx).Save(msg).Error
+}
+
+func (s *ChatStore) DeleteMessage(ctx context.Context, msgID uint) error {
+	return s.db.WithContext(ctx).Delete(&ChatMessage{}, msgID).Error
+}
+
+func (s *ChatStore) TouchSession(ctx context.Context, sessionID uint, title string) error {
+	updates := map[string]any{
+		"updated_at": time.Now(),
+	}
+	if title != "" {
+		updates["title"] = title
+	}
+	return s.db.WithContext(ctx).Model(&ChatSession{}).Where("id = ?", sessionID).Updates(updates).Error
+}
+
 func (s *ChatStore) GetMessage(ctx context.Context, docID, msgID uint) (*ChatMessage, error) {
 	var msg ChatMessage
 	err := s.db.WithContext(ctx).

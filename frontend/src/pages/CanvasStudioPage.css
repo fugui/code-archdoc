@@ -1131,3 +1131,264 @@
     border-bottom: 1px solid var(--color-border-subtle);
   }
 }
+
+/* ── W2 SSE Chat 局部精修与 DiffProposalCard 样式 ── */
+.code-archdoc-chat-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 0.75rem;
+}
+
+.code-archdoc-chat-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.code-archdoc-chat-control-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.code-archdoc-chat-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-chat-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.code-archdoc-chat-session-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.code-archdoc-chat-locked-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.code-archdoc-chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-right: 0.2rem;
+}
+
+.code-archdoc-chat-empty {
+  margin: auto 0;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-chat-empty-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-chat-empty-desc {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-chat-bubble {
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.code-archdoc-chat-bubble--user {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary-border);
+}
+
+.code-archdoc-chat-bubble--assistant {
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-primary);
+}
+
+.code-archdoc-chat-bubble--streaming {
+  border-style: dashed;
+  border-color: var(--color-primary);
+}
+
+.code-archdoc-chat-bubble-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-chat-bubble-text {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.code-archdoc-chat-stream-pre {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-muted);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.code-archdoc-chat-usage {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.code-archdoc-chat-input {
+  resize: vertical;
+  min-height: 70px;
+}
+
+.code-archdoc-chat-composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.code-archdoc-chat-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+/* ── DiffProposalCard ── */
+.code-archdoc-proposal-card {
+  margin-top: 0.25rem;
+}
+
+.code-archdoc-proposal-head-left {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.code-archdoc-proposal-title {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-proposal-verifier {
+  padding: 0.45rem 0.65rem;
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.code-archdoc-proposal-verifier-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-proposal-issues {
+  margin: 0;
+  padding-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.74rem;
+}
+
+.code-archdoc-proposal-issue {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-proposal-issue--blocker,
+.code-archdoc-proposal-issue--error {
+  color: var(--color-danger);
+}
+
+.code-archdoc-proposal-issue--warning {
+  color: var(--color-warning);
+}
+
+.code-archdoc-proposal-conflict {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.65rem;
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 0.75rem;
+}
+
+.code-archdoc-proposal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  padding: 0.55rem 0.65rem;
+  background: var(--color-bg-muted);
+  border-top: 1px solid var(--color-border-subtle);
+}

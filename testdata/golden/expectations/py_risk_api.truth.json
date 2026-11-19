@@ -1,0 +1,61 @@
+{
+  "fixture_name": "py_risk_api",
+  "expected_files": [
+    "app/api/risk_routes.py",
+    "app/models/risk_models.py",
+    "app/tasks/risk_jobs.py",
+    "config/risk.env",
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "forbidden_files": [
+    "__pycache__/ignored.py"
+  ],
+  "expected_build_systems": ["pip", "poetry"],
+  "expected_targets": ["py-risk-api"],
+  "expected_deps": [
+    {"name": "fastapi", "version": "^0.115.0", "scope": "compile"},
+    {"name": "sqlalchemy", "version": "^2.0.35", "scope": "compile"},
+    {"name": "celery", "version": "^5.4.0", "scope": "compile"},
+    {"name": "pytest", "version": "^8.3.3", "scope": "test"},
+    {"name": "flask", "version": "==3.0.3", "scope": "compile"},
+    {"name": "apscheduler", "version": ">=3.10.4", "scope": "compile"},
+    {"name": "pydantic", "version": "==2.9.2", "scope": "compile"}
+  ],
+  "expected_routes": [
+    {"method": "GET", "path": "/api/v1/risk/score/{user_id}", "handler_fq_symbol": "app.api.risk_routes.get_user_risk_score", "framework": "fastapi"},
+    {"method": "POST", "path": "/api/v1/risk/evaluate", "handler_fq_symbol": "app.api.risk_routes.evaluate_transaction", "framework": "fastapi"},
+    {"method": "GET", "path": "/healthz", "handler_fq_symbol": "app.api.risk_routes.health_check", "framework": "flask"},
+    {"method": "POST", "path": "/webhook/alert", "handler_fq_symbol": "app.api.risk_routes.receive_alert", "framework": "flask"}
+  ],
+  "expected_data_models": [
+    {
+      "entity_name": "RiskEvent",
+      "table": "risk_events",
+      "fields": ["id", "user_id", "score", "decision"]
+    },
+    {
+      "entity_name": "BlacklistRule",
+      "table": "risk_blacklist_rules",
+      "fields": ["rule_code", "enabled"]
+    }
+  ],
+  "expected_schedulers": [
+    {"category": "scheduler", "api_name": "celery.task", "enclosing_fq_symbol": "app.tasks.risk_jobs.recompute_scores"},
+    {"category": "scheduler", "api_name": "celery.shared_task", "enclosing_fq_symbol": "app.tasks.risk_jobs.sync_blacklist_cache"},
+    {"category": "scheduler", "api_name": "apscheduler.scheduled_job", "enclosing_fq_symbol": "app.tasks.risk_jobs.sweep_expired_events"}
+  ],
+  "expected_symbols": [
+    "app.api.risk_routes.get_user_risk_score",
+    "app.api.risk_routes.evaluate_transaction",
+    "app.models.risk_models.RiskEvent",
+    "app.models.risk_models.BlacklistRule",
+    "app.tasks.risk_jobs.recompute_scores",
+    "app.tasks.risk_jobs.sync_blacklist_cache",
+    "app.tasks.risk_jobs.sweep_expired_events"
+  ],
+  "forbidden_secrets": [
+    "PyRiskSecret778!",
+    "ghp_PyRiskSecretToken1234567890abcdef"
+  ]
+}

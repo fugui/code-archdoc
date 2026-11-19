@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Download,
   History,
+  MessageSquareText,
   PanelRightClose,
   PanelRightOpen,
   RotateCcw,
@@ -26,6 +27,7 @@ export interface StudioTopBarProps {
   onBackToRepos: () => void;
   onToggleDrawer: () => void;
   onOpenHistory: () => void;
+  onOpenChatRefine: () => void;
   onRegenerate: () => void;
   onPublish: () => void;
   onUnpublish: () => void;
@@ -59,6 +61,7 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   onBackToRepos,
   onToggleDrawer,
   onOpenHistory,
+  onOpenChatRefine,
   onRegenerate,
   onPublish,
   onUnpublish,
@@ -189,6 +192,18 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
             >
               <CheckCircle2 size={14} />
               <span>{publishing ? '发布中...' : '审批发布'}</span>
+            </button>
+          )}
+
+          {doc?.can_write && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-small"
+              onClick={onOpenChatRefine}
+              title="打开右侧 SSE Chat 局部精修面板"
+            >
+              <MessageSquareText size={14} />
+              <span>Chat 精修</span>
             </button>
           )}
 

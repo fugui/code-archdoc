@@ -1,4 +1,4 @@
-import type { EvidenceAnchor, ModelTier, VerifierReport } from './domain';
+import type { ChatVerifierPreviewVO, EvidenceAnchor, ModelTier } from './domain';
 
 // Chat 精修 SSE 强类型辨识联合（严格对齐 docs/03-api/02-data-model-and-dto-contract.md §6，W2 启用）
 export type ChatRefineSSEEvent =
@@ -31,12 +31,7 @@ export type ChatRefineSSEEvent =
     }
   | {
       event: 'verifier_preview';
-      data: Pick<
-        VerifierReport,
-        'can_approve' | 'blocker_count' | 'error_count' | 'warning_count'
-      > & {
-        issues: unknown[];
-      };
+      data: ChatVerifierPreviewVO;
     }
   | {
       event: 'done';

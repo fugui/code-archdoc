@@ -248,7 +248,10 @@ func sniffBinaryFile(absPath string) (isBin bool, retErr error) {
 
 func detectLanguage(relPOSIX string) string {
 	base := strings.ToLower(filepath.Base(relPOSIX))
-	if base == "cmakelists.txt" || base == "makefile" || base == "build" || base == "build.bazel" || base == "pom.xml" || base == "build.gradle" {
+	if base == "cmakelists.txt" || base == "makefile" || base == "build" || base == "build.bazel" ||
+		base == "pom.xml" || base == "build.gradle" || base == "build.gradle.kts" ||
+		base == "pyproject.toml" || base == "requirements.txt" ||
+		(strings.HasPrefix(base, "requirements") && strings.HasSuffix(base, ".txt")) {
 		return "build"
 	}
 	switch strings.ToLower(filepath.Ext(base)) {

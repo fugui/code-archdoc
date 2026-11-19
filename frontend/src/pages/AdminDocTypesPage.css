@@ -1,0 +1,420 @@
+/* ==========================================================================
+   AdminDocTypesPage & DocTypeEditorDrawer / SlotsSchemaBuilder 样式
+   Flat BEM .code-archdoc-* · 100% --color-* Token · 亮/暗双主题适配
+   ========================================================================== */
+
+.code-archdoc-doctype-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.code-archdoc-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.code-archdoc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.code-archdoc-table th {
+  text-align: left;
+  padding: 0.8rem 1rem;
+  background: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--color-border-primary);
+  white-space: nowrap;
+}
+
+.code-archdoc-table td {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.code-archdoc-table tbody tr:hover {
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-doctype-slug-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-doctype-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-doctype-desc {
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  max-width: 340px;
+}
+
+.code-archdoc-status-toggle-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.code-archdoc-status-toggle-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.code-archdoc-doctype-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.code-archdoc-btn-danger-outline {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.code-archdoc-btn-danger-outline:hover:not(:disabled) {
+  background: var(--color-danger-subtle);
+}
+
+.code-archdoc-btn-danger-text {
+  color: var(--color-danger);
+}
+
+/* ── 编辑器抽屉与标签页 ── */
+.code-archdoc-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.code-archdoc-editor-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-bottom: 1px solid var(--color-border-primary);
+  padding-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-editor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-editor-tab:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-editor-tab--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.code-archdoc-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem 1.1rem;
+}
+
+.code-archdoc-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.code-archdoc-form-field--checkbox {
+  justify-content: flex-end;
+  padding-bottom: 0.35rem;
+}
+
+.code-archdoc-field-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-field-hint {
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-input,
+.code-archdoc-select,
+.code-archdoc-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  font-size: 0.85rem;
+  font-family: inherit;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-input:focus,
+.code-archdoc-select:focus,
+.code-archdoc-textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.code-archdoc-input:disabled {
+  background: var(--color-bg-muted);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.code-archdoc-mono-input {
+  font-family: var(--font-family-mono);
+}
+
+.code-archdoc-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.83rem;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.code-archdoc-facet-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.code-archdoc-facet-chip {
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-facet-chip:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-facet-chip--active {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ── SlotsSchemaBuilder ── */
+.code-archdoc-slots-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.code-archdoc-slots-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-slots-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-slots-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.code-archdoc-slots-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  background: var(--color-bg-muted);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+}
+
+.code-archdoc-slots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.code-archdoc-slot-item {
+  padding: 0.95rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.code-archdoc-slot-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.code-archdoc-slot-item-ops {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.code-archdoc-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem 0.85rem;
+}
+
+.code-archdoc-slot-unlock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.code-archdoc-slot-unlock-btn:hover {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+/* ── 等宽模板与提示词编辑器 ── */
+.code-archdoc-assets-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.code-archdoc-assets-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-subtab {
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-mono);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.code-archdoc-subtab:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-subtab--active {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-assets-sync-btn {
+  margin-left: auto;
+}
+
+.code-archdoc-code-editor {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.code-archdoc-code-editor:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.code-archdoc-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.code-archdoc-drawer-footer-actions,
+.code-archdoc-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.code-archdoc-clone-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}

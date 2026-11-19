@@ -77,6 +77,19 @@ type DocumentRepo interface {
 	MarkUnpublished(ctx context.Context, docID uint) error
 }
 
+// ChatRepo 管理 archdoc_chat_sessions 与 archdoc_chat_messages (W2)
+type ChatRepo interface {
+	GetOrCreateSession(ctx context.Context, docID uint, slotID string, userID uint, sessionID *uint) (*models.ChatSession, error)
+	ListSessionsWithMessages(ctx context.Context, docID uint) ([]models.ChatSession, map[uint][]models.ChatMessage, error)
+	CreateMessage(ctx context.Context, msg *models.ChatMessage) error
+	UpdateMessage(ctx context.Context, msg *models.ChatMessage) error
+	DeleteMessage(ctx context.Context, msgID uint) error
+	TouchSession(ctx context.Context, sessionID uint, title string) error
+	GetMessage(ctx context.Context, docID, msgID uint) (*models.ChatMessage, error)
+	UpdateProposalStatus(ctx context.Context, msgID uint, status string, appliedRevID *uint) error
+	SupersedePendingProposals(ctx context.Context, docID uint, slotID string, exceptMsgID uint) error
+}
+
 // DriftRepo 管理 archdoc_repo_remote_heads 与 archdoc_document_drifts
 type DriftRepo interface {
 	ListRemoteHeadsByRepos(ctx context.Context, repoIDs []uint) ([]models.RepoRemoteHead, error)
