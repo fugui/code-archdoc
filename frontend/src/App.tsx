@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { LayoutDashboard, ListChecks, LogOut, Moon, Settings, Sun } from 'lucide-react';
+import { Cpu, FolderGit2, LogOut, Moon, Sun } from 'lucide-react';
 import {
   AUTH_TOKEN_KEY,
   ConfirmProvider,
@@ -19,13 +19,13 @@ import {
   MODULE_TITLE,
 } from './constants';
 import { ModuleUserProvider, useModuleUser } from './context/ModuleUserContext';
-import AdminSettingsPage from './pages/AdminSettingsPage';
-import DashboardPage from './pages/DashboardPage';
-import ItemListPage from './pages/ItemListPage';
+import AdminLLMConfigPage from './pages/AdminLLMConfigPage';
+import CanvasStudioPage from './pages/CanvasStudioPage';
+import RepoCoveragePage from './pages/RepoCoveragePage';
 import type { CurrentUserProfile } from './types';
 import './index.css';
 
-// 安装全局 fetch 拦截器：在微前端嵌入模式下自动将 /api/* 重写为 /<MODULE_KEY>/api/* 并注入 Bearer Token
+// 在微前端嵌入模式下自动将 /api/* 重写为 /archdoc/api/* 并注入 Bearer Token
 setupFetchInterceptor({ appPrefix: MODULE_BASE_PATH });
 
 export interface AppProps {
@@ -34,28 +34,44 @@ export interface AppProps {
 }
 
 /**
- * 嵌入模式路由视图：无独立侧边栏与顶栏，同时兼容相对子路径与带模块前缀的完整路径
+ * 嵌入模式路由视图：无独立侧边栏与顶栏，同时兼容相对子路径与 /archdoc/* 完整前缀
  */
 const EmbeddedRoutes: React.FC = () => {
-  const defaultTarget = `${MODULE_BASE_PATH}/dashboard`;
+  const defaultTarget = `${MODULE_BASE_PATH}/repos`;
   return (
     <Routes>
       <Route path="/" element={<Navigate to={defaultTarget} replace />} />
       <Route path={MODULE_BASE_PATH} element={<Navigate to={defaultTarget} replace />} />
       <Route path={`${MODULE_BASE_PATH}/`} element={<Navigate to={defaultTarget} replace />} />
-      <Route path="/dashboard" element={<DashboardPage />} />
-      <Route path={`${MODULE_BASE_PATH}/dashboard`} element={<DashboardPage />} />
-      <Route path="/items" element={<ItemListPage />} />
-      <Route path={`${MODULE_BASE_PATH}/items`} element={<ItemListPage />} />
-      <Route path="/admin/settings" element={<AdminSettingsPage />} />
-      <Route path={`${MODULE_BASE_PATH}/admin/settings`} element={<AdminSettingsPage />} />
+
+      <Route path="/repos" element={<RepoCoveragePage />} />
+      <Route path={`${MODULE_BASE_PATH}/repos`} element={<RepoCoveragePage />} />
+
+      <Route path="/studio/:repoId" element={<CanvasStudioPage />} />
+      <Route path={`${MODULE_BASE_PATH}/studio/:repoId`} element={<CanvasStudioPage />} />
+      <Route path="/studio/:repoId/docs/:docId" element={<CanvasStudioPage />} />
+      <Route
+        path={`${MODULE_BASE_PATH}/studio/:repoId/docs/:docId`}
+        element={<CanvasStudioPage />}
+      />
+
+      {/* 门户深链直达入口：承接 code-bench D-03 源码证据跳转 */}
+      <Route path="/docs/:docId/evidence" element={<CanvasStudioPage evidenceDeepLink />} />
+      <Route
+        path={`${MODULE_BASE_PATH}/docs/:docId/evidence`}
+        element={<CanvasStudioPage evidenceDeepLink />}
+      />
+
+      <Route path="/admin/llm" element={<AdminLLMConfigPage />} />
+      <Route path={`${MODULE_BASE_PATH}/admin/llm`} element={<AdminLLMConfigPage />} />
+
       <Route path="*" element={<Navigate to={defaultTarget} replace />} />
     </Routes>
   );
 };
 
 /**
- * 独立调试模式布局外壳：自带简易导航、主题明暗切换器与本地登录守卫，方便脱离宿主独立开发
+ * 独立调试模式布局外壳：自带导航、双模亮/暗主题切换器与本地登录守卫
  */
 const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const location = useLocation();
@@ -63,7 +79,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const { user, loadingUser, reloadUser } = useModuleUser();
 
   if (loadingUser) {
-    return <div className="code-tpl-loading-screen">正在校验登录会话状态...</div>;
+    return <div className="code-archdoc-loading">正在校验登录会话状态...</div>;
   }
 
   if (!user) {
@@ -80,66 +96,67 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }
 
   const pathname = location.pathname;
-  const isDashboard = pathname === '/' || pathname.startsWith('/dashboard');
-  const isItems = pathname.startsWith('/items');
-  const isSettings = pathname.startsWith('/admin/settings');
+  const isRepos = pathname === '/' || pathname.startsWith('/repos');
+  const isStudio = pathname.startsWith('/studio') || pathname.startsWith('/docs/');
+  const isAdminLLM = pathname.startsWith('/admin/llm');
+
+  const topbarTitle = isAdminLLM
+    ? 'LLM 模型配置与探活'
+    : isStudio
+      ? 'Canvas Studio 协同审校工作台'
+      : '仓库与文档覆盖矩阵';
 
   return (
-    <div className="code-tpl-standalone-shell">
-      <aside className="code-tpl-sidebar">
-        <div className="code-tpl-sidebar-brand">
-          <div className="code-tpl-brand-logo">{MODULE_KEY.slice(0, 1).toUpperCase()}</div>
-          <div className="code-tpl-brand-meta">
-            <span className="code-tpl-brand-title">{MODULE_TITLE}</span>
-            <span className="code-tpl-brand-badge">独立开发调试模式</span>
+    <div className="code-archdoc-shell">
+      <aside className="code-archdoc-sidebar">
+        <div className="code-archdoc-sidebar-brand">
+          <div className="code-archdoc-brand-logo">A</div>
+          <div className="code-archdoc-brand-meta">
+            <span className="code-archdoc-brand-title">{MODULE_TITLE}</span>
+            <span className="code-archdoc-brand-badge">独立调试模式</span>
           </div>
         </div>
 
-        <nav className="code-tpl-nav">
-          <div className="code-tpl-nav-group">
-            <div className="code-tpl-nav-group-title">核心业务</div>
+        <nav className="code-archdoc-nav">
+          <div className="code-archdoc-nav-group">
+            <div className="code-archdoc-nav-group-title">核心业务</div>
             <Link
-              to="/dashboard"
-              className={`code-tpl-nav-link ${isDashboard ? 'code-tpl-nav-link--active' : ''}`}
+              to="/repos"
+              className={`code-archdoc-nav-link ${
+                isRepos || isStudio ? 'code-archdoc-nav-link--active' : ''
+              }`}
             >
-              <LayoutDashboard size={17} />
-              <span>概览看板</span>
-            </Link>
-            <Link
-              to="/items"
-              className={`code-tpl-nav-link ${isItems ? 'code-tpl-nav-link--active' : ''}`}
-            >
-              <ListChecks size={17} />
-              <span>示例条目管理</span>
+              <FolderGit2 size={17} />
+              <span>仓库与文档覆盖</span>
             </Link>
           </div>
 
           {user.is_module_admin && (
-            <div className="code-tpl-nav-group">
-              <div className="code-tpl-nav-group-title">模块治理</div>
+            <div className="code-archdoc-nav-group">
+              <div className="code-archdoc-nav-group-title">模块治理</div>
               <Link
-                to="/admin/settings"
-                className={`code-tpl-nav-link ${isSettings ? 'code-tpl-nav-link--active' : ''}`}
+                to="/admin/llm"
+                className={`code-archdoc-nav-link ${
+                  isAdminLLM ? 'code-archdoc-nav-link--active' : ''
+                }`}
               >
-                <Settings size={17} />
-                <span>模块参数配置</span>
+                <Cpu size={17} />
+                <span>LLM 模型配置</span>
               </Link>
             </div>
           )}
         </nav>
       </aside>
 
-      <div className="code-tpl-main-area">
-        <header className="code-tpl-topbar">
-          <h2 className="code-tpl-topbar-title">
-            {isSettings ? '模块参数配置' : isItems ? '示例条目管理' : '概览看板'}
-          </h2>
-          <div className="code-tpl-topbar-actions">
+      <div className="code-archdoc-main">
+        <header className="code-archdoc-topbar">
+          <h2 className="code-archdoc-topbar-title">{topbarTitle}</h2>
+          <div className="code-archdoc-topbar-actions">
             <button
               type="button"
               className="btn btn-secondary btn-small"
               onClick={toggleTheme}
-              title="切换亮色 / 暗黑主题以检验双模视觉兼容性"
+              title="切换亮色 / 暗黑主题以验证双模视觉兼容性"
             >
               {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
               <span>{theme === 'dark' ? '切换亮色' : '切换暗黑'}</span>
@@ -156,15 +173,17 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           </div>
         </header>
 
-        <main className="flex-1">
+        <div className="flex-1">
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/items" element={<ItemListPage />} />
-            <Route path="/admin/settings" element={<AdminSettingsPage />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<Navigate to="/repos" replace />} />
+            <Route path="/repos" element={<RepoCoveragePage />} />
+            <Route path="/studio/:repoId" element={<CanvasStudioPage />} />
+            <Route path="/studio/:repoId/docs/:docId" element={<CanvasStudioPage />} />
+            <Route path="/docs/:docId/evidence" element={<CanvasStudioPage evidenceDeepLink />} />
+            <Route path="/admin/llm" element={<AdminLLMConfigPage />} />
+            <Route path="*" element={<Navigate to="/repos" replace />} />
           </Routes>
-        </main>
+        </div>
       </div>
     </div>
   );
@@ -219,7 +238,6 @@ export const App: React.FC<AppProps> = ({ isEmbedded = false }) => {
     [user, loadingUser, effectiveEmbedded, loadUser],
   );
 
-  // 独立运行模式下自适应识别 Vite base 路径（/<MODULE_KEY>/）或单二进制根路径（/）
   const standaloneBasename = useMemo(() => {
     if (typeof window === 'undefined') return '/';
     const p = window.location.pathname;
@@ -231,7 +249,6 @@ export const App: React.FC<AppProps> = ({ isEmbedded = false }) => {
 
   return (
     <ErrorBoundary title={`${MODULE_TITLE} 运行异常`}>
-      {/* 子应用内部独立挂载 ConfirmProvider 与 ToastProvider，确保模块联邦非共享 Context 始终可用 */}
       <ConfirmProvider>
         <ToastProvider>
           <ModuleUserProvider value={contextValue}>

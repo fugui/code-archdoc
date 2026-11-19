@@ -1,0 +1,1133 @@
+/* ==========================================================================
+   CanvasStudioPage 三段式协同审校工作台样式
+   Flat BEM .code-archdoc-* · 100% --color-* Design Tokens · 双模亮/暗适配
+   ========================================================================== */
+
+.code-archdoc-studio {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 60px);
+  min-height: 620px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-studio--embedded {
+  height: calc(100vh - 56px);
+}
+
+/* ── 顶部工作台工具栏 ── */
+.code-archdoc-studio-topbar {
+  padding: 0.65rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.code-archdoc-studio-topbar-left,
+.code-archdoc-studio-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.code-archdoc-studio-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+}
+
+.code-archdoc-studio-repo-name {
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-studio-doc-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-studio-status-group,
+.code-archdoc-studio-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+/* ── CSS Grid 三段式自适应主体 ── */
+.code-archdoc-studio-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+}
+
+.code-archdoc-studio-grid--with-drawer {
+  grid-template-columns: 252px minmax(0, 1fr) 440px;
+}
+
+/* ── 左侧文档树与章节大纲 ── */
+.code-archdoc-studio-left {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-bg-surface);
+  border-right: 1px solid var(--color-border-subtle);
+  overflow-y: auto;
+}
+
+.code-archdoc-studio-panel-section {
+  padding: 0.85rem 0.75rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-studio-panel-section--grow {
+  flex: 1;
+  border-bottom: none;
+}
+
+.code-archdoc-studio-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.4rem 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-studio-panel-empty {
+  padding: 0.65rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.code-archdoc-doc-tree,
+.code-archdoc-slot-toc {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.code-archdoc-doc-tree-item,
+.code-archdoc-slot-toc-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-doc-tree-item:hover,
+.code-archdoc-slot-toc-item:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-doc-tree-item--active,
+.code-archdoc-slot-toc-item--active {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary-border);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-doc-tree-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.code-archdoc-doc-tree-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.code-archdoc-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.code-archdoc-dot--success {
+  background: var(--color-success);
+}
+
+.code-archdoc-dot--warning {
+  background: var(--color-warning);
+}
+
+.code-archdoc-dot--danger {
+  background: var(--color-danger);
+}
+
+.code-archdoc-text-danger {
+  color: var(--color-danger);
+}
+
+.code-archdoc-text-warning {
+  color: var(--color-warning);
+}
+
+.code-archdoc-own-icon--locked {
+  color: var(--color-orange);
+  flex-shrink: 0;
+}
+
+.code-archdoc-own-icon--hybrid {
+  color: var(--color-purple);
+  flex-shrink: 0;
+}
+
+.code-archdoc-own-icon--auto {
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+/* ── 中央文档画布 ── */
+.code-archdoc-studio-center {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.25rem 1.75rem 3rem;
+}
+
+.code-archdoc-canvas-inner {
+  max-width: 980px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+/* ── Verifier 校验告警横幅 ── */
+.code-archdoc-verifier {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-verifier--danger {
+  border-color: var(--color-danger-border);
+}
+
+.code-archdoc-verifier--warning {
+  border-color: var(--color-warning-border);
+}
+
+.code-archdoc-verifier--success {
+  border-color: var(--color-success-border);
+}
+
+.code-archdoc-verifier-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: none;
+  background: var(--color-bg-muted);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+  text-align: left;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-verifier-header:hover {
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-verifier--danger .code-archdoc-verifier-header {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.code-archdoc-verifier--warning .code-archdoc-verifier-header {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.code-archdoc-verifier--success .code-archdoc-verifier-header {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.code-archdoc-verifier-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-verifier-title {
+  font-weight: 600;
+}
+
+.code-archdoc-verifier-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.code-archdoc-verifier-body {
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-verifier-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.code-archdoc-verifier-group-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.code-archdoc-verifier-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-verifier-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* ── 章节卡片 (SectionCard) ── */
+.code-archdoc-section-card {
+  overflow: hidden;
+}
+
+.code-archdoc-section-card--locked {
+  border-color: var(--color-orange-border);
+}
+
+.code-archdoc-section-header {
+  padding: 0.85rem 1.15rem;
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-section-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.code-archdoc-section-title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-section-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-ownership-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-ownership-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.26rem 0.55rem;
+  border: none;
+  border-right: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.74rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-ownership-btn:last-child {
+  border-right: none;
+}
+
+.code-archdoc-ownership-btn:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-ownership-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.code-archdoc-ownership-btn--auto {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-ownership-btn--hybrid {
+  background: var(--color-purple-subtle);
+  color: var(--color-purple);
+  font-weight: 600;
+}
+
+.code-archdoc-ownership-btn--locked {
+  background: var(--color-orange-subtle);
+  color: var(--color-orange);
+  font-weight: 600;
+}
+
+.code-archdoc-section-body {
+  padding: 1.15rem 1.25rem;
+}
+
+/* ── Markdown 排版渲染 ── */
+.code-archdoc-md {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-md-h {
+  margin: 0.35rem 0 0.15rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-md-h--1 { font-size: 1.25rem; }
+.code-archdoc-md-h--2 { font-size: 1.1rem; }
+.code-archdoc-md-h--3 { font-size: 0.98rem; }
+.code-archdoc-md-h--4,
+.code-archdoc-md-h--5,
+.code-archdoc-md-h--6 { font-size: 0.9rem; }
+
+.code-archdoc-md-p {
+  margin: 0;
+}
+
+.code-archdoc-md-inline-code {
+  font-family: var(--font-family-mono);
+  font-size: 0.82em;
+  padding: 0.1rem 0.38rem;
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-primary);
+}
+
+.code-archdoc-md-link {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.code-archdoc-md-evidence-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-family: var(--font-family-mono);
+  font-size: 0.8em;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-md-evidence-link:hover {
+  background: var(--color-primary);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-md-code-wrap {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-app);
+  overflow: hidden;
+}
+
+.code-archdoc-md-code-lang {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.72rem;
+  font-family: var(--font-family-mono);
+  color: var(--color-text-muted);
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-code-block {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  font-family: var(--font-family-mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-md-quote {
+  margin: 0;
+  padding: 0.55rem 0.9rem;
+  border-left: 3px solid var(--color-primary);
+  background: var(--color-bg-muted);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-md-list {
+  margin: 0;
+  padding-left: 1.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.code-archdoc-md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.code-archdoc-md-hr {
+  border: none;
+  border-top: 1px solid var(--color-border-subtle);
+  margin: 0.4rem 0;
+}
+
+/* ── Mermaid 缩放拖拽容器 ── */
+.code-archdoc-mermaid {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-app);
+  overflow: hidden;
+}
+
+.code-archdoc-mermaid-toolbar {
+  padding: 0.45rem 0.75rem;
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-mermaid-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-mermaid-tab--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-mermaid-viewport {
+  position: relative;
+  height: 360px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-mermaid-viewport--panning {
+  cursor: grabbing;
+}
+
+.code-archdoc-mermaid-stage {
+  transform-origin: center center;
+  transition: transform 0.04s linear;
+}
+
+.code-archdoc-mermaid-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-mermaid-code-wrap {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* ── 章节底部源码证据标签栏 ── */
+.code-archdoc-evidence-bar {
+  padding: 0.7rem 1.15rem;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-muted);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-evidence-bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  padding-top: 0.2rem;
+  flex-shrink: 0;
+}
+
+.code-archdoc-evidence-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.code-archdoc-evidence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+  font-size: 0.73rem;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-evidence-chip:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.code-archdoc-evidence-chip--exact {
+  border-color: var(--color-success-border);
+}
+
+.code-archdoc-evidence-chip--heuristic {
+  border-color: var(--color-warning-border);
+}
+
+.code-archdoc-evidence-chip-lines {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-evidence-chip-sym {
+  color: var(--color-text-muted);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 章节内联手工编辑器 ── */
+.code-archdoc-inline-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.code-archdoc-inline-editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-inline-editor-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-editor-tab--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-editor-select {
+  padding: 0.32rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+.code-archdoc-editor-summary {
+  padding: 0.32rem 0.65rem;
+  font-size: 0.8rem;
+  min-width: 220px;
+}
+
+.code-archdoc-editor-body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem;
+}
+
+.code-archdoc-editor-body--split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.code-archdoc-editor-textarea {
+  width: 100%;
+  min-height: 280px;
+  font-family: var(--font-family-mono);
+  font-size: 0.82rem;
+  resize: vertical;
+}
+
+.code-archdoc-editor-preview {
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-app);
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.code-archdoc-inline-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+}
+
+/* ── 孤立章节保护区 ── */
+.code-archdoc-orphan-zone {
+  padding: 1rem 1.15rem;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--color-warning-border);
+  background: var(--color-warning-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.code-archdoc-orphan-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.code-archdoc-orphan-title {
+  margin: 0;
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-orphan-desc {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-orphan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.code-archdoc-orphan-card {
+  overflow: hidden;
+}
+
+.code-archdoc-orphan-card-head {
+  padding: 0.75rem 1rem;
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-orphan-actions,
+.code-archdoc-orphan-merge {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-orphan-select {
+  padding: 0.3rem 0.55rem;
+  font-size: 0.76rem;
+  max-width: 210px;
+}
+
+/* ── 右侧辅助抽屉（源码证据 & 修订历史） ── */
+.code-archdoc-studio-right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-bg-surface);
+  border-left: 1px solid var(--color-border-subtle);
+  box-shadow: var(--shadow-drawer-right);
+}
+
+.code-archdoc-right-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-muted);
+}
+
+.code-archdoc-right-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.code-archdoc-right-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-right-tab:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-right-tab--active {
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-primary);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-right-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.85rem;
+}
+
+/* ── 源码证据查看器 ── */
+.code-archdoc-evidence-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.code-archdoc-evidence-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-evidence-path-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-evidence-tags {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-source-viewer {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-app);
+  font-family: var(--font-family-mono);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+
+.code-archdoc-source-line {
+  display: flex;
+  min-width: max-content;
+  padding: 0 0.65rem 0 0;
+}
+
+.code-archdoc-source-line--highlight {
+  background: var(--color-primary-subtle);
+  border-left: 3px solid var(--color-primary);
+}
+
+.code-archdoc-source-lineno {
+  width: 44px;
+  padding: 0 0.6rem;
+  text-align: right;
+  user-select: none;
+  color: var(--color-text-muted);
+  border-right: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.code-archdoc-source-code {
+  padding-left: 0.7rem;
+  white-space: pre;
+  color: var(--color-text-primary);
+}
+
+/* ── 修订历史与 Unified Diff ── */
+.code-archdoc-history-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.code-archdoc-diff-toolbar {
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.code-archdoc-diff-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-diff-selectors {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-diff-select {
+  flex: 1;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.code-archdoc-diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.code-archdoc-diff-card {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-bg-app);
+}
+
+.code-archdoc-diff-card-head {
+  padding: 0.45rem 0.7rem;
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.code-archdoc-diff-lines {
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--font-family-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.code-archdoc-diff-line {
+  padding: 0 0.65rem;
+  white-space: pre;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-diff-line--hunk {
+  background: var(--color-info-subtle);
+  color: var(--color-info);
+}
+
+.code-archdoc-diff-line--add {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.code-archdoc-diff-line--del {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.code-archdoc-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.code-archdoc-timeline-item {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.code-archdoc-timeline-item--current {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-timeline-head,
+.code-archdoc-timeline-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+}
+
+.code-archdoc-timeline-summary {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+@media (max-width: 1180px) {
+  .code-archdoc-studio-grid,
+  .code-archdoc-studio-grid--with-drawer {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .code-archdoc-studio-right {
+    grid-column: 1 / -1;
+    border-left: none;
+    border-top: 1px solid var(--color-border-subtle);
+    max-height: 460px;
+  }
+
+  .code-archdoc-editor-body--split {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .code-archdoc-studio {
+    height: auto;
+  }
+
+  .code-archdoc-studio-grid,
+  .code-archdoc-studio-grid--with-drawer {
+    grid-template-columns: 1fr;
+  }
+
+  .code-archdoc-studio-left {
+    border-right: none;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}

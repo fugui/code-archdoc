@@ -49,10 +49,10 @@
 
 ## 4. W1 Exit Gate 总验收标准（进入 W2 的硬前置条件）
 
-- [ ] **AC-M4-01**：`make lint`（含 `make lint-arch` + `tsc --noEmit` + `eslint`）100% 零报错通过。
-- [ ] **AC-M4-02**：`TEST_DB_DSN=... make test` 与 `make eval-baseline` 100% 全绿。
-- [ ] **AC-M4-03**：`make build` 成功产出单二进制 `code-archdoc-server`，启动验证独立态核心链路后已彻底关闭测试进程释放 `:8100` / `:5182`。
-- [ ] **AC-M4-04（W1 Exit Gate 纵向闭环总验收）**：在本地隔离环境（Mock LLM 或内网测试模型）跑通完整纵向闭环：
+- [x] **AC-M4-01**：`make lint`（含 `make lint-arch` + `tsc --noEmit` + `eslint`）100% 零报错通过。
+- [x] **AC-M4-02**：`TEST_DB_DSN=... make test` 与 `make eval-baseline` 100% 全绿。
+- [x] **AC-M4-03**：`make build` 成功产出单二进制 `code-archdoc-server`，启动验证独立态核心链路后已彻底关闭测试进程释放 `:8100` / `:5182`。
+- [x] **AC-M4-04（W1 Exit Gate 纵向闭环总验收）**：在本地隔离环境（Mock LLM 或内网测试模型）跑通完整纵向闭环：
   1. 选定 `cpp_order_service` 夹具仓 → 触发生成内置 `DocType` → 确认 Git 同步 & C/C++/Proto Code IR 抽取缓存生效；
   2. Verifier 校验生效（伪造符号标 `unverified`、明文凭据阻断发布返 `422`）；
   3. Canvas Studio 浏览章节、点击证据锚点高亮源码、手工直编章节并锁定 ADR、验证重生成不覆盖锁定节；

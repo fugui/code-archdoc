@@ -1,0 +1,172 @@
+/* ==========================================================================
+   AdminLLMConfigPage 样式（Flat BEM .code-archdoc-llm-*，全量 --color-* Token）
+   ========================================================================== */
+
+.code-archdoc-llm-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.code-archdoc-llm-tab {
+  padding: 1rem 1.2rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-family: inherit;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-llm-tab:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-llm-tab--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-llm-tab-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.code-archdoc-llm-tab-title {
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-llm-tab-desc {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-llm-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.code-archdoc-llm-panel {
+  padding: 1.4rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.code-archdoc-llm-panel-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.code-archdoc-llm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.05rem;
+}
+
+.code-archdoc-llm-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.code-archdoc-llm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.code-archdoc-llm-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-llm-hint {
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.code-archdoc-llm-key-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-llm-key-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.code-archdoc-llm-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-llm-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-probe-kv {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.code-archdoc-probe-cell {
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.code-archdoc-probe-label {
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-probe-val {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+@media (max-width: 960px) {
+  .code-archdoc-llm-tabs,
+  .code-archdoc-llm-layout,
+  .code-archdoc-llm-row {
+    grid-template-columns: 1fr;
+  }
+}

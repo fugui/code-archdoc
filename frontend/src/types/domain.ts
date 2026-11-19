@@ -1,0 +1,499 @@
+// 领域核心类型与后端 VO 契约（严格对齐 docs/03-api/02-data-model-and-dto-contract.md §6 及 Go 服务 VO，严禁 any）
+
+export type ModelTier = 'fast' | 'flagship';
+
+export type FacetName =
+  | 'tree'
+  | 'build'
+  | 'deps'
+  | 'config_keys'
+  | 'symbols'
+  | 'idl_contracts'
+  | 'http_routes'
+  | 'data_models'
+  | 'runtime_primitives';
+
+export type SectionOwnership = 'auto' | 'hybrid' | 'locked';
+export type DocumentStatus = 'draft' | 'approved';
+export type RevisionSource =
+  | 'ai_generate'
+  | 'incremental_refresh'
+  | 'manual_edit'
+  | 'chat_refine'
+  | 'rollback';
+
+export type TaskKind = 'generate' | 'regenerate' | 'incremental_refresh';
+export type TaskPriority = 'interactive' | 'batch';
+export type TaskStatus =
+  | 'pending'
+  | 'extracting'
+  | 'generating'
+  | 'verifying'
+  | 'ready'
+  | 'failed'
+  | 'canceled';
+
+export type SlotTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped_locked'
+  | 'canceled';
+
+export type ProposalStatus = 'none' | 'pending' | 'accepted' | 'rejected' | 'superseded';
+export type DriftType = 'code' | 'spec';
+export type DriftPrecision = 'section_level' | 'repo_level';
+export type ScopeType = 'repo' | 'subdir';
+export type RepoStatusFilter = '' | 'all' | 'approved' | 'draft' | 'drifted' | 'missing';
+export type RepoScopeFilter = '' | 'all' | 'repo' | 'subdir';
+
+export interface CurrentUserProfile {
+  id: number;
+  username: string;
+  name: string;
+  email?: string;
+  employee_id?: string;
+  department_id?: number | null;
+  department_name?: string;
+  roles: string[];
+  is_super_admin: boolean;
+  is_module_admin: boolean;
+  required_ad_role: string;
+}
+
+export interface DepartmentVO {
+  id: number;
+  name: string;
+  leader_id: number | null;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ApiErrorBody {
+  error: string;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface EvidenceAnchor {
+  anchor_id: string;
+  anchor_key: string;
+  file_path: string;
+  symbol_kind: string;
+  fq_symbol: string;
+  content_fingerprint: string;
+  commit_sha: string;
+  line_start: number;
+  line_end: number;
+  confidence: 'exact' | 'heuristic';
+}
+
+export interface UnverifiedRef {
+  slot_id: string;
+  ref_kind: string;
+  value: string;
+  severity: 'warning' | 'error';
+}
+
+export interface MermaidIssue {
+  slot_id: string;
+  block_index: number;
+  diagram_type: string;
+  issue_code: string;
+  severity: 'error' | 'warning';
+  node_count: number;
+  edge_count: number;
+  message: string;
+}
+
+export interface SecretFinding {
+  slot_id: string;
+  rule_id: string;
+  matched_mask: string;
+  line_offset: number;
+  severity: 'blocker';
+}
+
+export interface VerifierReport {
+  passed: boolean;
+  can_approve: boolean;
+  blocker_count: number;
+  error_count: number;
+  warning_count: number;
+  slot_coverage_rate: number;
+  missing_required_slots: string[];
+  unverified_refs: UnverifiedRef[];
+  mermaid_issues: MermaidIssue[];
+  secret_findings: SecretFinding[];
+}
+
+export interface SectionVO {
+  slot_id: string;
+  section_order: number;
+  title: string;
+  ownership: SectionOwnership;
+  is_orphan: boolean;
+  manually_edited: boolean;
+  needs_drift_review: boolean;
+  content_sha256: string;
+  markdown: string;
+  evidences: EvidenceAnchor[];
+}
+
+export interface AffectedSlotDrift {
+  slot_id: string;
+  slot_title: string;
+  ownership: SectionOwnership;
+  reason: string;
+  change_kind: 'added' | 'modified' | 'removed';
+  changed_symbols?: string[];
+  changed_files?: string[];
+}
+
+export interface DriftDimensionVO {
+  has_drift: boolean;
+  precision: DriftPrecision;
+  affected_slot_count: number;
+  affected_slots: AffectedSlotDrift[];
+  detected_at: string;
+}
+
+export interface DocumentDriftDetailVO {
+  code_drift: DriftDimensionVO | null;
+  spec_drift: DriftDimensionVO | null;
+}
+
+export interface DocStatusSummaryVO {
+  document_id: number;
+  status: DocumentStatus;
+  current_revision_no: number;
+  published_revision_no: number;
+  has_code_drift: boolean;
+  has_spec_drift: boolean;
+  affected_slot_count: number;
+  verifier_passed: boolean;
+  can_approve: boolean;
+  updated_at: string;
+}
+
+export interface RepoScopeCoverageVO {
+  repo_id: number;
+  repo_name: string;
+  department_id: number;
+  department_name: string;
+  subdirectory: string;
+  scope_type: ScopeType;
+  arch_element_id: number | null;
+  arch_element_name: string;
+  branch: string;
+  owner_id: number;
+  owner_name: string;
+  can_write: boolean;
+  latest_commit_sha: string;
+  remote_head_sha: string;
+  active_task_id: number | null;
+  doc_statuses: Record<string, DocStatusSummaryVO>;
+}
+
+export interface RepoCoverageSummaryVO {
+  total_scopes: number;
+  covered_scopes: number;
+  approved_docs: number;
+  drifted_docs: number;
+}
+
+export interface RepoCoverageListResponse extends PaginatedResponse<RepoScopeCoverageVO> {
+  summary: RepoCoverageSummaryVO;
+}
+
+export interface GenTaskSummaryVO {
+  id: number;
+  repo_id: number;
+  subdirectory: string;
+  ref_name: string;
+  task_kind: TaskKind;
+  priority: TaskPriority;
+  status: TaskStatus;
+  progress_percent: number;
+  triggered_by: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+export interface RepoScopesDetailResponse {
+  repo_id: number;
+  repo_name: string;
+  department_id: number;
+  department_name: string;
+  branch: string;
+  owner_id: number;
+  owner_name: string;
+  scopes: RepoScopeCoverageVO[];
+  recent_tasks: GenTaskSummaryVO[];
+}
+
+export interface SlotDefinition {
+  slot_id: string;
+  title: string;
+  ownership: SectionOwnership;
+  required: boolean;
+  ir_facets: FacetName[];
+  token_budget: number;
+  min_chars: number;
+  instruction_hint?: string;
+}
+
+export interface DocTypeSummaryVO {
+  id: number;
+  slug: string;
+  display_name: string;
+  description: string;
+  is_builtin: boolean;
+  is_active: boolean;
+  model_tier: ModelTier;
+  timeout_seconds: number;
+  ir_facets: FacetName[];
+  slot_count: number;
+  latest_revision_id: number | null;
+  latest_revision_no: number;
+  latest_aggregate_hash: string;
+  published_doc_count: number;
+  updated_at: string;
+}
+
+export interface DocTypeRevisionSummaryVO {
+  id: number;
+  revision_no: number;
+  aggregate_hash: string;
+  prompt_hash: string;
+  slots_snapshot: SlotDefinition[];
+  created_by: number | null;
+  created_at: string;
+}
+
+export interface DocTypeDetailVO extends DocTypeSummaryVO {
+  meta: Record<string, unknown>;
+  slots: SlotDefinition[];
+  template_md: string;
+  generation_prompt_md: string;
+  refine_prompt_md: string;
+  latest_revision: DocTypeRevisionSummaryVO | null;
+}
+
+export interface BudgetDirectoryItem {
+  path: string;
+  estimated_tokens: number;
+  file_count: number;
+}
+
+export interface BudgetDocTypeItem {
+  slug: string;
+  estimated_tokens: number;
+}
+
+export interface BudgetAdvice {
+  estimated_tokens: number;
+  max_tokens_per_task: number;
+  effective_files: number;
+  max_files_per_task: number;
+  top_directories: BudgetDirectoryItem[];
+  top_doc_types: BudgetDocTypeItem[];
+  suggestions: string[];
+}
+
+export interface GenSlotTaskVO {
+  id: number;
+  doc_type_slug: string;
+  doc_type_revision_id: number;
+  slot_id: string;
+  document_id: number | null;
+  status: SlotTaskStatus;
+  attempt_count: number;
+  model_tier: ModelTier;
+  error_message: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface GenTaskDetailVO {
+  id: number;
+  repo_id: number;
+  repo_name?: string;
+  subdirectory: string;
+  ref_name: string;
+  snapshot_id?: number | null;
+  commit_sha?: string;
+  task_kind: TaskKind;
+  priority: TaskPriority;
+  doc_types: string[];
+  status: TaskStatus;
+  progress_percent: number;
+  estimated_tokens: number;
+  error_code?: string;
+  error_message?: string;
+  budget_advice?: BudgetAdvice | null;
+  slot_tasks?: GenSlotTaskVO[];
+  triggered_by: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+export interface CancelTaskResponse {
+  id: number;
+  status: TaskStatus;
+}
+
+export interface DocumentNavItemVO {
+  id: number;
+  repo_id: number;
+  subdirectory: string;
+  ref_name: string;
+  doc_type_slug: string;
+  doc_type_name: string;
+  title: string;
+  status: DocumentStatus;
+  current_revision_no: number;
+  published_revision_no: number;
+  verifier_passed: boolean;
+  can_approve: boolean;
+  has_code_drift: boolean;
+  has_spec_drift: boolean;
+  updated_at: string;
+}
+
+export interface DocumentListVO {
+  can_write: boolean;
+  items: DocumentNavItemVO[];
+}
+
+export interface ViewingRevisionVO {
+  id: number;
+  revision_no: number;
+  snapshot_id: number;
+  commit_sha: string;
+  source: RevisionSource;
+  source_ref_id?: number | null;
+  change_summary: string;
+  verifier_passed: boolean;
+  can_approve: boolean;
+  slot_coverage_rate: number;
+  verifier_report: VerifierReport;
+  created_by: number;
+  created_at: string;
+}
+
+export interface DocumentRevisionSummaryVO {
+  id: number;
+  revision_no: number;
+  snapshot_id: number;
+  commit_sha: string;
+  doc_type_revision_id: number;
+  source: RevisionSource;
+  source_ref_id?: number | null;
+  change_summary: string;
+  verifier_passed: boolean;
+  can_approve: boolean;
+  slot_coverage_rate: number;
+  created_by: number;
+  created_at: string;
+}
+
+export interface DocumentDetailVO {
+  id: number;
+  repo_id: number;
+  repo_name: string;
+  subdirectory: string;
+  ref_name: string;
+  doc_type_slug: string;
+  doc_type_name: string;
+  doc_type_revision_id: number;
+  doc_type_revision_no: number;
+  title: string;
+  status: DocumentStatus;
+  can_write: boolean;
+  current_revision_no: number;
+  published_revision_no: number;
+  published_commit_sha: string;
+  published_at: string | null;
+  viewing_revision: ViewingRevisionVO;
+  sections: SectionVO[];
+  drift: DocumentDriftDetailVO;
+}
+
+export interface SectionDiffItemVO {
+  slot_id: string;
+  title: string;
+  changed: boolean;
+  unified_diff: string;
+  added_lines: number;
+  removed_lines: number;
+}
+
+export interface RevisionDiffVO {
+  document_id: number;
+  from_rev: number;
+  to_rev: number;
+  section_diffs: SectionDiffItemVO[];
+}
+
+export interface SourcePreviewVO {
+  repo_id: number;
+  subdirectory: string;
+  commit_sha: string;
+  file_path: string;
+  language: string;
+  total_lines: number;
+  highlight_start: number;
+  highlight_end: number;
+  relocated_by_symbol: boolean;
+  content: string;
+}
+
+export interface PublishResultVO {
+  document_id: number;
+  status: DocumentStatus;
+  published_revision_no: number;
+  published_commit_sha: string;
+  published_rel_path: string;
+  published_at: string;
+  broken_links_downgraded: number;
+}
+
+export interface UnpublishResultVO {
+  document_id: number;
+  status: DocumentStatus;
+  removed_rel_path: string;
+}
+
+export interface LLMConfigVO {
+  id: number;
+  tier: ModelTier;
+  base_url: string;
+  model_name: string;
+  api_key_masked: string;
+  has_api_key: boolean;
+  timeout_seconds: number;
+  max_retries: number;
+  max_tokens_per_task: number;
+  max_files_per_task: number;
+  is_active: boolean;
+  last_probe_status: 'unknown' | 'ok' | 'failed';
+  last_probe_latency_ms: number;
+  last_probed_at: string | null;
+}
+
+export interface LLMProbeResultVO {
+  tier: ModelTier;
+  reachable: boolean;
+  latency_ms: number;
+  model_echo: string;
+  error_message: string;
+}
