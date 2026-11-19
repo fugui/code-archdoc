@@ -11,7 +11,7 @@
 ## 1. 模块基础元数据契约
 - **模块唯一标识 (`ModuleKey`)**：`archdoc`（网关与前端路由前缀 `/archdoc`）
 - **模块中文名称**：`代码设计文档反推`（服务名 `Code-Archdoc`）
-- **端口分配**：Go 后端监听 `:8092`，前端 Vite 独立调试端口 `5182`
+- **端口分配**：Go 后端监听 `:8100`，前端 Vite 独立调试端口 `5182`
 - **数据库隔离策略**：与 CodeBench 共享 PostgreSQL 实例（复用 `users`, `departments`, `audit_logs`），本模块所有业务表强制使用前缀 `archdoc_`
 - **RBAC 权限角色**：模块管理员角色为 `archdoc_admin`（`super_admin` 拥有同等最高权限）
 

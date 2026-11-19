@@ -4,12 +4,12 @@
 # ==============================================================================
 
 server:
-  port: ":8092"                         # 子系统 HTTP 监听端口（推荐扩展模块从 :8090 起递增分配）
+  port: ":8100"                         # 子系统 HTTP 监听端口（推荐扩展模块从 :8090 起递增分配）
   gin_log: true                         # 是否打印 Gin 请求访问日志
   read_timeout: 120s                    # HTTP 读取超时时间
   write_timeout: 120s                   # HTTP 写入超时时间
   idle_timeout: 180s                    # Keep-Alive 空闲连接超时时间
-  external_url: "http://127.0.0.1:8092" # 独立运行时的外部基准地址
+  external_url: "http://127.0.0.1:8100" # 独立运行时的外部基准地址
 
 # ── 数据库配置 (PostgreSQL，默认与 CodeBench 共享统一实例以复用用户/部门与审计表) ──
 database:

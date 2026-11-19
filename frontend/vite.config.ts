@@ -29,11 +29,11 @@ export default defineConfig({
     port: 5182,
     proxy: {
       '/archdoc/api': {
-        target: 'http://127.0.0.1:8092',
+        target: 'http://127.0.0.1:8100',
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://127.0.0.1:8092',
+        target: 'http://127.0.0.1:8100',
         changeOrigin: true,
       },
     },

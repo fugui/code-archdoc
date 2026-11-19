@@ -17,7 +17,7 @@ const (
 	ServiceName = "Code-Archdoc"
 	AdminRole   = "archdoc_admin"
 	TablePrefix = "archdoc_"
-	DefaultPort = ":8092"
+	DefaultPort = ":8100"
 )
 
 // AuthSection 定义模块认证与独立运行开关配置

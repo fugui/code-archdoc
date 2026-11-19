@@ -13,10 +13,10 @@
 flowchart LR
     subgraph Host["CodeBench 宿主门户 (:8000)"]
         PortalUI["门户壳容器<br/>动态加载 /archdoc/assets/remoteEntry.js"]
-        Gateway["透明反向代理网关<br/>/archdoc/api/* -> 127.0.0.1:8092/api/*"]
+        Gateway["透明反向代理网关<br/>/archdoc/api/* -> 127.0.0.1:8100/api/*"]
     end
 
-    subgraph SubModule["代码设计文档反推 (code-archdoc :8092)"]
+    subgraph SubModule["代码设计文档反推 (code-archdoc :8100)"]
         FE["React 18 微前端视图<br/>(./App & ./menu 双模容器)"]
         BE["Go Gin 后端服务<br/>(server.Run + JWT/RBAC + Audit Diff)"]
     end
@@ -79,6 +79,6 @@ cp config.yaml.example config.yaml
 # 2. 安装前端依赖、执行静态检查、运行单测并打包单二进制
 make install && make lint && make test && make build
 
-# 3. 启动服务（默认监听 :8092）
+# 3. 启动服务（默认监听 :8100）
 ./code-archdoc-server
 ```

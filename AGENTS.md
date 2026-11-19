@@ -10,7 +10,7 @@
 | :--- | :--- | :--- |
 | **模块标识 (`ModuleKey`)** | `archdoc` | 门户路由前缀 `/archdoc`，Vite Federation 名称 `name: 'archdoc'` |
 | **服务与二进制名** | `Code-Archdoc` / `code-archdoc-server` | Go Module: `code-archdoc` |
-| **端口分配** | 后端 `:8092` / 前端 `5182` | 验证完毕后必须主动关闭进程释放端口 |
+| **端口分配** | 后端 `:8100` / 前端 `5182` | 验证完毕后必须主动关闭进程释放端口 |
 | **数据库表前缀 (`TablePrefix`)** | `archdoc_` | 本模块所有 GORM 模型 `TableName()` 必须以 `archdoc_` 开头 |
 | **管理员角色 (`AdminRole`)** | `archdoc_admin` | 管理接口必须挂载 `commonAuth.RequireAdmin("archdoc_admin")` |
 

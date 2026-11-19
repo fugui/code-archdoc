@@ -23,14 +23,14 @@ make lint
 
 ### 1.2 独立调试模式启动
 ```bash
-# 终端 1：编译并启动后端（监听 :8092）
+# 终端 1：编译并启动后端（监听 :8100）
 cp config.yaml.example config.yaml
 make build && ./code-archdoc-server
 
 # 终端 2（可选，用于前端热更新调试）：启动 Vite 开发服务器（监听 :5182）
 cd frontend && npm run dev
 ```
-> 调试完成后请务必关闭启动的服务进程，释放 `:8092` 与 `:5182` 端口。
+> 调试完成后请务必关闭启动的服务进程，释放 `:8100` 与 `:5182` 端口。
 
 ---
 
@@ -41,7 +41,7 @@ cd frontend && npm run dev
 ```yaml
 gateways:
   archdoc:
-    url: "http://127.0.0.1:8092"
+    url: "http://127.0.0.1:8100"
     title: "代码设计文档反推"
     icon: "ScrollText"
     description: "代码设计文档反推 业务子系统"
