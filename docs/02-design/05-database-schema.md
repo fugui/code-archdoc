@@ -1,7 +1,7 @@
 # PostgreSQL 物理模型与 `archdoc_*` GORM 建模字典
 
 - **文档编号**：`05-database-schema.md`
-- **文档版本**：v1.0.0 (Stage 2 SDD Baseline)
+- **文档版本**：v1.0.1 (Stage 2 SDD Baseline，同步阶段三增量刷新任务字段)
 - **编制日期**：2026-11-19
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
 - **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`, `F-26`, `F-27`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
@@ -202,10 +202,12 @@ type GenTask struct {
 	Subdirectory    string         `gorm:"size:512;not null;default:'';index:idx_archdoc_task_scope,priority:2" json:"subdirectory"`
 	RefName         string         `gorm:"size:128;not null;default:'master'" json:"ref_name"` // P1 多分支预留
 	SnapshotID      *uint          `gorm:"index" json:"snapshot_id"`
-	TaskKind        string         `gorm:"size:32;not null;default:'generate'" json:"task_kind"` // generate | regenerate | incremental_refresh
-	Priority        string         `gorm:"size:20;not null;default:'interactive';index" json:"priority"` // interactive | batch (F-27)
-	DocTypesJSON    datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`    // 本次请求生成的 doc_type slug 列表
-	Status          string         `gorm:"size:24;not null;default:'pending';index" json:"status"` // pending|extracting|generating|verifying|ready|failed|canceled
+	TaskKind         string         `gorm:"size:32;not null;default:'generate'" json:"task_kind"` // generate | regenerate | incremental_refresh
+	Priority         string         `gorm:"size:20;not null;default:'interactive';index" json:"priority"` // interactive | batch (F-27)
+	DocTypesJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`    // 本次请求生成的 doc_type slug 列表
+	TargetDocumentID *uint          `gorm:"index" json:"target_document_id"`                      // 仅 incremental_refresh 时非空：指向被增量刷新的目标文档 ID
+	TargetSlotsJSON  datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"target_slots"` // 仅 incremental_refresh 时非空：待刷新的受影响 slot_id 列表
+	Status           string         `gorm:"size:24;not null;default:'pending';index" json:"status"` // pending|extracting|generating|verifying|ready|failed|canceled
 	ProgressPercent int            `gorm:"default:0;not null" json:"progress_percent"`
 	EstimatedTokens int            `gorm:"default:0;not null" json:"estimated_tokens"`           // 首次 LLM 调用前预估总 Token
 	ErrorCode       string         `gorm:"size:64;default:''" json:"error_code"`                 // 如 TOKEN_BUDGET_EXCEEDED / FILE_BUDGET_EXCEEDED / GIT_AUTH_FAILED

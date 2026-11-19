@@ -56,16 +56,17 @@ code-archdoc/
 
 ## 3. SDD + TDD 研发路线图 (Lifecycle Checklist)
 
-- [ ] **阶段一：特性清单与边界明确** (`docs/01-features/`)
-  - [ ] [`01-feature-matrix.md`](./docs/01-features/01-feature-matrix.md)（v0.2.0 特性矩阵基线已就位：含可管理 `DocType` 注册表、架构/研发双视角深度、`P0~P2` 功能矩阵 `F-01~F-23`、`SC-01~SC-10` 验收场景与 `Non-Goals`，待补充团队设计文档模板样例后冻结）
-- [ ] **阶段二：系统架构与模型设计** (`docs/02-design/`)
-  - [ ] [`01-system-architecture.md`](./docs/02-design/01-system-architecture.md)（双模运行架构、`archdoc_*` 数据表结构设计与前后端分层）
-- [ ] **阶段三：接口契约与 TDD 任务分解** (`docs/03-api/`, `docs/04-tasks/`)
-  - [ ] [`01-http-api-contract.md`](./docs/03-api/01-http-api-contract.md)（RESTful API 契约、RBAC 权限矩阵与审计规范）
-  - [ ] [`01-roadmap.md`](./docs/04-tasks/01-roadmap.md)（Milestone 1~4 依赖拓扑与 TDD 质量门禁）
-  - [ ] [`02-m1-domain-model-and-api.md`](./docs/04-tasks/02-m1-domain-model-and-api.md)（Milestone 1 作战卡与 TDD 先行用例清单）
-- [ ] **阶段四：工程实施、架构决策与运维验证** (`docs/05-adr/`, `docs/06-ops/`)
-  - [ ] [`01-microfrontend-and-table-prefix-isolation.md`](./docs/05-adr/01-microfrontend-and-table-prefix-isolation.md)（ADR-01 架构决策记录）
+- [x] **阶段一：特性清单与边界明确** (`docs/01-features/`)
+  - [x] [`01-feature-matrix.md`](./docs/01-features/01-feature-matrix.md)（v0.3.1 基线：W1/W2 P0 收敛、项目群协同 `D-01~D-04`、`F-01~F-27`、`SC-01~SC-13` 与 `Non-Goals`）
+- [x] **阶段二：系统架构、领域引擎与数据模型设计** (`docs/02-design/`, `docs/05-adr/`)
+  - [x] [`01-system-architecture.md`](./docs/02-design/01-system-architecture.md) ~ [`05-database-schema.md`](./docs/02-design/05-database-schema.md)（五专篇系统架构、16 张 `archdoc_*` 模型与 `ADR-01~03`）
+- [x] **阶段三：API、数据模型契约冻结与 TDD 任务分解** (`docs/03-api/`, `docs/04-tasks/`)
+  - [x] [`01-http-api-contract.md`](./docs/03-api/01-http-api-contract.md)（全量 54 条 HTTP/SSE 接口契约、三层 RBAC 矩阵、错误码与审计规范）
+  - [x] [`02-data-model-and-dto-contract.md`](./docs/03-api/02-data-model-and-dto-contract.md)（16 表索引不变量、12 组 JSONB Schema、状态机、仓储接口与 TypeScript 类型字典）
+  - [x] [`01-roadmap.md`](./docs/04-tasks/01-roadmap.md)（W1 `M1~M4` + W2 `M5~M6` + 交付 `M7` 依赖拓扑、W1 Exit Gate 与 TDD 质量门禁）
+  - [x] [`02-m1`](./docs/04-tasks/02-m1-domain-model-and-api.md) ~ [`08-m7`](./docs/04-tasks/08-m7-portal-integration-and-delivery.md)（7 份详细 TDD Milestone 作战卡与自动化验收标准）
+- [ ] **阶段四：TDD 编码实施与运维交付验证** (`docs/06-ops/`)
+  - [ ] 按 `M1 -> M7` 严格遵循 Red-Green-Refactor 执行编码实施与全链路交付
   - [ ] [`01-verification-and-deployment-guide.md`](./docs/06-ops/01-verification-and-deployment-guide.md)（联调测试与生产部署手册）
 
 ---

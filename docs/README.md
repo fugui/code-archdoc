@@ -21,11 +21,18 @@ docs/
 │   ├── 03-doctype-drift-and-publishing.md      # 【领域治理篇】DocType 目录 SSOT、章节锁定、publish_dir 落盘、双维漂移与质量度量
 │   ├── 04-workbench-and-security.md            # 【应用与安全篇】Canvas Studio 组件树、双轨修订与 SSE 协议、三层 RBAC 与审计
 │   └── 05-database-schema.md                   # 【数据模型篇】共享只读契约、全局 ER 图与 16 张 archdoc_* GORM 建模字典
-├── 03-api/          # 接口与数据契约：RESTful API 签名、请求/响应 Schema、RBAC 权限与审计规范
-│   └── 01-http-api-contract.md            # 【API 契约】HTTP 接口字典、角色守卫 (archdoc_admin) 与状态码规范
-├── 04-tasks/        # TDD 实施规划与验收：Milestone 拆解、任务作战卡与自动化验收测试标准 (AC)
-│   ├── 01-roadmap.md                      # 【工程路线图】Milestone 1~4 依赖拓扑图与 TDD 质量门禁
-│   └── 02-m1-domain-model-and-api.md      # 【M1 作战卡】核心领域模型、API 与物理隔离单元测试
+├── 03-api/          # 接口与数据契约：RESTful & SSE API 签名、JSONB Schema、仓储接口与 TS 类型字典
+│   ├── 01-http-api-contract.md            # 【API 契约】54 条 HTTP/SSE 接口字典、三层 RBAC 守卫、错误码与审计规范
+│   └── 02-data-model-and-dto-contract.md  # 【数据契约】16 表索引不变量、12 组 JSONB Schema、状态机、仓储接口与 TS 类型
+├── 04-tasks/        # TDD 实施规划与验收：Milestone 拆解、W1/W2 任务作战卡与自动化验收测试标准 (AC)
+│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) DAG 与质量门禁
+│   ├── 02-m1-domain-model-and-api.md           # 【M1 作战卡】D-04 gitsync 底座、16 张领域模型、安全沙箱与 RBAC 基础 API
+│   ├── 03-m2-codeir-doctype-and-generation.md  # 【M2 作战卡】Golden Sample、L1 C/C++/Proto IR、DocType 种子与 L2/Verifier 引擎
+│   ├── 04-m3-revision-publish-and-bench-sync.md# 【M3 作战卡】手工直编、锁定/孤立保护、原子发布导出与 code-bench D-01~D-03
+│   ├── 05-m4-w1-frontend-workbench.md          # 【M4 作战卡】W1 微前端核心工作台与 W1 Exit Gate 纵向闭环验收
+│   ├── 06-m5-w2-java-python-doctype-and-chat.md# 【M5 作战卡】Java/Python 解析、DocType Web CRUD 与 SSE Chat 局部精修
+│   ├── 07-m6-w2-drift-metrics-and-governance.md# 【M6 作战卡】F-25 巡检、F-12 双维漂移雷达、F-26 质量看板与 F-27 资源治理
+│   └── 08-m7-portal-integration-and-delivery.md# 【M7 作战卡】CodeBench 门户联调、SC-01~SC-13 全量回归与单二进制交付
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
 │   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型

@@ -1,41 +1,37 @@
-# 代码设计文档反推 (`code-archdoc`) HTTP 接口与权限契约规范
+# 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v0.1.0
-- **编制日期**：2026-11-15
-- **归属阶段**：阶段三：接口与数据契约冻结
+- **文档版本**：v1.0.0 (Stage 3 Frozen Contract)
+- **编制日期**：2026-11-19
+- **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.3.1)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
 
-## 1. 路由前缀与鉴权约定
+## 1. 全局通信、路由、鉴权与错误契约
 
-- **独立访问路径**：`/api/<endpoint>`
-- **门户网关代理路径**：`/archdoc/api/<endpoint>`（由后端 `commonServer.Run` 自动剥离 `/archdoc` 前缀，Handler 内部统一注册为 `/api/*`）
-- **认证方式**：HTTP Header `Authorization: Bearer <JWT_TOKEN>`
+### 1.1 路由前缀与双模访问约定
+- **独立调试路径**：`/api/<endpoint>`（后端默认监听 `:8100`，Vite 调试 `:5182` 代理 `/api` 与 `/archdoc/api`）
+- **门户网关代理路径**：`/archdoc/api/<endpoint>`（由 `commonServer.Run` 自动剥离 `/archdoc` 前缀，Gin Handler 统一注册于 `/api/*`）
+- **认证头**：受保护接口必须携带 `Authorization: Bearer <JWT_TOKEN>`；SSE 接口通过 `fetch`（经 `setupFetchInterceptor` 自动注入 Bearer JWT）发起，严禁通过 URL Query 明文传递 Token。
 
----
+### 1.2 四级鉴权级别定义（对齐 `F-13`、`SC-01`、`SC-12`）
 
-## 2. 核心接口契约矩阵 (API Matrix)
+| 级别简称 | 准入条件 | 越权 / 未认证响应 |
+| :--- | :--- | :--- |
+| **`Public`** | 无需认证（免密探针与独立模式登录） | — |
+| **`JWT`** | 携带有效平台 JWT 的任意已激活用户（普通登录用户） | 无/非法 Token → `401 Unauthorized` |
+| **`ScopeWrite`** | 满足三层范围写权限判定（`CheckScopeWritePermission`）：<br>1. `super_admin` 或 `archdoc_admin`；<br>2. 目标仓库 `Repository.OwnerID == user.ID` 或 `Repository.RelatedMembers` 包含 `user.ID`（涵盖整仓及所有子目录）；<br>3. 当 `subdirectory != ""` 时，`ArchitectureElement(repo_id, normalized_subdir).OwnerID == user.ID`（**严格全等匹配，子目录负责人访问同仓其他子目录或整仓返回 `403`**）。 | 未认证 → `401`<br>非负责人 → `403 Forbidden` |
+| **`Admin`** | 挂载 `commonAuth.RequireAdmin("archdoc_admin")`（`archdoc_admin` / `super_admin` 独占） | 未认证 → `401`<br>非管理员 → `403 Forbidden` |
 
-| 方法 | 路由路径 | 鉴权级别 | 功能描述 | 审计动作 (`AuditAction`) |
-| :---: | :--- | :---: | :--- | :--- |
-| `GET` | `/api/health` | 免密 (Public) | 服务存活与版本健康检查探针 | - |
-| `GET` | `/api/auth/config` | 免密 (Public) | 获取独立调试模式下的登录方式配置 | - |
-| `POST` | `/api/auth/login` | 免密 (Public) | 独立调试模式本地账密登录 | `LOGIN` |
-| `GET` | `/api/me` | 登录用户 (JWT) | 获取当前登录用户信息及 `is_module_admin` 权限标识 | - |
-| `GET` | `/api/items/stats` | 登录用户 (JWT) | 获取看板各状态条目统计汇总 | - |
-| `GET` | `/api/items` | 登录用户 (JWT) | 分页查询业务条目（支持 `page`, `page_size`, `search`, `status`, `category`） | - |
-| `POST` | `/api/items` | 登录用户 (JWT) | 新建业务条目（自动将 `code` 转为大写并校验唯一性） | `CREATE_ITEM` |
-| `PUT` | `/api/items/:id` | 创建人/负责人/`archdoc_admin` | 更新业务条目并记录字段级 Diff 审计 | `UPDATE_ITEM` |
-| `DELETE` | `/api/items/:id` | 创建人/负责人/`archdoc_admin` | 删除业务条目 | `DELETE_ITEM` |
-| `GET` | `/api/admin/settings` | 仅管理员 (`archdoc_admin`) | 读取模块治理参数列表 | - |
-| `PUT` | `/api/admin/settings` | 仅管理员 (`archdoc_admin`) | 批量更新模块治理参数并记录审计 Diff | `UPDATE_SETTINGS` |
+> **草稿可读隔离红线（`F-11` / `04-workbench-and-security.md` §4.1）**：
+> - 未发布草稿（`status == "draft"`）及其修订历史、Diff、源码草稿上下文仅 **`ScopeWrite`** 可见，普通用户访问返回 **`403 Forbidden`**；
+> - 已发布文档（`status == "approved"`）对所有 `JWT` 用户只读可见；当负责人正在编辑未审批的新修订（`current_revision_id != published_revision_id`）时，普通用户调用文档详情、导出、源码预览接口**严格仅返回 `published_revision_id` 快照**，绝不泄露草稿内容。
 
----
-
-## 3. 标准分页与错误响应格式
-
-### 3.1 分页列表响应 (`200 OK`)
+### 1.3 标准分页契约（对齐工作区 `AGENTS.md`）
+- **Query 入参**：`page`（默认 `1`，`< 1` 自动归为 `1`）、`page_size`（允许值 `15 | 25 | 50 | 100`，缺省默认 **`25`**，非法值回退 `25`）。
+- **标准响应体 (`200 OK`)**：
 ```json
 {
   "items": [],
@@ -45,9 +41,886 @@
 }
 ```
 
-### 3.2 统一错误响应 (`400 / 401 / 403 / 404 / 409 / 500`)
+### 1.4 统一错误响应与机器可读错误码表
+所有非 `2xx` 错误统一保持向后兼容的 `error` 字段（简体中文说明），并补充稳定机器可读 `code` 与可选 `details`：
+
 ```json
 {
-  "error": "具体的中文错误原因说明"
+  "error": "子目录参数非法：禁止包含 '..' 或绝对路径前缀",
+  "code": "INVALID_SUBDIR",
+  "details": {}
+}
+```
+
+| HTTP 状态码 | `code` 常量 | 触发场景与 `details` 约定 |
+| :---: | :--- | :--- |
+| `400` | `INVALID_PARAM` | 通用参数格式/枚举/JSON 校验失败 |
+| `400` | `INVALID_SUBDIR` | `subdirectory` 含 `..`、`\x00`、`\` 或前导 `/`（`SC-06`） |
+| `400` | `INVALID_SLUG` | `DocType` `slug` 不满足 `^[a-z0-9][a-z0-9_-]{1,62}$`（`SC-08`） |
+| `400` | `DOC_TYPE_INACTIVE` | 触发生成时勾选了已停用或不存在的 `DocType` |
+| `401` | `UNAUTHORIZED` | 缺失或无效 JWT |
+| `403` | `FORBIDDEN` | 非负责人操作范围资源、子目录负责人越权（`SC-12`）、非管理员调用管理接口（`SC-01`） |
+| `403` | `DRAFT_ACCESS_DENIED` | 普通用户尝试访问未发布草稿或修订历史 |
+| `403` | `PATH_ESCAPE` | 源码预览或沙箱路径发生目录穿越或沙箱外符号链接逃逸（`SC-06`） |
+| `404` | `NOT_FOUND` | 仓库、文档、修订、任务、`DocType` 或源码文件不存在 |
+| `409` | `CONFLICT` | `DocType` 新建/克隆重名 |
+| `409` | `DOC_TYPE_IN_USE` | 尝试物理删除已被 `approved` 已发布文档引用的 `DocType`（`SC-08`），`details: {"published_doc_count": 3}` |
+| `409` | `OPTIMISTIC_LOCK_CONFLICT` | 手工直编 / Chat Accept / 回滚的 `base_revision_no` 落后于服务端当前版本，`details: {"current_revision_no": 5}` |
+| `422` | `VERIFIER_BLOCKED` | 发布时目标修订未通过 Verifier 硬门禁（如命中明文凭据泄漏 `blocker_count > 0`），`details: {"verifier_report": {...}}`（`SC-04`） |
+| `429` | `QUEUE_FULL` | 调度队列或单用户并发达到上限，`details: {"retry_after_seconds": 10}` |
+| `500` | `INTERNAL_ERROR` | 服务端内部未预期异常（严禁泄露明文 `APIKey` 或底层密码） |
+
+---
+
+## 2. 全量接口契约全景矩阵（54 Endpoints）
+
+> **波次标注**：`W1` 为最小可用纵向闭环首期必须落地接口；`W2` 为 P0 全量补齐接口（`W1` Exit Gate 通过后交付）。
+
+| # | 方法 | 路由路径 | 鉴权级别 | 波次 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| **域 0：公共探针、认证与共享主数据** | | | | | | |
+| 1 | `GET` | `/api/health` | `Public` | W1 | 服务存活与版本健康探针（`SC-01`） | - |
+| 2 | `GET` | `/api/auth/config` | `Public` | W1 | 独立调试模式登录方式配置 | - |
+| 3 | `POST` | `/api/login` | `Public` | W1 | 独立调试模式本地账密登录（与 `main.go` 保持一致） | `login / auth / P2` |
+| 4 | `GET` | `/api/oauth2/authorize` | `Public` | W1 | 独立模式 OAuth2 授权跳转 | - |
+| 5 | `GET` | `/api/oauth2/callback` | `Public` | W1 | 独立模式 OAuth2 回调签发 JWT | `login / auth / P2` |
+| 6 | `GET` | `/api/me` | `JWT` | W1 | 获取当前用户信息及 `is_module_admin` 标识 | - |
+| 7 | `PATCH` | `/api/password` | `JWT` | W1 | 独立模式修改本地密码 | `update / user_password / P1` |
+| 8 | `GET` | `/api/users` | `JWT` | W1 | 只读检索共享 `users`（供成员选择器复用） | - |
+| 9 | `GET` | `/api/departments` | `JWT` | W1 | 只读获取共享 `departments` 列表（筛选下拉用） | - |
+| **域 1：仓库与 Monorepo 子目录覆盖视图（`F-01`）** | | | | | | |
+| 10 | `GET` | `/api/repos` | `JWT` | W1 | 分页查询仓库及子目录在各 `DocType` 下的文档覆盖与漂移矩阵 | - |
+| 11 | `GET` | `/api/repos/:repo_id/scopes` | `JWT` | W1 | 查询单仓（整仓 + 全部 `ArchitectureElement` 子目录）详细范围视图 | - |
+| **域 2：可管理文档类型注册表（`F-03`）** | | | | | | |
+| 12 | `GET` | `/api/doc-types` | `JWT` | W1 | 获取 `DocType` 列表（支持 `active_only`） | - |
+| 13 | `GET` | `/api/doc-types/:slug` | `JWT` | W1 | 获取单个 `DocType` 元数据、槽位与当前修订资产内容 | - |
+| 14 | `GET` | `/api/doc-types/:slug/revisions` | `JWT` | W1 | 查询 `DocType` 不可变修订历史列表 | - |
+| 15 | `POST` | `/api/admin/doc-types` | `Admin` | W2 | 新建 `DocType`（原子生成目录资产并同步 DB） | `create / doc_type / P0` |
+| 16 | `POST` | `/api/admin/doc-types/:slug/clone` | `Admin` | W2 | 克隆既有 `DocType` 为新 `slug` | `create / doc_type / P0` |
+| 17 | `PUT` | `/api/admin/doc-types/:slug` | `Admin` | W2 | 在线更新元数据/模板/指令（原子写盘 + 生成新修订 + 触发 `Spec Drift`） | `update / doc_type / P0` |
+| 18 | `PATCH` | `/api/admin/doc-types/:slug/status` | `Admin` | W2 | 启用或停用 `DocType` | `update / doc_type / P0` |
+| 19 | `DELETE` | `/api/admin/doc-types/:slug` | `Admin` | W2 | 物理删除未被已发布文档引用的 `DocType`（被引用返 `409`） | `delete / doc_type / P0` |
+| 20 | `POST` | `/api/admin/doc-types/sync` | `Admin` | W2 | 手动触发目录 → DB 全量幂等同步 | `sync / doc_type / P2` |
+| **域 3：反推生成任务编排与监控（`F-02`/`F-04`/`F-05`/`F-27`）** | | | | | | |
+| 21 | `POST` | `/api/tasks/generate` | `ScopeWrite` | W1 | 触发单仓/子目录 1~N 个 `DocType` 反推生成任务 (`202`) | `trigger / gen_task / P1` |
+| 22 | `GET` | `/api/tasks` | `JWT` | W1 | 分页查询任务执行历史与队列状态 | - |
+| 23 | `GET` | `/api/tasks/:task_id` | `JWT` | W1 | 查询主任务进度、预算熔断建议及全部槽位子任务状态 | - |
+| 24 | `POST` | `/api/tasks/:task_id/cancel` | `ScopeWrite` | W1 | 取消排队或运行中任务（终止 LLM 并强杀 `git` 进程组） | `cancel / gen_task / P1` |
+| 25 | `POST` | `/api/tasks/:task_id/slots/:slot_task_id/retry` | `ScopeWrite` | W1 | 对单个失败槽位发起独立重试（其余槽位字节不变） | `trigger / gen_task / P1` |
+| **域 4：Canvas Studio 文档审校、手工直编、锁定与证据预览（`F-07`~`F-10`）** | | | | | | |
+| 26 | `GET` | `/api/documents` | `JWT` | W1 | 查询指定范围 `(repo_id, subdirectory)` 下的文档导航树（普通用户过滤草稿） | - |
+| 27 | `GET` | `/api/documents/:id` | `JWT` *(草稿需 `ScopeWrite`)* | W1 | 获取单篇文档完整章节、证据、Verifier 报告与漂移状态 | - |
+| 28 | `GET` | `/api/documents/:id/revisions` | `ScopeWrite` | W1 | 获取文档不可变修订时间线列表 | - |
+| 29 | `GET` | `/api/documents/:id/revisions/diff` | `ScopeWrite` | W1 | 对比任意两个修订版本的章节级 Diff 与校验差异 | - |
+| 30 | `PUT` | `/api/documents/:id/sections/:slot_id` | `ScopeWrite` | W1 | 手工直编单个章节（乐观锁 + 重跑 Verifier + 生成不可变 Revision） | `update / document_section / P1` |
+| 31 | `PATCH` | `/api/documents/:id/sections/:slot_id/ownership` | `ScopeWrite` | W1 | 切换章节所有权 (`auto`/`hybrid`/`locked`) 或清除待核对标记 | `update / document_section / P1` |
+| 32 | `POST` | `/api/documents/:id/sections/:slot_id/orphan-resolve` | `ScopeWrite` | W1 | 处置模板升级产生的孤立章节（保留锁定/合并至指定槽位/确认删除） | `update / document_section / P1` |
+| 33 | `POST` | `/api/documents/:id/rollback` | `ScopeWrite` | W1 | 一键回滚至历史修订（以 `source=rollback` 追加新不可变修订） | `rollback / document / P1` |
+| 34 | `GET` | `/api/documents/:id/source-preview` | `JWT` *(草稿需 `ScopeWrite`)* | W1 | 只读源码证据抽屉（校验 `SafeJoin` `403`、按 `commit_sha` 读取并高亮行区间） | - |
+| **域 5：SSE Chat 局部协同精修（`F-09` W2）** | | | | | | |
+| 35 | `GET` | `/api/documents/:id/chat/sessions` | `ScopeWrite` | W2 | 获取文档精修会话列表与消息/提案历史 | - |
+| 36 | `POST` | `/api/documents/:id/chat/refine` | `ScopeWrite` | W2 | 发起章节/整篇 SSE 流式精修（推送 `diff_proposal` 与 `verifier_preview`） | - |
+| 37 | `POST` | `/api/documents/:id/chat/messages/:msg_id/accept` | `ScopeWrite` | W2 | 采纳 Chat Diff 提案（乐观锁 + 单槽位更新 + Verifier + 指标记录） | `update / document_section / P1` |
+| 38 | `POST` | `/api/documents/:id/chat/messages/:msg_id/reject` | `ScopeWrite` | W2 | 拒绝 Chat Diff 提案（标记 `rejected` 并记录指标，文档零变更） | - |
+| **域 6：定稿发布、撤回与导出（`F-11`）** | | | | | | |
+| 39 | `POST` | `/api/documents/:id/publish` | `ScopeWrite` | W1 | 审批定稿并原子落盘 `publish_dir`（Verifier 阻断返 `422`） | `publish / document / P0` |
+| 40 | `POST` | `/api/documents/:id/unpublish` | `ScopeWrite` | W1 | 一键撤回已发布文档（删除落盘文件、重建/清理目录与索引） | `unpublish / document / P0` |
+| 41 | `GET` | `/api/documents/:id/export` | `JWT` *(草稿需 `ScopeWrite`)* | W1 | 流式下载单篇带 Frontmatter 的 Markdown 文件 | - |
+| 42 | `POST` | `/api/exports/zip` | `JWT` | W1 | 批量流式打包下载多篇已发布文档 ZIP（含 `INDEX.md`，防 Zip-Slip） | - |
+| **域 7：远端变更巡检与章节级双维漂移雷达（`F-12`/`F-25` W2）** | | | | | | |
+| 43 | `GET` | `/api/drift/summary` | `JWT` | W2 | 全局漂移概览与远端巡检健康汇总 | - |
+| 44 | `GET` | `/api/drift/documents` | `JWT` | W2 | 分页查询漂移文档及受影响 `slot_id` 变更明细 | - |
+| 45 | `POST` | `/api/documents/:id/incremental-refresh` | `ScopeWrite` | W2 | 对单篇漂移文档触发章节级增量刷新（仅刷新受影响非锁槽位，`202`） | `trigger / gen_task / P1` |
+| 46 | `POST` | `/api/admin/drift/poll` | `Admin` | W2 | 手动触发一轮全量活跃已发布仓库的远端 `ls-remote` 巡检与漂移重算 | `trigger / drift_poll / P2` |
+| **域 8：生成质量度量与修订纵向对比（`F-26` W2）** | | | | | | |
+| 47 | `GET` | `/api/metrics/overview` | `JWT` | W2 | 按时间窗口/`DocType`/`DocTypeRevision` 聚合质量与成本 KPI | - |
+| 48 | `GET` | `/api/metrics/revisions-compare` | `JWT` | W2 | 同一 `DocType` 不同 `DocTypeRevision` 的质量与成本演进对比 | - |
+| 49 | `GET` | `/api/metrics/slot-heatmap` | `JWT` | W2 | 各 `slot_id` 历史平均草稿→定稿修改率与 Verifier 告警率热力表 | - |
+| **域 9：管理员 LLM 配置与沙箱资源治理（`F-14` W1 / `F-27` W2）** | | | | | | |
+| 50 | `GET` | `/api/admin/llm-configs` | `Admin` | W1 | 获取 `fast` / `flagship` 分层模型配置（`api_key` 强制脱敏） | - |
+| 51 | `PUT` | `/api/admin/llm-configs/:tier` | `Admin` | W1 | 更新指定档位模型配置与单任务预算上限（密钥 AES-256-GCM 加密） | `update / llm_config / P0` |
+| 52 | `POST` | `/api/admin/llm-configs/:tier/probe` | `Admin` | W1 | 执行内网 OpenAI Compatible 模型连通性探活（`max_tokens=1`, 15s） | - |
+| 53 | `GET` | `/api/admin/storage/stats` | `Admin` | W2 | 查询磁盘配额水位、活跃租约、调度队列及 Token 成本统计 | - |
+| 54 | `POST` | `/api/admin/storage/reap` | `Admin` | W2 | 手动触发一次受租约保护的 `sandbox_dir`/`ir_cache` LRU 空间回收 | `trigger / storage_reap / P2` |
+
+> *注：表内共列出 54 条独立路由（含 OAuth2 授权与回调拆分为 2 条）。脚手架占位路由 `/api/items*` 与 `/api/admin/settings` 将在 M1 实施时彻底清除。*
+
+---
+
+## 3. 分域接口详细 Schema 契约
+
+### 3.1 域 0：公共探针、认证与共享主数据
+
+#### `GET /api/health` (`Public`, W1)
+- **响应 (`200 OK`)**：
+```json
+{
+  "status": "ok",
+  "service": "Code-Archdoc",
+  "module": "archdoc",
+  "version": "1.0.0"
+}
+```
+
+#### `GET /api/me` (`JWT`, W1)
+- **响应 (`200 OK`)**：
+```json
+{
+  "id": 1001,
+  "username": "zhangsan",
+  "name": "张三",
+  "email": "zhangsan@example.com",
+  "department_id": 10,
+  "department_name": "核心交易平台部",
+  "roles": ["user", "archdoc_admin"],
+  "is_module_admin": true
+}
+```
+
+#### `GET /api/departments` (`JWT`, W1)
+- **响应 (`200 OK`)**：
+```json
+{
+  "items": [
+    { "id": 10, "name": "核心交易平台部", "leader_id": 1001 }
+  ]
+}
+```
+
+---
+
+### 3.2 域 1：仓库与 Monorepo 子目录覆盖视图（`F-01`, W1）
+
+#### `GET /api/repos` (`JWT`, W1)
+- **Query 参数**：
+  - `page` (int, 默认 `1`)、`page_size` (int, `15|25|50|100`, 默认 `25`)
+  - `search` (string, 模糊匹配仓库名、子目录路径或架构元素中文/英文名)
+  - `department_id` (uint, 可选)
+  - `doc_type` (string, 可选 `DocType.slug`，仅在搭配 `status` 筛选时限定该类型的状态)
+  - `status` (string, 可选：`all` | `approved` | `draft` | `drifted` | `missing`)
+  - `scope_type` (string, 可选：`all` | `repo` | `subdir`，默认 `all`)
+- **响应 (`200 OK`)**：
+```json
+{
+  "items": [
+    {
+      "repo_id": 101,
+      "repo_name": "order-service",
+      "department_id": 10,
+      "department_name": "核心交易平台部",
+      "subdirectory": "svc/order",
+      "scope_type": "subdir",
+      "arch_element_id": 502,
+      "arch_element_name": "订单核心服务",
+      "branch": "master",
+      "owner_id": 2001,
+      "owner_name": "李四",
+      "can_write": true,
+      "latest_commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+      "remote_head_sha": "f9e8d7c6b5a4321098765432109876543210fedc",
+      "active_task_id": null,
+      "doc_statuses": {
+        "system-architecture": {
+          "document_id": 42,
+          "status": "approved",
+          "current_revision_no": 5,
+          "published_revision_no": 5,
+          "has_code_drift": true,
+          "has_spec_drift": false,
+          "affected_slot_count": 1,
+          "verifier_passed": true,
+          "can_approve": true,
+          "updated_at": "2026-11-19T14:20:00+08:00"
+        },
+        "data-and-contract": {
+          "document_id": 43,
+          "status": "draft",
+          "current_revision_no": 1,
+          "published_revision_no": 0,
+          "has_code_drift": false,
+          "has_spec_drift": false,
+          "affected_slot_count": 0,
+          "verifier_passed": false,
+          "can_approve": false,
+          "updated_at": "2026-11-19T15:00:00+08:00"
+        }
+      }
+    }
+  ],
+  "total": 128,
+  "page": 1,
+  "page_size": 25,
+  "summary": {
+    "total_scopes": 128,
+    "covered_scopes": 84,
+    "approved_docs": 210,
+    "drifted_docs": 19
+  }
+}
+```
+> **草稿可见性规则**：当当前用户对某行 `can_write == false` 时，`doc_statuses` 中仅包含 `status == "approved"` 的文档条目，未发布草稿对该用户显示为缺失（不暴露 `document_id` 与草稿状态）。
+
+#### `GET /api/repos/:repo_id/scopes` (`JWT`, W1)
+- **响应 (`200 OK`)**：返回仓库基础元数据与 `scopes: RepoScopeCoverageVO[]`（首条为整仓 `subdirectory: ""`，其余为关联的 `ArchitectureElement` 子目录），并附带该仓库最近 5 条活跃或历史 `GenTask` 摘要。
+
+---
+
+### 3.3 域 2：可管理文档类型注册表（`F-03`）
+
+#### `GET /api/doc-types` (`JWT`, W1)
+- **Query**：`active_only` (`bool`, 默认 `false`)
+- **响应 (`200 OK`)**：
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "slug": "system-architecture",
+      "display_name": "系统架构与核心链路",
+      "description": "面向架构师与研发骨干的运行时分层、并发、容错与核心链路文档",
+      "is_builtin": true,
+      "is_active": true,
+      "model_tier": "flagship",
+      "timeout_seconds": 300,
+      "ir_facets": ["tree", "deps", "build", "runtime_primitives", "symbols", "idl_contracts", "http_routes", "config_keys"],
+      "slot_count": 5,
+      "latest_revision_id": 3,
+      "latest_revision_no": 3,
+      "latest_aggregate_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_doc_count": 37,
+      "updated_at": "2026-11-19T12:00:00+08:00"
+    }
+  ]
+}
+```
+
+#### `GET /api/doc-types/:slug` (`JWT`, W1)
+- **响应 (`200 OK`)**：在列表字段基础上返回 `meta`（完整 `meta.json` 对象，保留未知扩展字段）、`slots`、`template_md`、`generation_prompt_md`、`refine_prompt_md`、`latest_revision`。
+
+#### `GET /api/doc-types/:slug/revisions` (`JWT`, W1)
+- **响应 (`200 OK`)**：返回 `{ "items": DocTypeRevisionSummaryVO[] }`，按 `revision_no DESC` 排序，包含 `id`, `revision_no`, `aggregate_hash`, `prompt_hash`, `slots_snapshot`, `created_by`, `created_at`。
+
+#### `POST /api/admin/doc-types` (`Admin`, W2)
+- **请求体**：
+```json
+{
+  "slug": "security-review",
+  "display_name": "安全架构评审报告",
+  "description": "面向研发安全评审的入口面、鉴权与敏感数据流分析",
+  "model_tier": "flagship",
+  "timeout_seconds": 300,
+  "ir_facets": ["tree", "http_routes", "idl_contracts", "config_keys", "data_models"],
+  "slots": [
+    {
+      "slot_id": "attack_surface",
+      "title": "1. 外部入口与攻击面清单",
+      "ownership": "auto",
+      "required": true,
+      "ir_facets": ["http_routes", "idl_contracts"],
+      "token_budget": 8000,
+      "min_chars": 40
+    }
+  ],
+  "template_md": "## 1. 外部入口与攻击面清单\n<!-- slot:attack_surface -->\n",
+  "generation_prompt_md": "你是资深应用安全架构师...",
+  "refine_prompt_md": ""
+}
+```
+- **状态码**：`201 Created`（返回 `DocTypeDetailVO`）；非法 `slug` → `400 INVALID_SLUG`；重名 → `409 CONFLICT`；非管理员 → `403 FORBIDDEN`。
+
+#### `POST /api/admin/doc-types/:slug/clone` (`Admin`, W2)
+- **请求体**：`{ "new_slug": "security-review-v2", "display_name": "安全架构评审报告 V2" }`
+- **状态码**：`201 Created`；源不存在 → `404`；`new_slug` 非法 → `400 INVALID_SLUG`；重名 → `409 CONFLICT`。
+
+#### `PUT /api/admin/doc-types/:slug` (`Admin`, W2)
+- **请求体**：`{ "meta": {...}, "template_md": "...", "generation_prompt_md": "...", "refine_prompt_md": "..." }`（其中 `meta.name` 必须等于路径 `:slug`，未知扩展字段由服务端合并保留）。
+- **校验规则**：校验 `meta.slots[]` 中每个 `slot_id` 均匹配 `^[a-z][a-z0-9_]{1,48}$` 且无重复、并在 `template_md` 中存在对应的 `<!-- slot:<slot_id> -->` 标记。
+- **状态码**：`200 OK`（返回更新后 `DocTypeDetailVO` 及 `revision_created: bool`）。
+
+#### `PATCH /api/admin/doc-types/:slug/status` (`Admin`, W2)
+- **请求体**：`{ "is_active": false }`
+- **状态码**：`200 OK`（同时将 `is_active` 原子写回 `meta.json` 并同步 DB）。
+
+#### `DELETE /api/admin/doc-types/:slug` (`Admin`, W2)
+- **状态码**：
+  - `200 OK`：`{ "deleted": true, "slug": "security-review" }`（目录与 DB 同步移除）；
+  - `409 DOC_TYPE_IN_USE`：当存在 ≥ 1 篇 `status == "approved"` 文档引用该 `slug` 时硬拦截（`SC-08`）。
+
+#### `POST /api/admin/doc-types/sync` (`Admin`, W2)
+- **响应 (`200 OK`)**：`{ "synced_count": 5, "new_revisions": 1, "slugs": ["system-architecture", ...] }`。
+
+---
+
+### 3.4 域 3：反推生成任务编排与监控（`F-02`/`F-04`/`F-05`/`F-27`）
+
+#### `POST /api/tasks/generate` (`ScopeWrite`, W1)
+- **请求体**：
+```json
+{
+  "repo_id": 101,
+  "subdirectory": "svc/order",
+  "ref_name": "",
+  "doc_types": ["system-architecture", "data-and-contract"],
+  "mode": "generate"
+}
+```
+  - `subdirectory`：可为空字符串（代表整仓），经 `sandbox.NormalizeSubdir` 规范化，含 `..` 等非法路径返回 `400 INVALID_SUBDIR`（`SC-06`）。
+  - `ref_name`：P0 留空自动取 `Repository.Branch`（默认 `master`），P1 开放自定义分支/Tag。
+  - `doc_types`：必填，非空数组，所有元素须为启用中的 `DocType.slug`。
+  - `mode`：`generate`（默认）| `regenerate`。
+- **响应 (`202 Accepted`)**：
+```json
+{
+  "id": 901,
+  "repo_id": 101,
+  "subdirectory": "svc/order",
+  "ref_name": "master",
+  "task_kind": "generate",
+  "priority": "interactive",
+  "doc_types": ["system-architecture", "data-and-contract"],
+  "status": "pending",
+  "progress_percent": 0,
+  "estimated_tokens": 0,
+  "triggered_by": 2001,
+  "created_at": "2026-11-19T15:10:00+08:00"
+}
+```
+- **边界错误**：`400 INVALID_SUBDIR`、`400 DOC_TYPE_INACTIVE`、`403 FORBIDDEN`（含 `SC-12`）、`404 NOT_FOUND`（仓库不存在）、`429 QUEUE_FULL`。
+
+#### `GET /api/tasks` (`JWT`, W1)
+- **Query**：`page`, `page_size`, `repo_id`, `subdirectory`, `status`, `triggered_by`
+- **响应 (`200 OK`)**：标准分页 `{ items: GenTaskSummaryVO[], total, page, page_size }`。
+
+#### `GET /api/tasks/:task_id` (`JWT`, W1)
+- **响应 (`200 OK`)**：
+```json
+{
+  "id": 901,
+  "repo_id": 101,
+  "repo_name": "order-service",
+  "subdirectory": "svc/order",
+  "ref_name": "master",
+  "snapshot_id": 312,
+  "commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "task_kind": "generate",
+  "priority": "interactive",
+  "doc_types": ["system-architecture"],
+  "status": "failed",
+  "progress_percent": 20,
+  "estimated_tokens": 385000,
+  "error_code": "TOKEN_BUDGET_EXCEEDED",
+  "error_message": "预估消耗 385000 Tokens 超出单任务上限 200000 Tokens，已熔断且未发出 LLM 请求",
+  "budget_advice": {
+    "estimated_tokens": 385000,
+    "max_tokens_per_task": 200000,
+    "effective_files": 1240,
+    "max_files_per_task": 2000,
+    "top_directories": [
+      { "path": "src/legacy_engine", "estimated_tokens": 182000, "file_count": 410 }
+    ],
+    "top_doc_types": [
+      { "slug": "system-architecture", "estimated_tokens": 210000 }
+    ],
+    "suggestions": [
+      "建议按 Monorepo 子目录拆分分析范围（如排除 src/legacy_engine）",
+      "建议在仓库根目录补充 .archdocignore 过滤测试夹具或生成代码"
+    ]
+  },
+  "slot_tasks": [
+    {
+      "id": 5001,
+      "doc_type_slug": "system-architecture",
+      "doc_type_revision_id": 3,
+      "slot_id": "overview_boundaries",
+      "document_id": 42,
+      "status": "completed",
+      "attempt_count": 1,
+      "model_tier": "flagship",
+      "error_message": "",
+      "started_at": "2026-11-19T15:10:05+08:00",
+      "finished_at": "2026-11-19T15:10:18+08:00"
+    }
+  ],
+  "triggered_by": 2001,
+  "started_at": "2026-11-19T15:10:02+08:00",
+  "finished_at": "2026-11-19T15:10:04+08:00"
+}
+```
+
+#### `POST /api/tasks/:task_id/cancel` (`ScopeWrite`, W1)
+- **响应 (`200 OK`)**：`{ "id": 901, "status": "canceled" }`；若任务已处于终态（`ready`/`failed`/`canceled`）返回 `409 CONFLICT`。
+
+#### `POST /api/tasks/:task_id/slots/:slot_task_id/retry` (`ScopeWrite`, W1)
+- **前提**：仅允许对 `status == "failed"` 的槽位子任务发起重试。
+- **响应 (`202 Accepted`)**：返回更新后的 `GenSlotTaskVO`（`status: "pending"`, `attempt_count: prev + 1`）。重试成功后仅替换目标槽位内容、保持其余已完成槽位字节级不变并重跑 Verifier。
+
+---
+
+### 3.5 域 4：Canvas Studio 文档审校、手工直编、锁定与证据预览（`F-07`~`F-10`）
+
+#### `GET /api/documents` (`JWT`, W1)
+- **Query**：`repo_id` (必填, uint)、`subdirectory` (可选, 默认 `""`, 经 `NormalizeSubdir` 校验)、`ref_name` (可选)
+- **响应 (`200 OK`)**：返回 `{ "can_write": true, "items": DocumentNavItemVO[] }`（普通用户仅返回 `status == "approved"` 条目）。
+
+#### `GET /api/documents/:id` (`JWT` / 草稿需 `ScopeWrite`, W1)
+- **Query**：`revision_no` (可选 int；普通用户忽略该参数，强制返回 `published_revision_id` 对应版本；`ScopeWrite` 用户不传时默认返回最新 `current_revision_id` 对应版本)。
+- **响应 (`200 OK`)**：
+```json
+{
+  "id": 42,
+  "repo_id": 101,
+  "repo_name": "order-service",
+  "subdirectory": "svc/order",
+  "ref_name": "master",
+  "doc_type_slug": "system-architecture",
+  "doc_type_name": "系统架构与核心链路",
+  "doc_type_revision_id": 3,
+  "doc_type_revision_no": 3,
+  "title": "order-service (svc/order) 系统架构与核心链路",
+  "status": "approved",
+  "can_write": true,
+  "current_revision_no": 5,
+  "published_revision_no": 5,
+  "published_commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "published_at": "2026-11-19T14:20:00+08:00",
+  "viewing_revision": {
+    "id": 150,
+    "revision_no": 5,
+    "snapshot_id": 312,
+    "commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+    "source": "manual_edit",
+    "change_summary": "补充订单超时重试机制说明",
+    "verifier_passed": true,
+    "can_approve": true,
+    "slot_coverage_rate": 1.0,
+    "verifier_report": {
+      "passed": true,
+      "can_approve": true,
+      "blocker_count": 0,
+      "error_count": 0,
+      "warning_count": 1,
+      "slot_coverage_rate": 1.0,
+      "missing_required_slots": [],
+      "unverified_refs": [],
+      "mermaid_issues": [],
+      "secret_findings": []
+    },
+    "created_by": 2001,
+    "created_at": "2026-11-19T14:15:00+08:00"
+  },
+  "sections": [
+    {
+      "slot_id": "overview_boundaries",
+      "section_order": 1,
+      "title": "1. 系统定位与模块分层边界",
+      "ownership": "auto",
+      "is_orphan": false,
+      "manually_edited": false,
+      "needs_drift_review": false,
+      "content_sha256": "9c1185a5c5e9fc54612808977ee8f548b2258d31...",
+      "markdown": "### 模块边界\n...",
+      "evidences": [
+        {
+          "anchor_id": "ev_01j8x9k2m3",
+          "anchor_key": "cpp_func::src/order/order_service.cpp::order::OrderService::Pay",
+          "file_path": "src/order/order_service.cpp",
+          "symbol_kind": "cpp_func",
+          "fq_symbol": "order::OrderService::Pay",
+          "content_fingerprint": "sha256:9f86d081884c7d65",
+          "commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+          "line_start": 142,
+          "line_end": 188,
+          "confidence": "exact"
+        }
+      ]
+    }
+  ],
+  "drift": {
+    "code_drift": null,
+    "spec_drift": null
+  }
+}
+```
+
+#### `GET /api/documents/:id/revisions` (`ScopeWrite`, W1)
+- **响应 (`200 OK`)**：返回 `{ "items": DocumentRevisionSummaryVO[] }`（按 `revision_no DESC` 排序，不含 `full_markdown` 大正文）。普通用户访问返回 `403 DRAFT_ACCESS_DENIED`。
+
+#### `GET /api/documents/:id/revisions/diff` (`ScopeWrite`, W1)
+- **Query**：`from_rev` (int, 必填)、`to_rev` (int, 必填)
+- **响应 (`200 OK`)**：
+```json
+{
+  "document_id": 42,
+  "from_rev": 4,
+  "to_rev": 5,
+  "section_diffs": [
+    {
+      "slot_id": "core_request_flows",
+      "title": "3. 端到端核心业务链路与时序图",
+      "changed": true,
+      "unified_diff": "@@ -10,3 +10,9 @@\n...",
+      "added_lines": 6,
+      "removed_lines": 0
+    }
+  ]
+}
+```
+
+#### `PUT /api/documents/:id/sections/:slot_id` (`ScopeWrite`, W1)
+- **请求体**：
+```json
+{
+  "base_revision_no": 5,
+  "markdown": "### 端到端核心链路\n...",
+  "ownership": "hybrid",
+  "change_summary": "手工补充降级熔断分支说明"
+}
+```
+  - `ownership` 可选（不传则保持当前所有权不变）。
+- **状态码**：
+  - `200 OK`：返回新生成的 `DocumentDetailVO`（`current_revision_no = 6`, `source = "manual_edit"`），其余非目标槽位字节级不变；
+  - `409 OPTIMISTIC_LOCK_CONFLICT`：`base_revision_no != current_revision_no`；
+  - `404 NOT_FOUND`：文档或 `slot_id` 不存在。
+
+#### `PATCH /api/documents/:id/sections/:slot_id/ownership` (`ScopeWrite`, W1)
+- **请求体**：
+```json
+{
+  "ownership": "locked",
+  "clear_drift_review": true
+}
+```
+- **校验**：`ownership` 必须为 `auto | hybrid | locked` 之一。
+- **响应 (`200 OK`)**：返回更新后的 `SectionVO`。
+
+#### `POST /api/documents/:id/sections/:slot_id/orphan-resolve` (`ScopeWrite`, W1)
+- **请求体**：
+```json
+{
+  "base_revision_no": 6,
+  "action": "merge_into",
+  "target_slot_id": "adr_constraints_debt"
+}
+```
+  - `action` 枚举：`keep_locked`（转为常规锁定章节、`is_orphan = false`）| `merge_into`（将内容追加至 `target_slot_id` 并移除孤立节）| `delete`（负责人显式确认删除该孤立章节）。
+- **状态码**：`200 OK`（生成新不可变修订并返回 `DocumentDetailVO`）；目标章节非孤立状态返回 `400 INVALID_PARAM`；版本冲突返回 `409 OPTIMISTIC_LOCK_CONFLICT`。
+
+#### `POST /api/documents/:id/rollback` (`ScopeWrite`, W1)
+- **请求体**：`{ "base_revision_no": 6, "target_revision_no": 4, "change_summary": "回退误改章节" }`
+- **状态码**：`200 OK`（以 `revision_no = 7`, `source = "rollback"`, `source_ref_id = target_rev.id` 落库并重跑 Verifier）；版本冲突返回 `409 OPTIMISTIC_LOCK_CONFLICT`。
+
+#### `GET /api/documents/:id/source-preview` (`JWT` / 草稿需 `ScopeWrite`, W1)
+- **Query**：
+  - `commit` (string, 可选，默认使用所查看文档修订的 `commit_sha`；必须匹配 `^[0-9a-f]{7,40}$`)
+  - `file` (string, 必填，沙箱相对路径)
+  - `line_start` (int, 可选)、`line_end` (int, 可选)
+  - `symbol` (string, 可选，用于跨提交重定位行号)
+- **安全与响应**：
+  - 若 `file` 包含 `..`、绝对路径或经 `SafeJoin` + `EvalSymlinks` 指向沙箱外，强制返回 **`403 PATH_ESCAPE`**（`SC-06`）；
+  - 响应 (`200 OK`)：
+```json
+{
+  "repo_id": 101,
+  "subdirectory": "svc/order",
+  "commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "file_path": "src/order/order_service.cpp",
+  "language": "cpp",
+  "total_lines": 320,
+  "highlight_start": 142,
+  "highlight_end": 188,
+  "relocated_by_symbol": false,
+  "content": "// 源码文本内容（超过 512KB 自动按高亮行上下文窗口截取）..."
+}
+```
+
+---
+
+### 3.6 域 5：SSE Chat 局部协同精修（`F-09`, W2）
+
+#### `GET /api/documents/:id/chat/sessions` (`ScopeWrite`, W2)
+- **响应 (`200 OK`)**：返回 `{ "items": ChatSessionWithMessagesVO[] }`，按 `updated_at DESC` 排序。
+
+#### `POST /api/documents/:id/chat/refine` (`ScopeWrite`, W2)
+- **请求头**：`Accept: text/event-stream`、`Content-Type: application/json`
+- **请求体**：
+```json
+{
+  "session_id": 12,
+  "target_slot_id": "core_request_flows",
+  "base_revision_no": 5,
+  "prompt": "请补充调用支付下游失败后的超时重试时序图与退避参数说明"
+}
+```
+  - 若目标槽位为 `locked`，返回 `409 CONFLICT`（提示需先解锁或改用手工直编）。
+- **响应头**：`Content-Type: text/event-stream; charset=utf-8`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`。
+- **SSE 事件流契约（严格对齐 `04-workbench-and-security.md` §3.2）**：
+```text
+event: meta
+data: {"session_id":12,"message_id":88,"slot_id":"core_request_flows","base_revision_no":5,"model_tier":"flagship"}
+
+event: delta
+data: {"text":"已结合 src/order/order_service.cpp 中的重试逻辑生成更新方案..."}
+
+event: diff_proposal
+data: {"proposal_id":88,"slot_id":"core_request_flows","before_md":"...","after_md":"...","unified_diff":"@@ -12,4 +12,18 @@...","cited_anchors":[...]}
+
+event: verifier_preview
+data: {"can_approve":true,"blocker_count":0,"error_count":0,"warning_count":0,"issues":[]}
+
+event: done
+data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"completion_tokens":680,"latency_ms":4120}
+```
+  - 异常时发送 `event: error` + `{"code": "LLM_TIMEOUT", "message": "..."}` 后立即关闭流，文档状态零变更。
+
+#### `POST /api/documents/:id/chat/messages/:msg_id/accept` (`ScopeWrite`, W2)
+- **请求体**：`{ "base_revision_no": 5 }`
+- **状态码**：
+  - `200 OK`：返回更新后的 `DocumentDetailVO`（`source = "chat_refine"`, `source_ref_id = msg_id`），标记消息 `proposal_status = "accepted"`，并将该会话中基于旧版本的其他 `pending` 提案标为 `superseded`，写入 `QualityMetric(chat_proposal_resolved, chat_accepted=true)`；
+  - `409 OPTIMISTIC_LOCK_CONFLICT`：文档版本已变更。
+
+#### `POST /api/documents/:id/chat/messages/:msg_id/reject` (`ScopeWrite`, W2)
+- **响应 (`200 OK`)**：`{ "message_id": 88, "proposal_status": "rejected" }`，写入 `QualityMetric(chat_proposal_resolved, chat_accepted=false)`，文档零变更。
+
+---
+
+### 3.7 域 6：定稿发布、撤回与导出（`F-11`, W1）
+
+#### `POST /api/documents/:id/publish` (`ScopeWrite`, W1)
+- **请求体**：`{ "revision_no": 5 }`（可选，省略时发布 `current_revision_no`）。
+- **发布前置校验与落盘**：
+  1. 校验目标修订 `can_approve == true`（`blocker_count == 0`），否则返回 **`422 VERIFIER_BLOCKED`**（`SC-04`）；
+  2. 注入 YAML Frontmatter（`D-02`）、证据锚点转 `/archdoc/docs/:id/evidence?...` 深链（`D-03`）、降级未发布跨文档相对链接；
+  3. 通过 `<publish_dir>/.staging/tmp-<uuid>.md` + `fsync` + 原子 `rename` 落盘，重建 `README.md`；
+  4. DB 事务置 `status = "approved"`、回写 `published_revision_id`/`published_commit_sha`/`published_rel_path`/`published_at`/`published_by`，首次发布或重新发布时计算草稿→定稿章节级 `edit_diff_ratio` 写入 `archdoc_quality_metrics`。
+- **响应 (`200 OK`)**：
+```json
+{
+  "document_id": 42,
+  "status": "approved",
+  "published_revision_no": 5,
+  "published_commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "published_rel_path": "order-service/sub/svc/order/system-architecture.md",
+  "published_at": "2026-11-19T15:30:00+08:00",
+  "broken_links_downgraded": 0
+}
+```
+
+#### `POST /api/documents/:id/unpublish` (`ScopeWrite`, W1)
+- **响应 (`200 OK`)**：
+```json
+{
+  "document_id": 42,
+  "status": "draft",
+  "removed_rel_path": "order-service/sub/svc/order/system-architecture.md"
+}
+```
+  - 撤回后 `publish_dir` 中目标文档与空目录均被清除，`/archdoc` 发布视图与 `code-bench` 文档中心均不再可见（`SC-10`）。
+
+#### `GET /api/documents/:id/export` (`JWT` / 草稿需 `ScopeWrite`, W1)
+- **响应 (`200 OK`)**：
+  - Header：`Content-Type: text/markdown; charset=utf-8`、`Content-Disposition: attachment; filename="<repo_slug>-<doc_type_slug>.md"`
+  - Body：包含完整 YAML Frontmatter 与平台深链的 Markdown 文档。
+
+#### `POST /api/exports/zip` (`JWT`, W1)
+- **请求体**：
+```json
+{
+  "repo_ids": [101],
+  "document_ids": [42, 43],
+  "include_index": true
+}
+```
+- **规则**：`repo_ids` 与 `document_ids` 至少提供一个；普通用户仅允许打包 `status == "approved"` 文档（若结果集为空返回 `404 NOT_FOUND`）；ZIP 条目经 `SanitizeZipEntryPath` 严格过滤防 Zip-Slip。
+- **响应 (`200 OK`)**：`Content-Type: application/zip`、`Content-Disposition: attachment; filename="archdoc-export-20261119.zip"`。
+
+---
+
+### 3.8 域 7：远端巡检与章节级双维漂移雷达（`F-12`/`F-25`, W2）
+
+#### `GET /api/drift/summary` (`JWT`, W2)
+- **响应 (`200 OK`)**：
+```json
+{
+  "total_drifted_docs": 19,
+  "code_drift_docs": 14,
+  "spec_drift_docs": 8,
+  "both_drift_docs": 3,
+  "monitored_repos": 42,
+  "unhealthy_repos": 1,
+  "last_poll_at": "2026-11-19T15:30:00+08:00",
+  "poll_interval_minutes": 15
+}
+```
+
+#### `GET /api/drift/documents` (`JWT`, W2)
+- **Query**：`page`, `page_size` (默认 `25`), `search`, `department_id`, `drift_type` (`all`|`code`|`spec`|`both`), `doc_type`
+- **响应 (`200 OK`)**：标准分页，单条 `DriftDocumentVO` 示例：
+```json
+{
+  "document_id": 42,
+  "repo_id": 101,
+  "repo_name": "order-service",
+  "subdirectory": "svc/order",
+  "doc_type_slug": "system-architecture",
+  "doc_type_name": "系统架构与核心链路",
+  "can_write": true,
+  "published_commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "remote_head_sha": "f9e8d7c6b5a4321098765432109876543210fedc",
+  "bound_doc_type_revision_no": 2,
+  "latest_doc_type_revision_no": 3,
+  "code_drift": {
+    "has_drift": true,
+    "precision": "section_level",
+    "affected_slot_count": 1,
+    "affected_slots": [
+      {
+        "slot_id": "core_request_flows",
+        "slot_title": "3. 端到端核心业务链路与时序图",
+        "ownership": "hybrid",
+        "reason": "symbol_modified",
+        "change_kind": "modified",
+        "changed_symbols": ["order::OrderService::Pay"]
+      }
+    ],
+    "detected_at": "2026-11-19T15:30:05+08:00"
+  },
+  "spec_drift": {
+    "has_drift": true,
+    "precision": "section_level",
+    "affected_slot_count": 1,
+    "affected_slots": [
+      {
+        "slot_id": "fault_tolerance_deps",
+        "slot_title": "4. 外部依赖拓扑、容错机制与故障影响面矩阵",
+        "ownership": "auto",
+        "reason": "slot_modified",
+        "change_kind": "modified",
+        "changed_symbols": []
+      }
+    ],
+    "detected_at": "2026-11-19T15:12:00+08:00"
+  }
+}
+```
+
+#### `POST /api/documents/:id/incremental-refresh` (`ScopeWrite`, W2)
+- **请求体**：`{ "slot_ids": [] }`（可选：留空时自动取该文档 `Code Drift ∪ Spec Drift` 的所有非 `locked` 受影响槽位；若显式传入则仅刷新传入的非 `locked` 槽位）。
+- **响应 (`202 Accepted`)**：返回新建的 `GenTaskDetailVO`（`task_kind: "incremental_refresh"`, `target_document_id: id`, `target_slots: [...]`）。若无需要刷新的非锁槽位返回 `400 INVALID_PARAM`。
+
+#### `POST /api/admin/drift/poll` (`Admin`, W2)
+- **响应 (`202 Accepted`)**：`{ "triggered": true, "monitored_repos": 42, "message": "已启动新一轮远端变更巡检与双维漂移重算" }`。
+
+---
+
+### 3.9 域 8：生成质量度量与修订纵向对比（`F-26`, W2）
+
+#### `GET /api/metrics/overview` (`JWT`, W2)
+- **Query**：`days` (int, 默认 `30`, 范围 `1..365`), `doc_type` (可选), `doc_type_revision_id` (可选)
+- **响应 (`200 OK`)**：
+```json
+{
+  "window_days": 30,
+  "avg_edit_diff_ratio": 0.184,
+  "chat_accept_rate": 0.76,
+  "verifier_first_pass_rate": 0.88,
+  "verifier_block_rate": 0.04,
+  "avg_slot_coverage_rate": 0.992,
+  "avg_tokens_per_doc": 42800,
+  "avg_cache_hit_ratio": 0.715,
+  "sample_doc_count": 64
+}
+```
+
+#### `GET /api/metrics/revisions-compare` (`JWT`, W2)
+- **Query**：`doc_type` (必填, slug), `days` (可选, 默认 `90`)
+- **响应 (`200 OK`)**：返回 `{ "doc_type_slug": "system-architecture", "revisions": RevisionMetricPointVO[] }`，按 `revision_no ASC` 排列，每点含 `doc_type_revision_id`, `revision_no`, `created_at`, `avg_edit_diff_ratio`, `chat_accept_rate`, `verifier_block_rate`, `avg_slot_coverage_rate`, `avg_tokens_per_doc`, `sample_count`。
+
+#### `GET /api/metrics/slot-heatmap` (`JWT`, W2)
+- **Query**：`doc_type` (必填, slug), `doc_type_revision_id` (可选), `days` (默认 `30`)
+- **响应 (`200 OK`)**：返回 `{ "doc_type_slug": "...", "slots": [{ "slot_id": "core_request_flows", "title": "...", "avg_edit_diff_ratio": 0.27, "verifier_warning_rate": 0.12, "sample_count": 32 }] }`。
+
+---
+
+### 3.10 域 9：管理员 LLM 配置与沙箱资源治理（`F-14` W1 / `F-27` W2）
+
+#### `GET /api/admin/llm-configs` (`Admin`, W1)
+- **响应 (`200 OK`)**：
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "tier": "fast",
+      "base_url": "http://10.0.10.20:8000/v1",
+      "model_name": "qwen2.5-coder-32b-instruct",
+      "api_key_masked": "sk-****9f2a",
+      "has_api_key": true,
+      "timeout_seconds": 120,
+      "max_retries": 3,
+      "max_tokens_per_task": 200000,
+      "max_files_per_task": 2000,
+      "is_active": true,
+      "last_probe_status": "ok",
+      "last_probe_latency_ms": 342,
+      "last_probed_at": "2026-11-19T14:00:00+08:00"
+    }
+  ]
+}
+```
+> **脱敏强约束**：响应体绝不包含明文 `api_key` 或密文 `api_key_cipher`（`SC-09` / `F-14`）。
+
+#### `PUT /api/admin/llm-configs/:tier` (`Admin`, W1)
+- **路径参数**：`tier` 必须为 `fast` 或 `flagship`（其余返回 `400 INVALID_PARAM`）。
+- **请求体**：
+```json
+{
+  "base_url": "http://10.0.10.20:8000/v1",
+  "model_name": "deepseek-v3",
+  "api_key": "",
+  "timeout_seconds": 180,
+  "max_retries": 3,
+  "max_tokens_per_task": 250000,
+  "max_files_per_task": 2500,
+  "is_active": true
+}
+```
+  - `api_key` 语义：为空字符串 `""` 时**保持原密文不变**；非空时使用 AES-256-GCM 加密写入 `api_key_cipher` 并刷新 `api_key_masked`；审计日志严禁写入明文或密文。
+- **响应 (`200 OK`)**：返回更新后的脱敏 `LLMConfigVO`。
+
+#### `POST /api/admin/llm-configs/:tier/probe` (`Admin`, W1)
+- **请求体（可选）**：允许传入临时未保存的 `{ "base_url", "model_name", "api_key" }` 做预测试（`api_key` 留空则复用已保存密文解密调用）。
+- **响应 (`200 OK`)**：
+```json
+{
+  "tier": "flagship",
+  "reachable": true,
+  "latency_ms": 418,
+  "model_echo": "deepseek-v3",
+  "error_message": ""
+}
+```
+
+#### `GET /api/admin/storage/stats` (`Admin`, W2)
+- **响应 (`200 OK`)**：
+```json
+{
+  "sandbox": { "used_mb": 4210, "max_mb": 20480, "repo_count": 38, "active_leases": 2 },
+  "ir_cache": { "used_mb": 1120, "max_mb": 10240, "facet_count": 412, "evicted_count": 15 },
+  "publish_dir": { "used_mb": 18, "published_files": 210 },
+  "scheduler": { "interactive_queue_len": 1, "batch_queue_len": 4, "running_llm_calls": 3, "max_concurrency": 8 },
+  "usage_last_30d": [
+    { "model_tier": "flagship", "doc_type_slug": "system-architecture", "total_tokens": 1840000, "cached_prompt_tokens": 920000, "call_count": 146 }
+  ]
+}
+```
+
+#### `POST /api/admin/storage/reap` (`Admin`, W2)
+- **响应 (`200 OK`)**：
+```json
+{
+  "reaped_sandboxes": 3,
+  "reaped_ir_facets": 28,
+  "freed_bytes": 1648394240,
+  "skipped_active_leases": 2
 }
 ```
