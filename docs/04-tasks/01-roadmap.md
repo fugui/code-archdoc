@@ -51,7 +51,7 @@ flowchart TB
 
 | 里程碑 | 波次 | 作战卡文档 | 覆盖特性 / 协同项 | 核心验收场景 (`SC`) | 核心交付边界 | 状态 |
 | :---: | :-: | :--- | :--- | :--- | :--- | :-: |
-| **M1** | **W1** | [`02-m1-domain-model-and-api.md`](./02-m1-domain-model-and-api.md) | `D-04`, `F-01`, `F-02`(沙箱), `F-13`, `F-14`, `NFR-1` | `SC-01`, `SC-06`(部分), `SC-12` | `code-common/backend/gitsync` + `code-shield` 切换；`lint-arch`；16 张 `archdoc_*` 表与仓储；`pkg/security`、`pkg/sandbox`；仓库覆盖/RBAC/LLM 配置 API | ⏳ 待实施 |
+| **M1** | **W1** | [`02-m1-domain-model-and-api.md`](./02-m1-domain-model-and-api.md) | `D-04`, `F-01`, `F-02`(沙箱), `F-13`, `F-14`, `NFR-1` | `SC-01`, `SC-06`(部分), `SC-12` | `code-common/backend/gitsync` + `code-shield` 切换；`lint-arch`；16 张 `archdoc_*` 表与仓储；`pkg/security`、`pkg/sandbox`；仓库覆盖/RBAC/LLM 配置 API | ✅ 已完成 |
 | **M2** | **W1** | [`03-m2-codeir-doctype-and-generation.md`](./03-m2-codeir-doctype-and-generation.md) | `F-26`(W1), `F-04`(W1), `F-03`(W1), `F-05`, `F-07` | `SC-02`, `SC-04`, `SC-09`, `SC-13` | `testdata/golden/` 夹具与 5 类标准样例；`pkg/codeir`(+CGO `treesitter` C/C++ & `.proto`)；`pkg/doctype` 内置 5 类与只读 API；`pkg/llm` 预算熔断防注入；`pkg/verifier` 四重门禁；生成任务编排 API | ⏳ 待实施 |
 | **M3** | **W1** | [`04-m3-revision-publish-and-bench-sync.md`](./04-m3-revision-publish-and-bench-sync.md) | `F-08`(后端), `F-09`(W1), `F-10`, `F-11`, `D-01`~`D-03` | `SC-06`, `SC-07`(W1), `SC-10` | `services.RevisionService` 手工直编/回滚/锁定/孤立保护；只读源码抽屉 API；`pkg/publisher` 原子落盘/撤回/ZIP；`code-bench` Frontmatter 隐藏与模块前缀深链路由 | ⏳ 待实施 |
 | **M4** | **W1** | [`05-m4-w1-frontend-workbench.md`](./05-m4-w1-frontend-workbench.md) | `F-01`, `F-08`(W1), `F-09`(W1), `F-10`, `F-11`, `F-14`, `NFR-7` | W1 端到端纵向闭环 | `./menu` & `./App` 联邦路由（含深链入口）；`RepoCoveragePage`、`CanvasStudioPage`(W1)、`AdminLLMConfigPage`；双模主题与 **W1 Exit Gate** | ⏳ 待实施 |

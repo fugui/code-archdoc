@@ -4,7 +4,7 @@
 # ==============================================================================
 
 server:
-  port: ":8100"                         # 子系统 HTTP 监听端口（推荐扩展模块从 :8090 起递增分配）
+  port: ":8100"                         # 子系统 HTTP 监听端口（模块专属端口 :8100）
   gin_log: true                         # 是否打印 Gin 请求访问日志
   read_timeout: 120s                    # HTTP 读取超时时间
   write_timeout: 120s                   # HTTP 写入超时时间
@@ -18,7 +18,7 @@ database:
   port: 5432
   user: "postgres"
   password: "YOUR_POSTGRES_PASSWORD"    # 生产环境建议通过安全配置中心或受控文件注入，切勿提交明文密码
-  dbname: "code_shield"                 # 与平台共享的核心数据库名（业务表统一加 archdoc_ 前缀防冲突）
+  dbname: "code_shield"                 # 与平台共享的核心数据库名（自有业务表统一加 archdoc_ 前缀防冲突）
   sslmode: "disable"                    # 生产环境建议开启 require / verify-full
   timezone: "Asia/Shanghai"
   max_open_conns: 30
@@ -45,3 +45,31 @@ auth:
       - "openid"
       - "profile"
       - "email"
+
+# ── 本地受控存储与磁盘配额治理配置 (F-02 / F-11 / F-27) ──
+storage:
+  data_dir: "./data"                    # 统一根数据目录（自动划分 sandbox_dir/ ir_cache/ doc_types/ publish_dir/）
+  publish_dir: ""                       # 可选覆盖已审批定稿 Markdown 发布目录（留空默认 <data_dir>/publish_dir）
+  sandbox_max_mb: 20480                 # Git 沙箱磁盘上限（默认 20 GB，超出触发受租约保护的 LRU 回收）
+  ir_cache_max_mb: 10240                # Code IR 压缩分片缓存上限（默认 10 GB）
+  max_file_bytes: 1048576               # L1 降噪单文件体积上限（默认 1 MB）
+  reap_interval_mins: 10                # 后台磁盘配额巡检周期（分钟）
+
+# ── 凭据加密配置 (F-14) ──
+security:
+  # AES-256-GCM 32 字节主密钥（支持 64 位 Hex 或 Base64 编码）
+  # 生产环境强烈建议通过环境变量 ARCHDOC_ENCRYPTION_KEY 注入，切勿明文提交至版本库
+  encryption_key: ""
+
+# ── 任务调度与 LLM 并发控制配置 (F-05 / F-27) ──
+scheduler:
+  max_llm_concurrency: 8                # 全局 LLM 并发调用信号量上限
+  max_user_concurrency: 2               # 单用户最大并发生成任务数
+  interactive_queue_cap: 64             # 交互式高优队列容量
+  batch_queue_cap: 256                  # 批量低优队列容量
+
+# ── 远端变更轻量巡检与漂移重算配置 (F-12 / F-25) ──
+drift:
+  poll_enabled: true                    # 是否启用后台 git ls-remote 周期巡检
+  poll_interval_minutes: 15             # 巡检周期（分钟）
+  poll_concurrency: 4                   # 并发巡检仓库上限

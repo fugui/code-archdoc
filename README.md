@@ -66,7 +66,8 @@ code-archdoc/
   - [x] [`01-roadmap.md`](./docs/04-tasks/01-roadmap.md)（W1 `M1~M4` + W2 `M5~M6` + 交付 `M7` 依赖拓扑、W1 Exit Gate 与 TDD 质量门禁）
   - [x] [`02-m1`](./docs/04-tasks/02-m1-domain-model-and-api.md) ~ [`08-m7`](./docs/04-tasks/08-m7-portal-integration-and-delivery.md)（7 份详细 TDD Milestone 作战卡与自动化验收标准）
 - [ ] **阶段四：TDD 编码实施与运维交付验证** (`docs/06-ops/`)
-  - [ ] 按 `M1 -> M7` 严格遵循 Red-Green-Refactor 执行编码实施与全链路交付
+  - [x] **M1**（W1）：跨模块 `code-common/backend/gitsync` 抽取与 `code-shield` 切换、`make lint-arch`、16 张 `archdoc_*` 领域模型与仓储、`pkg/security`、`pkg/sandbox`、三层 RBAC / 仓库覆盖 / LLM 配置与探活 API
+  - [ ] 按 `M2 -> M7` 严格遵循 Red-Green-Refactor 推进后续里程碑与全链路交付
   - [ ] [`01-verification-and-deployment-guide.md`](./docs/06-ops/01-verification-and-deployment-guide.md)（联调测试与生产部署手册）
 
 ---

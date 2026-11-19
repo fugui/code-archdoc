@@ -76,7 +76,7 @@
 
 ## 4. 自动化验收标准与执行命令 (Acceptance Criteria)
 
-- [ ] **AC-M1-01**：`cd ../code-common/backend && go test ./gitsync/...` 与 `cd ../code-shield && go test ./...` 100% 全绿，`code-archdoc` 内部零 Git 同步复制代码。
-- [ ] **AC-M1-02**：`make lint-arch` 5 条架构防腐红线 100% 通过。
-- [ ] **AC-M1-03**：`TEST_DB_DSN="host=127.0.0.1 port=5432 user=postgres password=<PWD> dbname=postgres sslmode=disable" make test` 全量通过（含 `models`、`pkg/security`、`pkg/sandbox`、`handlers` 物理隔离单测）。
-- [ ] **AC-M1-04**：`SC-01`、`SC-12` 及 `SC-06` 路径校验全部在自动化单测中稳定通过，审计表无明文密钥泄露。
+- [x] **AC-M1-01**：`cd ../code-common/backend && go test ./gitsync/...` 与 `cd ../code-shield && go test ./...` 100% 全绿，`code-archdoc` 内部零 Git 同步复制代码。
+- [x] **AC-M1-02**：`make lint-arch` 5 条架构防腐红线 100% 通过。
+- [x] **AC-M1-03**：`TEST_DB_DSN="host=127.0.0.1 port=5432 user=postgres password=<PWD> dbname=postgres sslmode=disable" make test` 全量通过（含 `models`、`pkg/security`、`pkg/sandbox`、`handlers` 物理隔离单测）。
+- [x] **AC-M1-04**：`SC-01`、`SC-12` 及 `SC-06` 路径校验全部在自动化单测中稳定通过，审计表无明文密钥泄露。
