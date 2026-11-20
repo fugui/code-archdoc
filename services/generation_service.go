@@ -117,6 +117,8 @@ type GenerationOrchestrator struct {
 	scheduler   *TaskScheduler
 
 	llmSem      chan struct{}
+	baseCtx     context.Context
+	baseCancel  context.CancelFunc
 	cancelMu    sync.Mutex
 	cancelFuncs map[uint]context.CancelFunc
 	wg          sync.WaitGroup
@@ -150,10 +152,17 @@ func (o *GenerationOrchestrator) acquireLLMSlot(ctx context.Context) (func(), er
 
 func (o *GenerationOrchestrator) dispatchJob(job ScheduledJob) error {
 	wrapped := job.Run
+	origDrop := job.OnDrop
 	o.wg.Add(1)
 	job.Run = func(runCtx context.Context) {
 		defer o.wg.Done()
 		wrapped(runCtx)
+	}
+	job.OnDrop = func() {
+		defer o.wg.Done()
+		if origDrop != nil {
+			origDrop()
+		}
 	}
 	if o.scheduler != nil {
 		if err := o.scheduler.Enqueue(job); err != nil {
@@ -184,6 +193,7 @@ func NewGenerationOrchestrator(
 	if maxLLMConcurrency <= 0 {
 		maxLLMConcurrency = 8
 	}
+	baseCtx, baseCancel := context.WithCancel(context.Background())
 	return &GenerationOrchestrator{
 		masterRepo:  masterRepo,
 		docTypeRepo: docTypeRepo,
@@ -196,13 +206,48 @@ func NewGenerationOrchestrator(
 		llmClient:   llmClient,
 		verifier:    verifier.New(),
 		llmSem:      make(chan struct{}, maxLLMConcurrency),
+		baseCtx:     baseCtx,
+		baseCancel:  baseCancel,
 		cancelFuncs: make(map[uint]context.CancelFunc),
+	}
+}
+
+// CancelAll 立即取消所有运行中与排队中的生成/增量刷新/槽位重试任务（供优雅停机释放 Git 进程组与 LLM 请求）。
+func (o *GenerationOrchestrator) CancelAll() {
+	if o.baseCancel != nil {
+		o.baseCancel()
+	}
+	o.cancelMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(o.cancelFuncs))
+	for _, fn := range o.cancelFuncs {
+		if fn != nil {
+			cancels = append(cancels, fn)
+		}
+	}
+	o.cancelMu.Unlock()
+	for _, fn := range cancels {
+		fn()
 	}
 }
 
 // WaitAll 等待所有运行中的后台生成协程退出（供单测与优雅停机使用）。
 func (o *GenerationOrchestrator) WaitAll() {
 	o.wg.Wait()
+}
+
+// WaitAllWithContext 在给定截止时间内等待所有运行中生成协程退出，超时返回 ctx.Err()。
+func (o *GenerationOrchestrator) WaitAllWithContext(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o.wg.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SubmitGenerateTask 校验参数并异步入队生成任务（返回 202 视图）。
@@ -281,8 +326,8 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 		return nil, fmt.Errorf("创建生成任务失败: %w", err)
 	}
 
-	// 预先注册可取消上下文，确保在异步执行前即可响应 CancelTask
-	taskCtx, cancel := context.WithCancel(context.Background())
+	// 预先注册可取消上下文（继承全局 baseCtx，确保停机时可一键取消），确保在异步执行前即可响应 CancelTask
+	taskCtx, cancel := context.WithCancel(o.baseCtx)
 	o.registerCancel(task.ID, cancel)
 
 	if err := o.dispatchJob(ScheduledJob{
@@ -293,6 +338,11 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 		Run: func(runCtx context.Context) {
 			defer o.unregisterCancel(task.ID)
 			o.executeGenerateTask(runCtx, task.ID, repo, dedupSlugs, operatorID)
+		},
+		OnDrop: func() {
+			o.unregisterCancel(task.ID)
+			cancel()
+			o.markTaskCanceled(context.Background(), task.ID, models.TaskStatusPending)
 		},
 	}); err != nil {
 		o.unregisterCancel(task.ID)
@@ -357,7 +407,7 @@ func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
 		return nil, fmt.Errorf("创建增量刷新任务失败: %w", err)
 	}
 
-	taskCtx, cancel := context.WithCancel(context.Background())
+	taskCtx, cancel := context.WithCancel(o.baseCtx)
 	o.registerCancel(task.ID, cancel)
 
 	docCopy := *in.Document
@@ -377,6 +427,11 @@ func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
 		Run: func(runCtx context.Context) {
 			defer o.unregisterCancel(task.ID)
 			o.executeIncrementalRefreshTask(runCtx, task.ID, repo, &docCopy, targetSlotsCopy, lockedDriftCopy, in.NeedSyncCode, operatorID)
+		},
+		OnDrop: func() {
+			o.unregisterCancel(task.ID)
+			cancel()
+			o.markTaskCanceled(context.Background(), task.ID, models.TaskStatusPending)
 		},
 	}); err != nil {
 		o.unregisterCancel(task.ID)
@@ -514,7 +569,7 @@ func (o *GenerationOrchestrator) RetrySlotTask(
 	o.wg.Add(1)
 	go func() {
 		defer o.wg.Done()
-		o.executeSingleSlotRetry(context.Background(), task, retrySlotID, operatorID)
+		o.executeSingleSlotRetry(o.baseCtx, task, retrySlotID, operatorID)
 	}()
 
 	vo := toGenSlotTaskVO(slotTask)

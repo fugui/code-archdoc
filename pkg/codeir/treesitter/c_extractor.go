@@ -25,6 +25,22 @@ func (e *CExtractor) Name() string { return "treesitter-c" }
 
 func (e *CExtractor) SupportedLanguages() []string { return []string{"c"} }
 
+// parseBytesSafely 避开 go-tree-sitter v0.25 已废弃且存在 nil CancellationFlag 竞态 SIGSEGV 的 ParseCtx，
+// 在解析前后检查 ctx 取消状态，使用无泄漏的同步 Parse 执行单文件（<=1MB）语法树解析。
+func parseBytesSafely(ctx context.Context, parser *tree_sitter.Parser, content []byte) (*tree_sitter.Tree, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	tree := parser.Parse(content, nil)
+	if ctx != nil && ctx.Err() != nil {
+		if tree != nil {
+			tree.Close()
+		}
+		return nil, ctx.Err()
+	}
+	return tree, nil
+}
+
 func (e *CExtractor) ExtractFile(ctx context.Context, file codeir.FileEntry, content []byte) (*codeir.ExtractionResult, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -38,7 +54,10 @@ func (e *CExtractor) ExtractFile(ctx context.Context, file codeir.FileEntry, con
 		return nil, err
 	}
 
-	tree := parser.ParseCtx(ctx, content, nil)
+	tree, err := parseBytesSafely(ctx, parser, content)
+	if err != nil {
+		return nil, err
+	}
 	if tree == nil {
 		return &codeir.ExtractionResult{
 			Diagnostics: []codeir.ParseDiagnostic{{

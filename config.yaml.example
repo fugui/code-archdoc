@@ -1,35 +1,40 @@
 # ==============================================================================
 # Code-Archdoc 微前端业务子系统配置示例
 # 使用说明：本地或生产部署时请复制为 config.yaml 并按需修改（config.yaml 已加入 .gitignore）
+# 环境变量优先级（高于本配置文件同名字段）：
+#   - JWT_SECRET              : 平台共享 JWT 签名密钥（须与 code-bench 完全一致）
+#   - ARCHDOC_ENCRYPTION_KEY  : AES-256-GCM 32 字节主密钥（64 位 Hex 或 Base64，生成命令：openssl rand -hex 32）
 # ==============================================================================
 
 server:
   port: ":8100"                         # 子系统 HTTP 监听端口（模块专属端口 :8100）
   gin_log: true                         # 是否打印 Gin 请求访问日志
-  read_timeout: 120s                    # HTTP 读取超时时间
-  write_timeout: 120s                   # HTTP 写入超时时间
+  read_timeout: 120s                    # HTTP 读取超时时间（含大文档/ZIP 导出请求）
+  read_header_timeout: 10s              # HTTP 请求头读取超时时间（防慢速连接攻击）
+  write_timeout: 180s                   # HTTP 写入超时时间（兼顾 SSE Chat 流式精修响应）
   idle_timeout: 180s                    # Keep-Alive 空闲连接超时时间
+  max_header_bytes: 1048576             # 最大请求头字节数（1 MB）
   external_url: "http://127.0.0.1:8100" # 独立运行时的外部基准地址
 
-# ── 数据库配置 (PostgreSQL，默认与 CodeBench 共享统一实例以复用用户/部门与审计表) ──
+# ── 数据库配置 (PostgreSQL，默认与 CodeBench 共享统一实例以复用用户/部门/仓库/架构元素与审计表) ──
 database:
   driver: "postgres"
   host: "127.0.0.1"
   port: 5432
   user: "postgres"
-  password: "YOUR_POSTGRES_PASSWORD"    # 生产环境建议通过安全配置中心或受控文件注入，切勿提交明文密码
-  dbname: "code_shield"                 # 与平台共享的核心数据库名（自有业务表统一加 archdoc_ 前缀防冲突）
+  password: "YOUR_POSTGRES_PASSWORD"    # 生产环境建议使用最小权限专用账户并通过受控配置/密钥中心注入
+  dbname: "code_shield"                 # 与平台共享的核心数据库名（自有 16 张表统一加 archdoc_ 前缀防冲突）
   sslmode: "disable"                    # 生产环境建议开启 require / verify-full
   timezone: "Asia/Shanghai"
-  max_open_conns: 30
+  max_open_conns: 30                    # 生产推荐 30~50（控制总连接数保护共享 PG）
   max_idle_conns: 5
 
 # ── 认证与鉴权配置 ──
 auth:
   # 必须与 code-bench/config.yaml 中的 auth.jwt_secret 完全一致，以实现微前端无感单点鉴权！
-  # 若留空，系统启动时会自动生成一次性密码学随机密钥（仅限单实例独立调试使用）。
+  # 生产环境强烈建议通过环境变量 JWT_SECRET 注入，此处留空；单机调试留空时会生成临时随机密钥。
   jwt_secret: ""
-  standalone_mode: true                 # 是否允许独立调试模式下的本地账密登录（生产环境嵌入 CodeBench 时建议设为 false）
+  standalone_mode: false                # 生产嵌入 CodeBench 门户时建议设为 false（本地独立调试时可设为 true）
   password_login_enabled: false         # 非 standalone 模式下是否额外开放账密登录
 
   # ── 独立部署时的可选 OAuth2 / OIDC 配置（嵌入 CodeBench 运行时由宿主统一完成 SSO，无需开启） ──
@@ -48,28 +53,29 @@ auth:
 
 # ── 本地受控存储与磁盘配额治理配置 (F-02 / F-11 / F-27) ──
 storage:
-  data_dir: "./data"                    # 统一根数据目录（自动划分 sandbox_dir/ ir_cache/ doc_types/ publish_dir/）
-  publish_dir: ""                       # 可选覆盖已审批定稿 Markdown 发布目录（留空默认 <data_dir>/publish_dir）
-  sandbox_max_mb: 20480                 # Git 沙箱磁盘上限（默认 20 GB，超出触发受租约保护的 LRU 回收）
-  ir_cache_max_mb: 10240                # Code IR 压缩分片缓存上限（默认 10 GB）
-  max_file_bytes: 1048576               # L1 降噪单文件体积上限（默认 1 MB）
-  reap_interval_mins: 10                # 后台磁盘配额巡检周期（分钟）
+  data_dir: "./data"                    # 统一根数据目录（生产推荐 /var/lib/code-archdoc，自动划分 sandbox_dir/ ir_cache/ doc_types/ publish_dir/）
+  publish_dir: ""                       # 可选覆盖已审批定稿 Markdown 发布目录（留空默认 <data_dir>/publish_dir；需与 code-bench 同机或共享挂载并保证目录 0755 可读）
+  sandbox_max_mb: 20480                 # Git 沙箱磁盘上限（生产推荐 20480 MB = 20 GB，超出触发受活跃租约保护的 LRU 回收）
+  ir_cache_max_mb: 10240                # Code IR 压缩分片缓存上限（生产推荐 10240 MB = 10 GB）
+  max_file_bytes: 1048576               # L1 降噪单文件体积上限（默认 1 MB，过滤超大单文件与二进制）
+  reap_interval_mins: 10                # 后台磁盘配额巡检周期（分钟，生产推荐 10~15）
 
 # ── 凭据加密配置 (F-14) ──
 security:
-  # AES-256-GCM 32 字节主密钥（支持 64 位 Hex 或 Base64 编码）
-  # 生产环境强烈建议通过环境变量 ARCHDOC_ENCRYPTION_KEY 注入，切勿明文提交至版本库
+  # AES-256-GCM 32 字节主密钥（支持 64 位 Hex 或 Base64 编码），用于加密 archdoc_llm_configs.api_key_cipher
+  # 生产环境必须通过环境变量 ARCHDOC_ENCRYPTION_KEY 注入，切勿明文提交至版本库！
+  # 注意：standalone_mode=false 且未配置主密钥时，写入新 LLM APIKey 将被安全拒绝。
   encryption_key: ""
 
 # ── 任务调度与 LLM 并发控制配置 (F-05 / F-27) ──
 scheduler:
-  max_llm_concurrency: 8                # 全局 LLM 并发调用信号量上限
-  max_user_concurrency: 2               # 单用户最大并发生成任务数
-  interactive_queue_cap: 64             # 交互式高优队列容量
-  batch_queue_cap: 256                  # 批量低优队列容量
+  max_llm_concurrency: 8                # 全局 LLM 并发调用信号量上限（按内网推理集群吞吐建议 6~16）
+  max_user_concurrency: 2               # 单用户最大并发生成任务数（防止单人占满队列）
+  interactive_queue_cap: 64             # 交互式高优队列容量（单仓生成 / 增量刷新，4:1 优先于批量队列）
+  batch_queue_cap: 256                  # 批量低优队列容量（队列满返回 429 QUEUE_FULL）
 
 # ── 远端变更轻量巡检与漂移重算配置 (F-12 / F-25) ──
 drift:
-  poll_enabled: true                    # 是否启用后台 git ls-remote 周期巡检
-  poll_interval_minutes: 15             # 巡检周期（分钟）
-  poll_concurrency: 4                   # 并发巡检仓库上限
+  poll_enabled: true                    # 是否启用后台 git ls-remote 周期巡检（仅巡检含已发布文档的活跃仓库）
+  poll_interval_minutes: 15             # 巡检周期（分钟，生产推荐 15~30）
+  poll_concurrency: 4                   # 并发巡检仓库上限（失败仓自动指数退避 15m->30m->1h->4h->24h，不阻塞健康仓）

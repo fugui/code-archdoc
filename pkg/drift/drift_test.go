@@ -331,3 +331,46 @@ func TestSpecDriftDetectsAddedModifiedRemovedSlots(t *testing.T) {
 		t.Fatalf("预期 removed_slots=[legacy]，实际 %+v", got.RemovedSlots)
 	}
 }
+
+// TestCodeDriftSymbolAnchorSubsumesFileAnchor 验证同一文件同时存在 file 级提及与精确符号锚点时，
+// 修改该文件内的其他无关函数不产生 file_modified 误报，仅受修改的符号所在章节触发漂移（ADR-03 / SC-11）。
+func TestCodeDriftSymbolAnchorSubsumesFileAnchor(t *testing.T) {
+	res := drift.DetectCodeDrift(context.Background(), drift.CodeDriftInput{
+		PublishedCommitSHA: "1111111111111111111111111111111111111111",
+		RemoteHeadSHA:      "2222222222222222222222222222222222222222",
+		ChangedFiles:       []gitsync.ChangedFile{{Status: "M", Path: "src/order.cpp"}},
+		Sections: []drift.SectionEvidenceInput{
+			{
+				SlotID:    "slot_unchanged_fn",
+				SlotTitle: "建单说明",
+				Ownership: "auto",
+				Evidences: []drift.AnchorEvidenceInput{
+					{FilePath: "src/order.cpp", SymbolKind: "file", FQSymbol: ""},
+					{FilePath: "src/order.cpp", SymbolKind: "cpp_func", FQSymbol: "order::Create", ContentFingerprint: "sha256:create_same"},
+				},
+			},
+			{
+				SlotID:    "slot_changed_fn",
+				SlotTitle: "支付说明",
+				Ownership: "hybrid",
+				Evidences: []drift.AnchorEvidenceInput{
+					{FilePath: "src/order.cpp", SymbolKind: "file", FQSymbol: ""},
+					{FilePath: "src/order.cpp", SymbolKind: "cpp_func", FQSymbol: "order::Pay", ContentFingerprint: "sha256:pay_v1"},
+				},
+			},
+		},
+		ReadBlob: func(_ context.Context, _, _ string) ([]byte, error) {
+			return []byte("mock"), nil
+		},
+		ExtractSymbols: func(_ context.Context, _ string, _ []byte) (map[string]string, error) {
+			return map[string]string{
+				"order::Create": "sha256:create_same",
+				"order::Pay":    "sha256:pay_v2",
+			}, nil
+		},
+	})
+
+	if !res.HasDrift || len(res.AffectedSlots) != 1 || res.AffectedSlots[0].SlotID != "slot_changed_fn" || res.AffectedSlots[0].Reason != "symbol_modified" {
+		t.Fatalf("预期仅 slot_changed_fn 触发 symbol_modified 漂移，实际 %+v", res)
+	}
+}

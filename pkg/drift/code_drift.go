@@ -142,6 +142,18 @@ func DetectCodeDrift(ctx context.Context, in CodeDriftInput) CodeDriftResult {
 			}
 		}
 
+		// 统计本章节已具备细粒度符号级锚点的文件集合：
+		// 若同一文件同时存在 file 级提及与精确符号锚点（如 cpp_func），文件修改时仅以细粒度符号指纹判定漂移，
+		// 避免修改同文件内其他无关函数导致整文件级 file_modified 误报（ADR-03 / SC-11）。
+		symbolCoveredFiles := make(map[string]bool)
+		for _, anchor := range sec.Evidences {
+			if anchor.SymbolKind != "file" && strings.TrimSpace(anchor.FQSymbol) != "" {
+				if rel := normalizeRelPath(anchor.FilePath); rel != "" {
+					symbolCoveredFiles[rel] = true
+				}
+			}
+		}
+
 		for _, anchor := range sec.Evidences {
 			anchorRel := normalizeRelPath(anchor.FilePath)
 			if anchorRel == "" {
@@ -171,6 +183,9 @@ func DetectCodeDrift(ctx context.Context, in CodeDriftInput) CodeDriftResult {
 			}
 
 			if anchor.SymbolKind == "file" || strings.TrimSpace(anchor.FQSymbol) == "" {
+				if symbolCoveredFiles[anchorRel] {
+					continue
+				}
 				recordImpact("file_modified", "modified", "", anchorRel)
 				continue
 			}

@@ -57,7 +57,7 @@ flowchart TB
 | **M4** | **W1** | [`05-m4-w1-frontend-workbench.md`](./05-m4-w1-frontend-workbench.md) | `F-01`, `F-08`(W1), `F-09`(W1), `F-10`, `F-11`, `F-14`, `NFR-7` | W1 端到端纵向闭环 | `./menu` & `./App` 联邦路由（含深链入口）；`RepoCoveragePage`、`CanvasStudioPage`(W1)、`AdminLLMConfigPage`；双模主题与 **W1 Exit Gate** | ✅ 已完成 |
 | **M5** | **W2** | [`06-m5-w2-java-python-doctype-and-chat.md`](./06-m5-w2-java-python-doctype-and-chat.md) | `F-04`(W2), `F-03`(W2), `F-09`(W2) | `SC-05`, `SC-08` | `tree-sitter-java`/`python` 提取器；`DocType` 原子写盘 Web CRUD API + `AdminDocTypesPage`；SSE Chat 精修后端 + `ChatRefineTab` 前端 | ✅ 已完成 |
 | **M6** | **W2** | [`07-m6-w2-drift-metrics-and-governance.md`](./07-m6-w2-drift-metrics-and-governance.md) | `F-25`, `F-12`, `F-26`(W2), `F-27` | `SC-07`(W2), `SC-08`(漂移), `SC-11` | `RemoteHeadPoller` 轻量巡检与退避；`pkg/drift` 双维定位与增量刷新；`QualityMetricsService`；`ResourceReaper` LRU 与双优先级队列；`DriftRadarPage` & `QualityMetricsPage` | ✅ 已完成 |
-| **M7** | **交付** | [`08-m7-portal-integration-and-delivery.md`](./08-m7-portal-integration-and-delivery.md) | `D-01`~`D-04`, 全量 P0 收口 | `SC-01`~`SC-13` (除 P1 `SC-03`) | `code-bench` 网关与符号链接挂载联调；全量隔离回归测试与 `make eval-baseline`；运维部署手册更新与单二进制交付 | ⏳ 待实施 |
+| **M7** | **交付** | [`08-m7-portal-integration-and-delivery.md`](./08-m7-portal-integration-and-delivery.md) | `D-01`~`D-04`, 全量 P0 收口 | `SC-01`~`SC-13` (除 P1 `SC-03`) | `code-bench` 网关与符号链接挂载联调；全量隔离回归测试与 `make eval-baseline`；运维部署手册更新与单二进制交付 | ✅ 已完成 |
 
 ---
 

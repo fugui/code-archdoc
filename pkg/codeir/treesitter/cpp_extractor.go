@@ -45,7 +45,10 @@ func (e *CppExtractor) ExtractFile(ctx context.Context, file codeir.FileEntry, c
 		return nil, err
 	}
 
-	tree := parser.ParseCtx(ctx, content, nil)
+	tree, err := parseBytesSafely(ctx, parser, content)
+	if err != nil {
+		return nil, err
+	}
 	if tree == nil {
 		return &codeir.ExtractionResult{
 			Diagnostics: []codeir.ParseDiagnostic{{

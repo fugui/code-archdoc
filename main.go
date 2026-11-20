@@ -215,12 +215,16 @@ func main() {
 			commonAudit.Middleware(config.ModuleKey),
 		},
 		OnShutdown: func(ctx context.Context) {
-			// AC-M6-03：优雅停机，确保后台巡检、LRU 回收与双优先级调度器全部在 ctx 取消后干净退出
+			// T-M7-03 / AC-M6-03：优雅停机——立即取消运行中任务（强杀关联 Git 进程组）与后台巡检/回收/调度器，并 flush 审计日志
+			log.Printf("[%s] 收到停机信号，开始取消运行中任务并清理后台协程...", config.ServiceName)
 			bgCancel()
+			genSvc.CancelAll()
 			pollerSvc.Stop()
 			reaperSvc.Stop()
 			taskScheduler.Stop()
-			genSvc.WaitAll()
+			if waitErr := genSvc.WaitAllWithContext(ctx); waitErr != nil {
+				log.Printf("[%s] 等待运行中生成任务退出超时: %v", config.ServiceName, waitErr)
+			}
 			docTypeSvc.WaitSpecDriftJobs()
 			if closeErr := commonAudit.Close(ctx); closeErr != nil {
 				log.Printf("[%s] 关闭审计引擎出现异常: %v", config.ServiceName, closeErr)

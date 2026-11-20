@@ -39,6 +39,7 @@ type ScheduledJob struct {
 	Priority string // models.TaskPriorityInteractive | models.TaskPriorityBatch
 	Ctx      context.Context
 	Run      func(ctx context.Context)
+	OnDrop   func() // 调度器停机清空未执行排队任务时的清理回调，防止调用方 WaitGroup 泄漏
 }
 
 // TaskScheduler 实现 High(Interactive) / Low(Batch) 4:1 防饥饿调度、单用户并发限流与全局 LLM 信号量（F-27）。
@@ -127,6 +128,21 @@ func (s *TaskScheduler) Stop() {
 	}
 	s.signal()
 	s.loopWG.Wait()
+
+	// 停机时排空尚未启动的排队任务并执行 OnDrop，防止调用方 WaitGroup 死锁
+	s.mu.Lock()
+	dropped := make([]ScheduledJob, 0, len(s.highQ)+len(s.lowQ))
+	dropped = append(dropped, s.highQ...)
+	dropped = append(dropped, s.lowQ...)
+	s.highQ = nil
+	s.lowQ = nil
+	s.mu.Unlock()
+	for _, job := range dropped {
+		if job.OnDrop != nil {
+			job.OnDrop()
+		}
+	}
+
 	s.workerWG.Wait()
 }
 
@@ -321,10 +337,25 @@ func (s *TaskScheduler) launchWorker(job ScheduledJob) {
 			s.signal()
 		}()
 
-		runCtx := job.Ctx
-		if runCtx == nil {
+		var (
+			runCtx    context.Context
+			cancelRun context.CancelFunc
+			stopWatch func() bool
+		)
+		if job.Ctx == nil {
 			runCtx = s.stopCtx
+		} else {
+			runCtx, cancelRun = context.WithCancel(job.Ctx)
+			stopWatch = context.AfterFunc(s.stopCtx, cancelRun)
 		}
+		defer func() {
+			if stopWatch != nil {
+				stopWatch()
+			}
+			if cancelRun != nil {
+				cancelRun()
+			}
+		}()
 		job.Run(runCtx)
 	}()
 }

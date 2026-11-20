@@ -33,26 +33,26 @@
 
 | 场景 | 描述 | 自动化覆盖落点 | 状态 |
 | :-: | :--- | :--- | :-: |
-| **SC-01** | 免密探针与多级 RBAC 越权拦截 (`200`/`401`/`403`) | `handlers/rbac_repo_llm_test.go` + `e2e_scenarios_test.go` | ⏳ |
-| **SC-02** | C/C++ Code IR 抽取精度与多 `DocType` 缓存/术语表复用 | `pkg/codeir/codeir_eval_test.go` + `handlers/task_test.go` | ⏳ |
+| **SC-01** | 免密探针与多级 RBAC 越权拦截 (`200`/`401`/`403`) | `handlers/rbac_repo_llm_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-02** | C/C++ Code IR 抽取精度与多 `DocType` 缓存/术语表复用 | `pkg/codeir/codeir_eval_test.go` + `handlers/task_test.go` + `e2e_scenarios_test.go` | ✅ |
 | **SC-03** | *(P1 过时旧文档 Gap 诊断 — 本期预留钩子 `include_legacy_docs`)* | P1 范围 | — |
-| **SC-04** | Verifier 防幻觉、Mermaid 门禁与明文凭据 `422` 阻断 | `pkg/verifier/verifier_test.go` + `handlers/document_publish_test.go` | ⏳ |
-| **SC-05** | SSE Chat 局部修订、Diff 应用与章节锁定重生成保护 | `handlers/chat_refine_test.go` + `services/revision_service_test.go` | ⏳ |
-| **SC-06** | 子目录非法参数 `400` 与源码预览路径/符号链接穿越 `403` | `pkg/sandbox/sandbox_test.go` + `handlers/document_publish_test.go` | ⏳ |
-| **SC-07** | 定稿原子发布、`code-bench` 挂载、撤回与远端代码漂移感知 | `pkg/publisher/publisher_test.go` + `services/poller_and_drift_test.go` | ⏳ |
-| **SC-08** | `DocType` Web CRUD、非法名 `400`、被引用删除 `409` 与 `Spec Drift` 联动 | `handlers/admin_doctype_test.go` + `pkg/drift/drift_test.go` | ⏳ |
-| **SC-09** | 三层降噪、配置脱敏（0 残留）与首次 LLM 调用前预算熔断 | `pkg/sandbox/sandbox_test.go` + `pkg/llm/llm_test.go` | ⏳ |
-| **SC-10** | 手工直编不可变修订、默认 ADR 锁定与撤回双向不可见 | `services/revision_service_test.go` + `handlers/document_publish_test.go` | ⏳ |
-| **SC-11** | 章节级证据符号指纹漂移定位与非锁章节增量刷新 | `pkg/drift/drift_test.go` + `services/poller_and_drift_test.go` | ⏳ |
-| **SC-12** | Monorepo 子目录负责人精确权限边界（跨子目录/整仓返 `403`） | `handlers/rbac_repo_llm_test.go` | ⏳ |
-| **SC-13** | 不可信源码提示词注入隔离（随机 `nonce` 数据栅栏 + Verifier 兜底） | `pkg/llm/llm_test.go` + `e2e_scenarios_test.go` | ⏳ |
+| **SC-04** | Verifier 防幻觉、Mermaid 门禁与明文凭据 `422` 阻断 | `pkg/verifier/verifier_test.go` + `handlers/document_publish_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-05** | SSE Chat 局部修订、Diff 应用与章节锁定重生成保护 | `handlers/chat_refine_test.go` + `services/revision_service_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-06** | 子目录非法参数 `400` 与源码预览路径/符号链接穿越 `403` | `pkg/sandbox/sandbox_test.go` + `handlers/document_publish_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-07** | 定稿原子发布、`code-bench` 挂载、撤回与远端代码漂移感知 | `pkg/publisher/publisher_test.go` + `services/poller_and_drift_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-08** | `DocType` Web CRUD、非法名 `400`、被引用删除 `409` 与 `Spec Drift` 联动 | `handlers/admin_doctype_test.go` + `pkg/drift/drift_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-09** | 三层降噪、配置脱敏（0 残留）与首次 LLM 调用前预算熔断 | `pkg/sandbox/sandbox_test.go` + `pkg/llm/llm_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-10** | 手工直编不可变修订、默认 ADR 锁定与撤回双向不可见 | `services/revision_service_test.go` + `handlers/document_publish_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-11** | 章节级证据符号指纹漂移定位与非锁章节增量刷新 | `pkg/drift/drift_test.go` + `services/poller_and_drift_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-12** | Monorepo 子目录负责人精确权限边界（跨子目录/整仓返 `403`） | `handlers/rbac_repo_llm_test.go` + `e2e_scenarios_test.go` | ✅ |
+| **SC-13** | 不可信源码提示词注入隔离（随机 `nonce` 数据栅栏 + Verifier 兜底） | `pkg/llm/llm_test.go` + `e2e_scenarios_test.go` | ✅ |
 
 ---
 
 ## 4. 最终上线交付自动化验收命令 (Final Acceptance Criteria)
 
-- [ ] **AC-M7-01**：`make lint-arch` 通过（0 架构防腐违规）。
-- [ ] **AC-M7-02**：`make eval-baseline` 通过（C/C++/Proto + Java + Python 准确率与 0 密钥残留全部达标）。
-- [ ] **AC-M7-03**：`TEST_DB_DSN="host=127.0.0.1 port=5432 user=postgres password=<PWD> dbname=postgres sslmode=disable" make test` 全量通过（覆盖全部 12 个 P0 `SC` 场景）。
-- [ ] **AC-M7-04**：`cd ../code-common/backend && go test ./...`、`cd ../code-shield && go test ./...`、`cd ../code-bench/frontend && npm run lint && npm run build` 均 100% 通过。
-- [ ] **AC-M7-05**：`make lint && make build && make clean` 零错误完成单二进制打包与清理；确认 `:8100` 与 `:5182` 无残留后台进程。
+- [x] **AC-M7-01**：`make lint-arch` 通过（0 架构防腐违规）。
+- [x] **AC-M7-02**：`make eval-baseline` 通过（C/C++/Proto + Java + Python 准确率与 0 密钥残留全部达标）。
+- [x] **AC-M7-03**：`TEST_DB_DSN="host=127.0.0.1 port=5432 user=postgres password=<PWD> dbname=postgres sslmode=disable" make test` 全量通过（覆盖全部 12 个 P0 `SC` 场景）。
+- [x] **AC-M7-04**：`cd ../code-common/backend && go test ./...`、`cd ../code-shield && go test ./...`、`cd ../code-bench/frontend && npm run lint && npm run build` 均 100% 通过。
+- [x] **AC-M7-05**：`make lint && make build && make clean` 零错误完成单二进制打包与清理；确认 `:8100` 与 `:5182` 无残留后台进程。
