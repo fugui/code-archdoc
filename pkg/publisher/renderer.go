@@ -8,11 +8,14 @@ import (
 	"strings"
 )
 
-// FrontmatterData 严格对齐 ADR-03 §3.2 标准 YAML Frontmatter 契约。
+// FrontmatterData 严格对齐 ADR-03 §3.2 与 ADR-04 D-5 标准 YAML Frontmatter 契约。
 type FrontmatterData struct {
 	Title           string
 	Repo            string
 	Subdir          string
+	ScopeType       string // "repo" | "module"（可选，非空时输出 scope_type）
+	Module          string // 子模块路径（ScopeType == "module" 时输出 module）
+	ParentDoc       string // 指向父级整仓同类型文档的相对路径（动态深度，非空时输出 parent_doc）
 	DocType         string
 	DocTypeName     string
 	DocTypeRevision int
@@ -25,8 +28,17 @@ type FrontmatterData struct {
 	SourceModule    string // 默认 "archdoc"
 }
 
+// ChildModuleNavEntry 描述整仓文档文末自动附加的「## 模块导航」子模块链接项（ADR-04 D-5）。
+type ChildModuleNavEntry struct {
+	Subdirectory string
+	Title        string
+	RelLink      string
+	CommitSHA    string
+}
+
 // EvidenceRef 描述用于渲染平台深链的已验证源码证据锚点。
 type EvidenceRef struct {
+	Scope      string // "" (默认 module) | "repo"
 	FilePath   string
 	SymbolKind string
 	FQSymbol   string
@@ -40,7 +52,8 @@ type RenderInput struct {
 	Frontmatter       FrontmatterData
 	BodyMarkdown      string
 	Evidences         []EvidenceRef
-	PublishedDocTypes map[string]bool // 同范围下已发布的 DocType slug 集合
+	PublishedDocTypes map[string]bool       // 同范围下已发布的 DocType slug 集合
+	ChildModuleDocs   []ChildModuleNavEntry // 整仓文档关联的已发布子模块同类型文档列表
 }
 
 // RenderOutput 发布渲染管线出参。
@@ -52,6 +65,11 @@ type RenderOutput struct {
 // BuildEvidenceDeepLink 构造 ADR-03 §2.2 标准平台路由深链：
 // /archdoc/docs/<doc_id>/evidence?commit=<sha>&file=<enc>&symbol=<enc>&lines=<start>-<end>
 func BuildEvidenceDeepLink(docID uint, commitSHA, filePath, fqSymbol string, lineStart, lineEnd int) string {
+	return BuildEvidenceDeepLinkWithScope(docID, commitSHA, filePath, fqSymbol, lineStart, lineEnd, "")
+}
+
+// BuildEvidenceDeepLinkWithScope 构造带可选 scope=repo 参数的平台路由深链（ADR-04 D-3）。
+func BuildEvidenceDeepLinkWithScope(docID uint, commitSHA, filePath, fqSymbol string, lineStart, lineEnd int, scope string) string {
 	var params []string
 	if commitSHA != "" {
 		params = append(params, "commit="+url.QueryEscape(commitSHA))
@@ -67,6 +85,9 @@ func BuildEvidenceDeepLink(docID uint, commitSHA, filePath, fqSymbol string, lin
 			lineEnd = lineStart
 		}
 		params = append(params, fmt.Sprintf("lines=%d-%d", lineStart, lineEnd))
+	}
+	if strings.TrimSpace(scope) == "repo" {
+		params = append(params, "scope=repo")
 	}
 	base := fmt.Sprintf("/archdoc/docs/%d/evidence", docID)
 	if len(params) == 0 {
@@ -87,6 +108,15 @@ func RenderFrontmatter(fm FrontmatterData) string {
 	fmt.Fprintf(&sb, "repo: %s\n", yamlQuote(fm.Repo))
 	if fm.Subdir != "" {
 		fmt.Fprintf(&sb, "subdir: %s\n", yamlQuote(fm.Subdir))
+	}
+	if fm.ScopeType != "" {
+		fmt.Fprintf(&sb, "scope_type: %s\n", yamlQuote(fm.ScopeType))
+	}
+	if fm.Module != "" {
+		fmt.Fprintf(&sb, "module: %s\n", yamlQuote(fm.Module))
+	}
+	if fm.ParentDoc != "" {
+		fmt.Fprintf(&sb, "parent_doc: %s\n", yamlQuote(fm.ParentDoc))
 	}
 	fmt.Fprintf(&sb, "doc_type: %s\n", yamlQuote(fm.DocType))
 	if fm.DocTypeName != "" {
@@ -128,11 +158,42 @@ func RenderMarkdown(in RenderInput) RenderOutput {
 		body = rewriteEvidenceDeepLinks(body, in.Frontmatter.DocID, in.Frontmatter.CommitSHA, in.Evidences)
 	}
 	checkedBody, downgraded := CheckAndDowngradeCrossDocLinks(body, in.PublishedDocTypes)
+	if len(in.ChildModuleDocs) > 0 && !strings.Contains(checkedBody, "## 模块导航") {
+		checkedBody = strings.TrimRight(checkedBody, "\r\n") + "\n\n" + renderChildModuleNavSection(in.ChildModuleDocs)
+	}
 	frontmatter := RenderFrontmatter(in.Frontmatter)
 	return RenderOutput{
 		Markdown:              frontmatter + strings.TrimLeft(checkedBody, "\r\n"),
 		BrokenLinksDowngraded: downgraded,
 	}
+}
+
+func renderChildModuleNavSection(children []ChildModuleNavEntry) string {
+	sorted := make([]ChildModuleNavEntry, len(children))
+	copy(sorted, children)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Subdirectory < sorted[j].Subdirectory
+	})
+
+	var sb strings.Builder
+	sb.WriteString("## 模块导航\n\n")
+	sb.WriteString("| 模块路径 | 模块文档 | 提交版本 |\n")
+	sb.WriteString("| :--- | :--- | :--- |\n")
+	for _, c := range sorted {
+		title := strings.TrimSpace(c.Title)
+		if title == "" {
+			title = c.Subdirectory
+		}
+		shortSHA := strings.TrimSpace(c.CommitSHA)
+		if len(shortSHA) > 8 {
+			shortSHA = shortSHA[:8]
+		}
+		if shortSHA == "" {
+			shortSHA = "-"
+		}
+		fmt.Fprintf(&sb, "| `%s` | [%s](%s) | `%s` |\n", c.Subdirectory, title, c.RelLink, shortSHA)
+	}
+	return sb.String()
 }
 
 var (
@@ -264,7 +325,7 @@ func replaceInlineEvidenceInLine(
 		if commit == "" {
 			commit = defaultCommit
 		}
-		deepLink := BuildEvidenceDeepLink(docID, commit, ev.FilePath, ev.FQSymbol, ev.LineStart, ev.LineEnd)
+		deepLink := BuildEvidenceDeepLinkWithScope(docID, commit, ev.FilePath, ev.FQSymbol, ev.LineStart, ev.LineEnd, ev.Scope)
 		label := token
 		if ev.LineStart > 0 && !strings.Contains(token, ":") && token == ev.FilePath {
 			end := ev.LineEnd

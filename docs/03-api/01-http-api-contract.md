@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.0.0 (Stage 3 Frozen Contract)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 扩展：新增 6 个模块治理与批量生成接口，总计 60 Endpoints)
+- **编制日期**：2026-11-20
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.3.1)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.4.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -924,3 +924,64 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
   "skipped_active_leases": 2
 }
 ```
+
+
+---
+
+## 5. ADR-04 增量接口契约（`M8`~`M10`，新增 6 Endpoints，总计 60 Endpoints）
+
+### 5.1 新增接口清单
+
+| # | 方法 | 路由路径 | 鉴权级别 | 里程碑 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| 55 | `GET` | `/api/repos/:repo_id/modules` | `JWT` | M8 | 查询仓库发现策略与派生模块索引列表（含 `active`/`missing`/`ignored`） | - |
+| 56 | `GET` | `/api/repos/:repo_id/module-policy` | `JWT` | M8 | 获取仓库模块发现策略（缺省返回默认 `merged` 策略） | - |
+| 57 | `PUT` | `/api/repos/:repo_id/module-policy` | `RepoWrite` | M8 | 更新仓库模块发现策略（`strategy`/`exclude_globs`/`min_effective_files`） | `update / repo_module_policy / P1` |
+| 58 | `POST` | `/api/repos/:repo_id/modules/refresh` | `RepoWrite` | M8 | 触发仓库零 LLM 整仓 L1 抽取并刷新派生模块索引 | `refresh / repo_module / P1` |
+| 59 | `PATCH` | `/api/repos/:repo_id/modules/:module_id/status` | `RepoWrite` | M8 | 切换模块状态（`active` ↔ `ignored`） | `update / repo_module / P1` |
+| 60 | `POST` | `/api/repos/:repo_id/modules/migrate` | `RepoWrite` | M8 | 模块范围原子迁移（`from_subdir` → `to_subdir`，含发布文件重渲染迁移） | `migrate / repo_module / P0` |
+| 61 | `POST` | `/api/tasks/generate-batch` | `BatchScopeWrite` | M8 | 触发多模块批次生成（全量范围前置权限校验 + 批次预算前置熔断，`202`） | `trigger / gen_task_batch / P1` |
+
+> **`RepoWrite` 鉴权说明**：仅仓库级写者（`IsRepoLevelWriter`：`Repository.OwnerID` / `RelatedMembers` / `archdoc_admin` / `super_admin`）放行；子目录负责人或普通用户返回 `403 FORBIDDEN`。
+> **`BatchScopeWrite` 鉴权说明**：逐一对目标每个范围执行 `CheckScopeWritePermission`，任一无权整批返回 `403 FORBIDDEN` 及 `details.forbidden_scopes: string[]`，无任何任务落库。
+
+### 5.2 关键请求与响应 Schema
+
+#### `PUT /api/repos/:repo_id/module-policy` (`RepoWrite`, M8)
+- 请求体：`{ "strategy": "merged", "exclude_globs": ["legacy*"], "min_effective_files": 3 }`
+- 响应 (`200 OK`)：`RepoModulePolicyVO`
+
+#### `POST /api/repos/:repo_id/modules/refresh` (`RepoWrite`, M8)
+- 响应 (`200 OK`)：`{ "repo_id": 12, "commit_sha": "...", "policy": {...}, "modules": RepoModuleVO[], "active_count": 5, "missing_count": 1 }`
+
+#### `PATCH /api/repos/:repo_id/modules/:module_id/status` (`RepoWrite`, M8)
+- 请求体：`{ "status": "ignored" }`（允许值：`active` | `ignored`）
+- 响应 (`200 OK`)：`RepoModuleVO`
+
+#### `POST /api/repos/:repo_id/modules/migrate` (`RepoWrite`, M8)
+- 请求体：`{ "from_subdir": "order", "to_subdir": "trade/order" }`
+- 响应 (`200 OK`)：`{ "repo_id": 12, "from_subdir": "order", "to_subdir": "trade/order", "migrated_documents": 2, "republished_documents": 1 }`
+- 错误码：`400 INVALID_SUBDIR` / `400 INVALID_PARAM`（空路径或相同路径）、`403 FORBIDDEN`、`404 NOT_FOUND`（源范围无文档）、`409 CONFLICT`（目标存在同名文档或任一范围存在运行中任务）。
+
+#### `POST /api/tasks/generate-batch` (`BatchScopeWrite`, M8)
+- 请求体：
+```json
+{
+  "repo_id": 12,
+  "subdirectories": ["order", "pay"],
+  "all_modules": false,
+  "include_repo_scope": true,
+  "ref_name": "",
+  "doc_types": ["system-architecture", "data-and-contract"],
+  "mode": "generate"
+}
+```
+- 响应 (`202 Accepted`)：`GenTaskDetailVO`（`task_kind = "batch"`，含 `child_tasks` 与 `batch_summary`）。
+- 边界错误：
+  - `403 FORBIDDEN`：`details: { "forbidden_scopes": ["pay"] }`，无任何任务落库；
+  - 任务异步预检触发批次预算熔断：父任务状态置 `failed`，`error_code = "BATCH_TOKEN_BUDGET_EXCEEDED"`，`budget_advice.module_breakdown` 返回按模块分解的估算明细，LLM 请求数为 0。
+
+#### 存量接口向后兼容扩展
+- `GET /api/repos` 与 `GET /api/repos/:repo_id/scopes`：`RepoScopeCoverageVO` 新增 `scope_status`（`"active" | "missing" | "orphan"`）、`module_source`（`"repo" | "arch_element" | "discovered" | "orphan"`）、`effective_files`、`total_loc`；
+- `GET /api/documents/:id/source-preview`：新增可选查询参数 `scope=module|repo`（默认 `module`；`scope=repo` 严格受当前文档 `scope=repo` 证据锚点 / 快照 `module_context` 白名单保护，越界返 `403 PATH_ESCAPE`）；
+- `GET /api/tasks/:task_id`：新增 `parent_task_id`、`child_tasks`、`batch_summary`。

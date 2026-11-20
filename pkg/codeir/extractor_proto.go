@@ -95,8 +95,29 @@ func (e *ProtoExtractor) ExtractFile(ctx context.Context, file FileEntry, conten
 	}
 	sort.Strings(pf.Imports)
 
+	var fileImports []FileImportFact
+	for _, elem := range definition.Elements {
+		if imp, ok := elem.(*proto.Import); ok && strings.TrimSpace(imp.Filename) != "" {
+			line := imp.Position.Line
+			if line <= 0 {
+				line = 1
+			}
+			fileImports = append(fileImports, FileImportFact{
+				SourceFile: file.RelPath,
+				RawTarget:  strings.TrimSpace(imp.Filename),
+				Kind:       "proto_import",
+				Meta: FactMeta{
+					Confidence:         ConfidenceExact,
+					Span:               SourceSpan{FilePath: file.RelPath, LineStart: line, LineEnd: line},
+					ContentFingerprint: fingerprintString("proto_import:" + file.RelPath + "->" + imp.Filename),
+				},
+			})
+		}
+	}
+
 	return &ExtractionResult{
 		IDLContracts: []ProtoFileFact{pf},
+		FileImports:  fileImports,
 	}, nil
 }
 

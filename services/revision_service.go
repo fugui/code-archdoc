@@ -972,18 +972,23 @@ func (s *RevisionService) verifyAndAppend(
 	}
 
 	irBundle := providedIR
-	if irBundle == nil && s.snapSvc != nil && snapshotID > 0 {
-		if _, _, loadedIR, lErr := s.snapSvc.LoadIRBundleBySnapshotID(ctx, snapshotID); lErr == nil {
-			irBundle = loadedIR
+	var modCtx *codeir.ModuleContextFacet
+	if s.snapSvc != nil && snapshotID > 0 {
+		if snap, loc, loadedIR, lErr := s.snapSvc.LoadIRBundleBySnapshotID(ctx, snapshotID); lErr == nil {
+			if irBundle == nil {
+				irBundle = loadedIR
+			}
+			modCtx = s.snapSvc.LoadModuleContext(ctx, snap, loc)
 		}
 	}
 
 	vRes := s.verifier.Verify(verifier.VerifyInput{
-		CommitSHA: commitSHA,
-		IR:        irBundle,
-		Slots:     asset.Meta.Slots,
-		Policy:    asset.Meta.VerifyPolicy,
-		Sections:  sectionInputs,
+		CommitSHA:     commitSHA,
+		IR:            irBundle,
+		ModuleContext: modCtx,
+		Slots:         asset.Meta.Slots,
+		Policy:        asset.Meta.VerifyPolicy,
+		Sections:      sectionInputs,
 	})
 
 	// 当快照 IR 已被回收导致本次未加载 IR 时，保留旧修订已对齐的证据锚点以免展示空白

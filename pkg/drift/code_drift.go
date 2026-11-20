@@ -11,6 +11,7 @@ import (
 
 // AnchorEvidenceInput 描述章节关联的单个稳定证据锚点（零数据库耦合）。
 type AnchorEvidenceInput struct {
+	Scope              string // "" (默认 module) | "repo"
 	FilePath           string
 	SymbolKind         string
 	FQSymbol           string
@@ -155,17 +156,22 @@ func DetectCodeDrift(ctx context.Context, in CodeDriftInput) CodeDriftResult {
 		}
 
 		for _, anchor := range sec.Evidences {
+			if anchor.SymbolKind == "module_doc" {
+				// module_doc 锚点由 ModuleDigestDrift 独立评估并与 Git Diff 漂移合并
+				continue
+			}
 			anchorRel := normalizeRelPath(anchor.FilePath)
 			if anchorRel == "" {
 				continue
 			}
+			isRepoScopeAnchor := strings.TrimSpace(anchor.Scope) == "repo"
 			repoRel := anchorRel
-			if normSubdir != "" {
+			if !isRepoScopeAnchor && normSubdir != "" {
 				repoRel = normalizeRelPath(path.Join(normSubdir, anchorRel))
 			}
 
 			cf, touched := changedMap[repoRel]
-			if !touched && normSubdir != "" {
+			if !touched && !isRepoScopeAnchor && normSubdir != "" {
 				// 兜底兼容锚点中已自带子目录前缀的历史数据
 				cf, touched = changedMap[anchorRel]
 				if touched {
@@ -176,9 +182,20 @@ func DetectCodeDrift(ctx context.Context, in CodeDriftInput) CodeDriftResult {
 				continue
 			}
 
+			removedReason := "file_removed_or_renamed"
+			symRemovedReason := "symbol_removed"
+			symModifiedReason := "symbol_modified"
+			fileModifiedReason := "file_modified"
+			if isRepoScopeAnchor {
+				removedReason = "external_contract_removed"
+				symRemovedReason = "external_contract_removed"
+				symModifiedReason = "external_contract_modified"
+				fileModifiedReason = "external_contract_modified"
+			}
+
 			status := strings.ToUpper(strings.TrimSpace(cf.Status))
 			if status == "D" || (status == "R" && normalizeRelPath(cf.OldPath) == repoRel) {
-				recordImpact("file_removed_or_renamed", "removed", anchor.FQSymbol, anchorRel)
+				recordImpact(removedReason, "removed", anchor.FQSymbol, anchorRel)
 				continue
 			}
 
@@ -186,7 +203,7 @@ func DetectCodeDrift(ctx context.Context, in CodeDriftInput) CodeDriftResult {
 				if symbolCoveredFiles[anchorRel] {
 					continue
 				}
-				recordImpact("file_modified", "modified", "", anchorRel)
+				recordImpact(fileModifiedReason, "modified", "", anchorRel)
 				continue
 			}
 
@@ -213,17 +230,17 @@ func DetectCodeDrift(ctx context.Context, in CodeDriftInput) CodeDriftResult {
 			}
 
 			if !cached.ok {
-				recordImpact("file_modified", "modified", anchor.FQSymbol, anchorRel)
+				recordImpact(fileModifiedReason, "modified", anchor.FQSymbol, anchorRel)
 				continue
 			}
 
 			newFP, exists := lookupSymbolFingerprint(cached.symbols, anchor.FQSymbol)
 			if !exists {
-				recordImpact("symbol_removed", "removed", anchor.FQSymbol, anchorRel)
+				recordImpact(symRemovedReason, "removed", anchor.FQSymbol, anchorRel)
 				continue
 			}
 			if anchor.ContentFingerprint != "" && newFP != "" && newFP != anchor.ContentFingerprint {
-				recordImpact("symbol_modified", "modified", anchor.FQSymbol, anchorRel)
+				recordImpact(symModifiedReason, "modified", anchor.FQSymbol, anchorRel)
 			}
 			// 若指纹完全一致（如仅顶部插入注释导致行号下移），判定无实质漂移，不误报！
 		}
@@ -278,12 +295,16 @@ func lookupSymbolFingerprint(symMap map[string]string, fqSymbol string) (string,
 func reasonPriority(reason string) int {
 	switch reason {
 	case "file_removed_or_renamed":
-		return 4
+		return 6
 	case "symbol_removed":
-		return 3
+		return 5
 	case "symbol_modified":
-		return 2
+		return 4
 	case "file_modified":
+		return 3
+	case "external_contract_removed":
+		return 2
+	case "external_contract_modified":
 		return 1
 	default:
 		return 0

@@ -20,6 +20,27 @@
     "data_models",
     "build"
   ],
+  "context_inputs": [
+    "module_context",
+    "module_digests"
+  ],
+  "repo_ir_facets": [
+    "tree",
+    "deps",
+    "build",
+    "idl_contracts",
+    "http_routes"
+  ],
+  "module_digest_source": {
+    "doc_type_slug": "code-walkthrough",
+    "slot_id": "directory_map",
+    "max_chars": 600,
+    "fallback_order": [
+      "approved",
+      "draft",
+      "glossary_fallback"
+    ]
+  },
   "slots": [
     {
       "slot_id": "directory_map",

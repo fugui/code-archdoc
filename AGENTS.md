@@ -22,7 +22,7 @@
 code-archdoc/
 ├── docs/                # SDD + TDD 规范文档库 (00-prompt ~ 06-ops)
 ├── config/              # 配置加载与模块常量定义
-├── models/              # 共享只读映射与 16 张 archdoc_* GORM 数据模型及仓储实现
+├── models/              # 共享只读映射与 18 张 archdoc_* GORM 数据模型及仓储实现
 ├── services/            # 领域编排与调度服务（持有仓储接口与纯引擎实例，禁用全局 models.DB）
 ├── pkg/                 # 纯领域引擎包（sandbox/codeir/doctype/llm/verifier/publisher/drift/security）
 ├── handlers/            # HTTP/SSE 控制器、三层 RBAC 守卫、审计 Diff 与 *_test.go 隔离单测
@@ -36,6 +36,7 @@ code-archdoc/
   4. **单事实源与原子落盘红线（ADR-03）**：`DocType` 以 `doc_types/<slug>/` 目录为唯一事实源（零可执行脚本），写盘须持 `slug` 锁并采用临时文件 + `fsync` + 原子 `rename`；定稿发布仅限 `Approved` 修订写入 `publish_dir/`（经 `.staging/` 原子落位），未审批草稿严禁落盘。
   5. **沙箱路径安全与跨模块复用（D-04 / Non-Goal 8）**：Git 同步统一复用 `code-common/backend/gitsync`，严禁在模块内复制粘贴 Git 同步代码；所有沙箱文件访问须经 `SafeJoin` + `EvalSymlinks` 阻断目录穿越与符号链接逃逸；对 `code-bench` 与 `code-common` 的协同改造严禁引入 `archdoc` 专有业务逻辑。
   6. **凭据防泄漏与不可信数据隔离**：`APIKey` 必须经 AES-256-GCM 加密落库并在接口/日志/审计中脱敏为 `sk-****`；L1 抽取与独立 Verifier 执行双重明文凭据/高熵拦截；仓库源码与注释一律包裹于随机 `nonce` 数据栅栏中防范提示词注入。
+  7. **Monorepo 模块发现与工作区锁边界（ADR-04）**：`pkg/codeir/slice.go`、`pkg/codeir/modules.go` 为纯函数零 IO 零 DB 依赖；`archdoc_repo_modules` 严禁冗余负责人字段（负责人唯一事实源为 `architecture_elements`）；仓库级工作区可降级读写锁由 `SnapshotService` 唯一持有，`handlers/` 与 `pkg/` 严禁直接操作沙箱工作区或调用 `gitsync.Sync`。
 
 ---
 

@@ -13,10 +13,10 @@ import (
 	"gorm.io/datatypes"
 )
 
-func TestAll16TablesPrefixAndAutoMigrate(t *testing.T) {
+func TestAll18TablesPrefixAndAutoMigrate(t *testing.T) {
 	ownModels := AllOwnModels()
-	if len(ownModels) != 16 {
-		t.Fatalf("期望自有 GORM 模型数量为 16，实际为 %d", len(ownModels))
+	if len(ownModels) != 18 {
+		t.Fatalf("期望自有 GORM 模型数量为 18，实际为 %d", len(ownModels))
 	}
 
 	seen := make(map[string]bool, len(ownModels))
@@ -79,8 +79,23 @@ func TestEnumsAndTaskStateMachine(t *testing.T) {
 	if !IsValidRevisionSource(RevSourceManualEdit) || !IsValidRevisionSource(RevSourceRollback) || IsValidRevisionSource("import") {
 		t.Fatal("RevisionSource 校验失败")
 	}
-	if !IsValidTaskKind(TaskKindGenerate) || !IsValidTaskKind(TaskKindIncrementalRefresh) || IsValidTaskKind("sync") {
+	if !IsValidTaskKind(TaskKindGenerate) || !IsValidTaskKind(TaskKindIncrementalRefresh) || !IsValidTaskKind(TaskKindBatch) || IsValidTaskKind("sync") {
 		t.Fatal("TaskKind 校验失败")
+	}
+	if !IsValidFacetName(FacetModuleContext) {
+		t.Fatal("FacetModuleContext 校验失败")
+	}
+	if !IsValidSymbolKind(SymbolKindModuleDoc) {
+		t.Fatal("SymbolKindModuleDoc 校验失败")
+	}
+	if !IsValidModuleStrategy(ModuleStrategyMerged) || !IsValidModuleStrategy(ModuleStrategyArchElements) || !IsValidModuleStrategy(ModuleStrategyTopLevelDirs) || IsValidModuleStrategy("custom") {
+		t.Fatal("ModuleStrategy 校验失败")
+	}
+	if !IsValidModuleStatus(ModuleStatusActive) || !IsValidModuleStatus(ModuleStatusMissing) || !IsValidModuleStatus(ModuleStatusIgnored) || IsValidModuleStatus("deleted") {
+		t.Fatal("ModuleStatus 校验失败")
+	}
+	if !CanTransitionBatchTaskStatus(TaskStatusGenerating, TaskStatusReady) || CanTransitionBatchTaskStatus(TaskStatusReady, TaskStatusGenerating) {
+		t.Fatal("BatchTaskStatus 转移校验失败")
 	}
 	if !IsValidTaskPriority(TaskPriorityInteractive) || !IsValidTaskPriority(TaskPriorityBatch) || IsValidTaskPriority("urgent") {
 		t.Fatal("TaskPriority 校验失败")

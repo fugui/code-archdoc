@@ -152,6 +152,24 @@ export function formatApiError(err: unknown, fallback = '操作失败，请稍�
           code: err.code,
           status: err.status,
         };
+      case 'BATCH_TOKEN_BUDGET_EXCEEDED':
+        return {
+          title: '超出批量生成总 Token 预算上限（已熔断）',
+          message:
+            err.rawMessage ||
+            '本次批量任务预估总消耗超出批量熔断上限，未发出任何模型请求。建议分批勾选部分模块或减少文档类型后重试。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'MIGRATION_CONFLICT':
+        return {
+          title: '目标子目录已存在同类型文档（迁移冲突）',
+          message:
+            err.rawMessage ||
+            '目标子目录与源子目录存在同类型文档冲突，请先清理冲突文档或更换目标子目录后重试。',
+          code: err.code,
+          status: err.status,
+        };
       case 'FILE_BUDGET_EXCEEDED':
         return {
           title: '超出单任务文件数上限（已熔断）',

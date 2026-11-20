@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -24,6 +25,7 @@ type SourcePreviewRequest struct {
 	DocID     uint
 	Commit    string
 	File      string
+	Scope     string // "" (默认 module) | "repo"（跨模块外部引用白名单预览）
 	LineStart int
 	LineEnd   int
 	Symbol    string
@@ -52,11 +54,18 @@ type SourcePreviewService struct {
 	aggregator *codeir.Aggregator
 	sandboxDir string
 	leaseMgr   *ActiveLeaseManager
+	snapSvc    *SnapshotService
 }
 
 // WithLeaseManager 注入活跃租约管理器，在源码预览读取期间防止沙箱目录被并发回收（F-27）。
 func (s *SourcePreviewService) WithLeaseManager(leaseMgr *ActiveLeaseManager) *SourcePreviewService {
 	s.leaseMgr = leaseMgr
+	return s
+}
+
+// WithSnapshotService 注入快照服务以共享按仓库粒度的工作树读写锁与沙箱同步通道（消除 P-5 并发竞态）。
+func (s *SourcePreviewService) WithSnapshotService(snapSvc *SnapshotService) *SourcePreviewService {
+	s.snapSvc = snapSvc
 	return s
 }
 
@@ -102,20 +111,35 @@ func (s *SourcePreviewService) GetSourcePreview(ctx context.Context, req SourceP
 	}
 
 	// 草稿隔离硬边界：普通用户仅允许查看已发布文档的源码证据
-	var viewRev *models.DocumentRevision
+	var (
+		viewRev    *models.DocumentRevision
+		viewSecEvs []models.SectionEvidence
+	)
 	if !req.CanWrite {
 		if doc.Status != models.DocStatusApproved || doc.PublishedRevisionID == nil {
 			return nil, ErrDraftAccessDenied
 		}
-		rev, _, rErr := s.docRepo.GetRevisionByIDWithSections(ctx, doc.ID, *doc.PublishedRevisionID)
+		rev, evs, rErr := s.docRepo.GetRevisionByIDWithSections(ctx, doc.ID, *doc.PublishedRevisionID)
 		if rErr != nil {
 			return nil, rErr
 		}
 		viewRev = rev
+		viewSecEvs = evs
 	} else if doc.CurrentRevisionNo > 0 {
-		rev, _, rErr := s.docRepo.GetRevisionWithSections(ctx, doc.ID, doc.CurrentRevisionNo)
+		rev, evs, rErr := s.docRepo.GetRevisionWithSections(ctx, doc.ID, doc.CurrentRevisionNo)
 		if rErr == nil {
 			viewRev = rev
+			viewSecEvs = evs
+		}
+	}
+
+	cleanRelFile := path.Clean(strings.TrimPrefix(fileRaw, "./"))
+	isRepoScope := strings.TrimSpace(req.Scope) == models.AnchorScopeRepo
+	if isRepoScope && doc.Subdirectory != "" {
+		// 安全红线（ADR-04 D-3 / SC-16）：当子目录文档携带 scope=repo 请求跨模块外部文件预览时，
+		// 必须严格校验 cleanRelFile 是否登记在当前可见修订的 scope=repo 证据锚点或关联快照的 module_context 白名单内，否则以 403 PATH_ESCAPE 拦截！
+		if !s.isAllowedRepoScopedFile(ctx, viewRev, viewSecEvs, cleanRelFile) {
+			return nil, sandbox.ErrPathEscape
 		}
 	}
 
@@ -128,46 +152,73 @@ func (s *SourcePreviewService) GetSourcePreview(ctx context.Context, req SourceP
 	releaseRepoLease := s.leaseMgr.AcquireRepo(doc.RepoID)
 	defer releaseRepoLease()
 
-	// 定位本地沙箱目录；若已被 LRU 回收缺失，则按仓库配置自动重新拉取
+	// 定位本地沙箱目录；若已被 LRU 回收缺失，则按仓库配置通过 SnapshotService 持写锁自动重新拉取
 	repoDir := filepath.Join(s.sandboxDir, fmt.Sprintf("repo_%d", doc.RepoID))
 	if _, statErr := os.Stat(repoDir); os.IsNotExist(statErr) {
-		if repo != nil && strings.TrimSpace(repo.URL) != "" && s.gitSyncer != nil {
-			syncRes, syncErr := s.gitSyncer.Sync(ctx, gitsync.SyncOptions{
-				RepoURL:        repo.URL,
-				LocalPath:      repoDir,
-				Branch:         doc.RefName,
-				Depth:          1,
-				AutoHealCache:  true,
-				CleanUntracked: true,
-			})
-			if syncErr != nil {
-				return nil, fmt.Errorf("自动重拉代码沙箱失败: %w", syncErr)
-			}
-			if syncRes != nil && syncRes.LocalPath != "" {
-				repoDir = syncRes.LocalPath
+		if repo != nil && strings.TrimSpace(repo.URL) != "" {
+			if s.snapSvc != nil {
+				syncedPath, _, syncErr := s.snapSvc.EnsureSandboxSynced(ctx, repo, doc.RefName)
+				if syncErr != nil {
+					return nil, fmt.Errorf("自动重拉代码沙箱失败: %w", syncErr)
+				}
+				if syncedPath != "" {
+					repoDir = syncedPath
+				}
+			} else if s.gitSyncer != nil {
+				syncRes, syncErr := s.gitSyncer.Sync(ctx, gitsync.SyncOptions{
+					RepoURL:        repo.URL,
+					LocalPath:      repoDir,
+					Branch:         doc.RefName,
+					Depth:          1,
+					AutoHealCache:  true,
+					CleanUntracked: true,
+				})
+				if syncErr != nil {
+					return nil, fmt.Errorf("自动重拉代码沙箱失败: %w", syncErr)
+				}
+				if syncRes != nil && syncRes.LocalPath != "" {
+					repoDir = syncRes.LocalPath
+				}
+			} else {
+				return nil, models.ErrNotFound
 			}
 		} else {
 			return nil, models.ErrNotFound
 		}
 	}
 
-	scopeRoot := repoDir
-	if doc.Subdirectory != "" {
-		joinedScope, sErr := sandbox.SafeJoin(repoDir, doc.Subdirectory)
-		if sErr != nil {
-			return nil, sandbox.ErrPathEscape
+	var contentBytes []byte
+	readFn := func() error {
+		scopeRoot := repoDir
+		readSubdir := doc.Subdirectory
+		if isRepoScope {
+			readSubdir = ""
+		} else if doc.Subdirectory != "" {
+			joinedScope, sErr := sandbox.SafeJoin(repoDir, doc.Subdirectory)
+			if sErr != nil {
+				return sandbox.ErrPathEscape
+			}
+			scopeRoot = joinedScope
 		}
-		scopeRoot = joinedScope
-	}
 
-	// 强制经 SafeJoin + EvalSymlinks 阻断目录穿越与仓库内指向沙箱外文件的符号链接逃逸（SC-06）
-	targetPath, safeErr := sandbox.SafeJoin(scopeRoot, fileRaw)
-	if safeErr != nil {
-		return nil, sandbox.ErrPathEscape
-	}
+		// 强制经 SafeJoin + EvalSymlinks 阻断目录穿越与仓库内指向沙箱外文件的符号链接逃逸（SC-06）
+		targetPath, safeErr := sandbox.SafeJoin(scopeRoot, fileRaw)
+		if safeErr != nil {
+			return sandbox.ErrPathEscape
+		}
 
-	cleanRelFile := path.Clean(strings.TrimPrefix(fileRaw, "./"))
-	contentBytes, err := s.readSourceBytes(ctx, repoDir, repo, doc.Subdirectory, commit, cleanRelFile, targetPath)
+		data, rErr := s.readSourceBytes(ctx, repoDir, repo, readSubdir, commit, cleanRelFile, targetPath)
+		if rErr != nil {
+			return rErr
+		}
+		contentBytes = data
+		return nil
+	}
+	if s.snapSvc != nil {
+		err = s.snapSvc.WithRepoReadLock(doc.RepoID, readFn)
+	} else {
+		err = readFn()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +272,55 @@ func (s *SourcePreviewService) GetSourcePreview(ctx context.Context, req SourceP
 		RelocatedBySymbol: relocated,
 		Content:           displayContent,
 	}, nil
+}
+
+func (s *SourcePreviewService) isAllowedRepoScopedFile(
+	ctx context.Context,
+	viewRev *models.DocumentRevision,
+	viewSecEvs []models.SectionEvidence,
+	cleanRelFile string,
+) bool {
+	if cleanRelFile == "" || cleanRelFile == "." {
+		return false
+	}
+	for _, se := range viewSecEvs {
+		var anchors []models.EvidenceAnchor
+		_ = json.Unmarshal(se.EvidencesJSON, &anchors)
+		for _, a := range anchors {
+			if a.Scope == models.AnchorScopeRepo && path.Clean(strings.TrimPrefix(a.FilePath, "./")) == cleanRelFile {
+				return true
+			}
+		}
+	}
+	if viewRev != nil && viewRev.SnapshotID > 0 && s.snapSvc != nil {
+		if snap, loc, _, err := s.snapSvc.LoadIRBundleBySnapshotID(ctx, viewRev.SnapshotID); err == nil && snap != nil {
+			if modCtx := s.snapSvc.LoadModuleContext(ctx, snap, loc); modCtx != nil {
+				for _, wf := range modCtx.ExternalFileWhitelist {
+					if path.Clean(strings.TrimPrefix(wf, "./")) == cleanRelFile {
+						return true
+					}
+				}
+				for _, es := range modCtx.ReferencedExtSymbols {
+					if path.Clean(strings.TrimPrefix(es.FilePath, "./")) == cleanRelFile {
+						return true
+					}
+				}
+				for _, up := range modCtx.UpstreamModules {
+					for _, sf := range up.SampleFiles {
+						if path.Clean(strings.TrimPrefix(sf, "./")) == cleanRelFile {
+							return true
+						}
+					}
+				}
+				for _, bc := range modCtx.RepoBuildContext {
+					if path.Clean(strings.TrimPrefix(bc.BuildFile, "./")) == cleanRelFile {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (s *SourcePreviewService) readSourceBytes(

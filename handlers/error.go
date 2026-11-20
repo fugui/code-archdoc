@@ -14,6 +14,7 @@ const (
 	ErrCodePathEscape             = "PATH_ESCAPE"
 	ErrCodeNotFound               = "NOT_FOUND"
 	ErrCodeConflict               = "CONFLICT"
+	ErrCodeMigrationConflict      = "MIGRATION_CONFLICT"
 	ErrCodeDocTypeInUse           = "DOC_TYPE_IN_USE"
 	ErrCodeOptimisticLockConflict = "OPTIMISTIC_LOCK_CONFLICT"
 	ErrCodeVerifierBlocked        = "VERIFIER_BLOCKED"

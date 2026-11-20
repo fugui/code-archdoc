@@ -3,8 +3,8 @@ package codeir
 import "time"
 
 const (
-	// SchemaVersion 当前 Code IR 规范版本号（写入快照键与每个分片）
-	SchemaVersion = "1.0"
+	// SchemaVersion 当前 Code IR 规范版本号（写入快照键与每个分片；ADR-04 升级为 1.1）
+	SchemaVersion = "1.1"
 )
 
 // Confidence 事实可信度枚举
@@ -15,7 +15,7 @@ const (
 	ConfidenceHeuristic Confidence = "heuristic"
 )
 
-// 9 大 Canonical Facet 名称常量
+// Canonical Facet 名称常量（9 大基础分片 + 第 10 可选跨模块上下文分片 module_context）
 const (
 	FacetTree              = "tree"
 	FacetBuild             = "build"
@@ -26,6 +26,7 @@ const (
 	FacetHTTPRoutes        = "http_routes"
 	FacetDataModels        = "data_models"
 	FacetRuntimePrimitives = "runtime_primitives"
+	FacetModuleContext     = "module_context"
 )
 
 // AllFacetNames 按固定顺序返回全部 9 大分片名称。
@@ -114,12 +115,30 @@ type BuildScript struct {
 	Meta    FactMeta `json:"meta"`
 }
 
+// BuildSubdirFact 父级构建文件声明的子目录挂载关系（如 CMake add_subdirectory / Maven <module>）。
+type BuildSubdirFact struct {
+	ParentBuildFile string   `json:"parent_build_file"`
+	Subdirectory    string   `json:"subdirectory"`
+	BuildSystem     string   `json:"build_system"`
+	Meta            FactMeta `json:"meta"`
+}
+
+// BuildIncludeDirFact 构建系统声明的头文件搜索路径（如 CMake include_directories / target_include_directories / compile_commands -I）。
+type BuildIncludeDirFact struct {
+	BuildFile  string   `json:"build_file"`
+	Target     string   `json:"target,omitempty"`
+	IncludeDir string   `json:"include_dir"` // 归一化为相对于仓库根的 POSIX 路径
+	Meta       FactMeta `json:"meta"`
+}
+
 type BuildFacet struct {
-	SchemaVersion  string          `json:"schema_version"`
-	BuildSystems   []string        `json:"build_systems"`
-	Targets        []BuildTarget   `json:"targets"`
-	CompileOptions []CompileOption `json:"compile_options"`
-	Scripts        []BuildScript   `json:"scripts,omitempty"`
+	SchemaVersion  string                `json:"schema_version"`
+	BuildSystems   []string              `json:"build_systems"`
+	Targets        []BuildTarget         `json:"targets"`
+	CompileOptions []CompileOption       `json:"compile_options"`
+	Scripts        []BuildScript         `json:"scripts,omitempty"`
+	Subdirectories []BuildSubdirFact     `json:"subdirectories,omitempty"`
+	IncludeDirs    []BuildIncludeDirFact `json:"include_dirs,omitempty"`
 }
 
 // ─── 3. deps Facet ───
@@ -138,10 +157,20 @@ type InternalModuleEdge struct {
 	Weight int    `json:"weight"`
 }
 
+// FileImportFact 文件级显式导入/包含事实（支撑 SliceByModule 零 I/O 确定性推导跨模块依赖与外部符号引用）。
+type FileImportFact struct {
+	SourceFile string   `json:"source_file"`           // 发起引用的文件（全仓相对路径）
+	RawTarget  string   `json:"raw_target"`            // 原始引用串（如 "common/logger.h", "com.example.common.RpcResult"）
+	Kind       string   `json:"kind"`                  // cpp_include | proto_import | java_import | py_import
+	SymbolHint string   `json:"symbol_hint,omitempty"` // 关联的类/包/符号提示
+	Meta       FactMeta `json:"meta"`
+}
+
 type DepsFacet struct {
 	SchemaVersion   string               `json:"schema_version"`
 	ExternalDeps    []ExternalDep        `json:"external_deps"`
 	InternalModules []InternalModuleEdge `json:"internal_modules"`
+	FileImports     []FileImportFact     `json:"file_imports,omitempty"`
 }
 
 // ─── 4. config_keys Facet ───
@@ -369,4 +398,68 @@ type ModuleSummaryEntry struct {
 type GlossaryTerm struct {
 	Term       string `json:"term"`
 	Definition string `json:"definition"`
+}
+
+// ─── 10. module_context Facet (ADR-04 D-2 & D-3) ───
+
+// ModuleContextFacet 子目录模块快照专属的第 10 分片（表达该模块与仓库其他模块及父级构建系统的跨界契约）。
+type ModuleContextFacet struct {
+	SchemaVersion         string                `json:"schema_version"`
+	ModulePath            string                `json:"module_path"`
+	BaseSnapshotID        uint                  `json:"base_snapshot_id,omitempty"`
+	UpstreamModules       []ModuleDepEdge       `json:"upstream_modules"`
+	DownstreamModules     []ModuleDepEdge       `json:"downstream_modules"`
+	ReferencedExtSymbols  []ExternalSymbolRef   `json:"referenced_ext_symbols"`
+	RepoBuildContext      []BuildContextSnippet `json:"repo_build_context"`
+	ExternalFileWhitelist []string              `json:"external_file_whitelist,omitempty"`
+	Truncated             bool                  `json:"truncated,omitempty"`
+}
+
+// ModuleDepEdge 跨模块依赖边。
+type ModuleDepEdge struct {
+	TargetModule string     `json:"target_module"`
+	EdgeKind     string     `json:"edge_kind"` // cpp_include | cmake_link | proto_import | java_import | py_import
+	Weight       int        `json:"weight"`
+	SampleFiles  []string   `json:"sample_files,omitempty"` // 最多 5 条代表性仓库根相对路径
+	Confidence   Confidence `json:"confidence"`             // exact | heuristic
+}
+
+// ExternalSymbolRef 当前模块引用的跨模块外部符号/契约签名摘要（不展开实现体）。
+type ExternalSymbolRef struct {
+	OwnerModule string     `json:"owner_module"`
+	FilePath    string     `json:"file_path"`   // 仓库根相对路径（配合 scope="repo" 锚点使用）
+	SymbolKind  string     `json:"symbol_kind"` // cpp_class | cpp_func | proto_service | proto_message | java_class | py_class
+	FQSymbol    string     `json:"fq_symbol"`
+	Signature   string     `json:"signature"`
+	Span        SourceSpan `json:"span"`
+	Fingerprint string     `json:"fingerprint"`
+	Confidence  Confidence `json:"confidence"`
+}
+
+// BuildContextSnippet 父级构建文件对当前模块的挂载或链接摘要。
+type BuildContextSnippet struct {
+	BuildFile string     `json:"build_file"` // 如 "CMakeLists.txt"
+	Directive string     `json:"directive"`  // 如 "add_subdirectory(order)"
+	Span      SourceSpan `json:"span"`
+}
+
+// ModuleDigestInput 整仓聚合（Roll-up）时注入的各活跃子模块确定性摘要（ADR-04 D-4）。
+type ModuleDigestInput struct {
+	ModulePath     string   `json:"module_path"`
+	DisplayName    string   `json:"display_name,omitempty"`
+	Source         string   `json:"source"` // approved | draft | glossary_fallback
+	DocID          *uint    `json:"doc_id,omitempty"`
+	RevisionNo     int      `json:"revision_no,omitempty"`
+	OverviewDigest string   `json:"overview_digest"` // <= 600 字符的确定性摘要
+	ContentSHA256  string   `json:"content_sha256"`  // 摘要源槽位的 SHA256 指纹
+	KeyContracts   []string `json:"key_contracts,omitempty"`
+}
+
+// CrossModuleEdge 全仓跨模块依赖拓扑有向边。
+type CrossModuleEdge struct {
+	FromModule string     `json:"from_module"`
+	ToModule   string     `json:"to_module"`
+	EdgeKind   string     `json:"edge_kind"`
+	Weight     int        `json:"weight"`
+	Confidence Confidence `json:"confidence"`
 }

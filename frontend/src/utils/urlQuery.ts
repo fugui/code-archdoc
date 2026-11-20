@@ -28,6 +28,7 @@ export interface EvidenceDeepLinkParams {
   symbol?: string;
   lineStart?: number;
   lineEnd?: number;
+  scope?: 'module' | 'repo';
 }
 
 const VALID_STATUS_SET = new Set<string>(['all', 'approved', 'draft', 'drifted', 'missing']);
@@ -241,12 +242,17 @@ export function parseEvidenceDeepLinkParams(params: URLSearchParams): EvidenceDe
     }
   }
 
+  const rawScope = (params.get('scope') ?? '').trim().toLowerCase();
+  const scope: 'module' | 'repo' | undefined =
+    rawScope === 'repo' ? 'repo' : rawScope === 'module' ? 'module' : undefined;
+
   return {
     commit,
     file,
     symbol,
     lineStart,
     lineEnd,
+    scope,
   };
 }
 

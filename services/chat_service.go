@@ -112,6 +112,7 @@ type PreparedChatRefine struct {
 	TargetSlot     doctype.SlotSpec
 	DocTypeBundle  *doctype.AssetBundle
 	IR             *codeir.CodeIRBundle
+	ModuleContext  *codeir.ModuleContextFacet
 	Session        *models.ChatSession
 	AssistantMsg   *models.ChatMessage
 	ModelTier      string
@@ -334,11 +335,15 @@ func (s *ChatService) PrepareRefine(
 		return nil, err
 	}
 
-	// 尽力加载快照 Code IR 切片（离线单测无快照时平滑降级为 nil）
-	var irBundle *codeir.CodeIRBundle
+	// 尽力加载快照 Code IR 切片及可选 module_context（离线单测无快照时平滑降级为 nil）
+	var (
+		irBundle *codeir.CodeIRBundle
+		modCtx   *codeir.ModuleContextFacet
+	)
 	if s.snapSvc != nil && curRev.SnapshotID > 0 {
-		if _, _, ir, irErr := s.snapSvc.LoadIRBundleBySnapshotID(ctx, curRev.SnapshotID); irErr == nil {
+		if snap, loc, ir, irErr := s.snapSvc.LoadIRBundleBySnapshotID(ctx, curRev.SnapshotID); irErr == nil {
 			irBundle = ir
+			modCtx = s.snapSvc.LoadModuleContext(ctx, snap, loc)
 		}
 	}
 
@@ -433,6 +438,7 @@ func (s *ChatService) PrepareRefine(
 		TargetSlot:     slotSpec,
 		DocTypeBundle:  dtBundle,
 		IR:             irBundle,
+		ModuleContext:  modCtx,
 		Session:        sess,
 		AssistantMsg:   assistantMsg,
 		ModelTier:      resolvedTier,
@@ -599,11 +605,12 @@ func (s *ChatService) ExecuteRefineStream(
 		policy = prep.DocTypeBundle.Meta.VerifyPolicy
 	}
 	verifyRes := s.verifier.Verify(verifier.VerifyInput{
-		CommitSHA: prep.CurrentRev.CommitSHA,
-		IR:        prep.IR,
-		Slots:     slots,
-		Policy:    policy,
-		Sections:  secInputs,
+		CommitSHA:     prep.CurrentRev.CommitSHA,
+		IR:            prep.IR,
+		ModuleContext: prep.ModuleContext,
+		Slots:         slots,
+		Policy:        policy,
+		Sections:      secInputs,
 	})
 
 	alignedAnchors := convertVerifierAnchors(verifyRes.SectionEvidences[prep.TargetSlot.SlotID])
@@ -915,6 +922,7 @@ func (s *ChatService) collectEvidenceSnippets(
 			DocID:     docID,
 			Commit:    commitSHA,
 			File:      an.FilePath,
+			Scope:     an.Scope,
 			LineStart: an.LineStart,
 			LineEnd:   an.LineEnd,
 			Symbol:    an.FQSymbol,
@@ -984,6 +992,7 @@ func convertVerifierAnchors(in []verifier.EvidenceAnchor) []models.EvidenceAncho
 		out = append(out, models.EvidenceAnchor{
 			AnchorID:           a.AnchorID,
 			AnchorKey:          a.AnchorKey,
+			Scope:              a.Scope,
 			FilePath:           a.FilePath,
 			SymbolKind:         a.SymbolKind,
 			FQSymbol:           a.FQSymbol,

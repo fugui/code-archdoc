@@ -16,6 +16,7 @@ type mavenProjectXML struct {
 	ArtifactID   string               `xml:"artifactId"`
 	Version      string               `xml:"version"`
 	Packaging    string               `xml:"packaging"`
+	Modules      []string             `xml:"modules>module"`
 	Properties   mavenPropertiesXML   `xml:"properties"`
 	Dependencies []mavenDependencyXML `xml:"dependencies>dependency"`
 }
@@ -91,6 +92,22 @@ func (e *BuildExtractor) parseMavenPom(filePath string, content []byte) *Extract
 				ContentFingerprint: fingerprintString("maven:" + proj.GroupID + ":" + art),
 			},
 		})
+	}
+
+	for _, mod := range proj.Modules {
+		cleanMod := normalizeCMakeRelDir(filePath, mod)
+		if cleanMod != "" {
+			res.Subdirectories = append(res.Subdirectories, BuildSubdirFact{
+				ParentBuildFile: filePath,
+				Subdirectory:    cleanMod,
+				BuildSystem:     "maven",
+				Meta: FactMeta{
+					Confidence:         ConfidenceExact,
+					Span:               span,
+					ContentFingerprint: fingerprintString("maven-mod:" + filePath + "->" + cleanMod),
+				},
+			})
+		}
 	}
 
 	props := proj.Properties.Entries

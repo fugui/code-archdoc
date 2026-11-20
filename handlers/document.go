@@ -366,6 +366,7 @@ func (h *AppHandlers) GetSourcePreview(c *gin.Context) {
 	fileParam := c.Query("file")
 	commitParam := c.Query("commit")
 	symbolParam := c.Query("symbol")
+	scopeParam := strings.TrimSpace(c.Query("scope"))
 
 	var lineStart, lineEnd int
 	if rawStart := strings.TrimSpace(c.Query("line_start")); rawStart != "" {
@@ -389,6 +390,7 @@ func (h *AppHandlers) GetSourcePreview(c *gin.Context) {
 		DocID:     doc.ID,
 		Commit:    commitParam,
 		File:      fileParam,
+		Scope:     scopeParam,
 		LineStart: lineStart,
 		LineEnd:   lineEnd,
 		Symbol:    symbolParam,

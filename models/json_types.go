@@ -7,6 +7,7 @@ type SnapshotStats struct {
 	NoiseSkippedByRule map[string]int   `json:"noise_skipped_by_rule"` // third_party | generated | binary | archdocignore
 	ParseDiagnostics   int              `json:"parse_diagnostics"`
 	ExtractDurationMs  int64            `json:"extract_duration_ms"`
+	DegradedReason     string           `json:"degraded_reason,omitempty"` // ADR-04 §4.3 超大仓降级原因
 }
 
 // 2. CodeIRFacet.SummaryJSON (< 512B 顶层轻量统计)
@@ -18,7 +19,7 @@ type FacetSummary struct {
 	ExtraCounts     map[string]int `json:"extra_counts,omitempty"`
 }
 
-// 3. GenTask.BudgetAdviceJSON (预算熔断结构化建议，SC-09)
+// 3. GenTask.BudgetAdviceJSON (预算熔断结构化建议，SC-09 & ADR-04 D-5)
 type BudgetAdvice struct {
 	EstimatedTokens  int                   `json:"estimated_tokens"`
 	MaxTokensPerTask int                   `json:"max_tokens_per_task"`
@@ -26,7 +27,14 @@ type BudgetAdvice struct {
 	MaxFilesPerTask  int                   `json:"max_files_per_task"`
 	TopDirectories   []BudgetDirectoryItem `json:"top_directories"`
 	TopDocTypes      []BudgetDocTypeItem   `json:"top_doc_types"`
+	ModuleBreakdown  []BudgetModuleItem    `json:"module_breakdown,omitempty"`
 	Suggestions      []string              `json:"suggestions"`
+}
+
+type BudgetModuleItem struct {
+	Subdirectory    string `json:"subdirectory"`
+	EstimatedTokens int    `json:"estimated_tokens"`
+	EffectiveFiles  int    `json:"effective_files"`
 }
 
 type BudgetDirectoryItem struct {
@@ -45,6 +53,7 @@ type CitedAnchorCandidate struct {
 	FilePath   string `json:"file_path"`
 	SymbolKind string `json:"symbol_kind,omitempty"`
 	FQSymbol   string `json:"fq_symbol,omitempty"`
+	Scope      string `json:"scope,omitempty"` // "" | "module" | "repo" (ADR-04 D-3)
 	Reason     string `json:"reason,omitempty"`
 }
 
@@ -110,13 +119,14 @@ type SectionVerifierSummary struct {
 	HasBlocker      bool `json:"has_blocker"`
 }
 
-// 8. SectionEvidence.EvidencesJSON (严格对齐 ADR-03 §2.1)
+// 8. SectionEvidence.EvidencesJSON (严格对齐 ADR-03 §2.1 & ADR-04 §5.3)
 type EvidenceAnchor struct {
 	AnchorID           string `json:"anchor_id"`
 	AnchorKey          string `json:"anchor_key"`
 	FilePath           string `json:"file_path"`
 	SymbolKind         string `json:"symbol_kind"`
 	FQSymbol           string `json:"fq_symbol"`
+	Scope              string `json:"scope,omitempty"` // "" | "module" | "repo"
 	ContentFingerprint string `json:"content_fingerprint"`
 	CommitSHA          string `json:"commit_sha"`
 	LineStart          int    `json:"line_start"`

@@ -72,6 +72,65 @@ func (h *AppHandlers) TriggerGenerateTask(c *gin.Context) {
 	c.JSON(http.StatusAccepted, vo)
 }
 
+// TriggerBatchGenerateTask 触发单仓多模块 + 可选整仓顺序批量反推生成任务（POST /api/tasks/generate-batch -> 202）。
+func (h *AppHandlers) TriggerBatchGenerateTask(c *gin.Context) {
+	user, ok := CurrentUserFromContext(c)
+	if !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+
+	var req services.BatchGenerateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "请求体 JSON 格式非法", nil)
+		return
+	}
+	if req.RepoID == 0 {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "repo_id 必须为正整数", nil)
+		return
+	}
+
+	vo, err := h.genSvc.SubmitBatchGenerateTask(c.Request.Context(), req, user)
+	if err != nil {
+		var forbErr *services.BatchForbiddenError
+		switch {
+		case errors.As(err, &forbErr):
+			WriteError(c, http.StatusForbidden, ErrCodeForbidden, forbErr.Error(), gin.H{
+				"forbidden_scopes": forbErr.ForbiddenScopes,
+			})
+		case errors.Is(err, sandbox.ErrInvalidSubdir):
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidSubdir, err.Error(), nil)
+		case errors.Is(err, services.ErrDocTypeInactive):
+			WriteError(c, http.StatusBadRequest, ErrCodeDocTypeInactive, err.Error(), nil)
+		case errors.Is(err, services.ErrInvalidTaskParam):
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, err.Error(), nil)
+		case errors.Is(err, models.ErrNotFound):
+			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标代码仓库不存在", nil)
+		case errors.Is(err, services.ErrQueueFull):
+			WriteError(c, http.StatusTooManyRequests, ErrCodeQueueFull, err.Error(), nil)
+		default:
+			log.Printf("[%s] 提交批量生成任务失败: %v", config.ServiceName, err)
+			WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "提交批量生成任务失败", nil)
+		}
+		return
+	}
+
+	commonAudit.SetAuditContext(
+		c,
+		config.ModuleKey,
+		"trigger_batch",
+		commonModels.AuditLevelP1,
+		fmt.Sprintf("触发仓库 #%d 批量文档反推任务 #%d (all_modules=%v, include_repo=%v, doc_types=%v)", req.RepoID, vo.ID, req.AllModules, req.IncludeRepoScope, vo.DocTypes),
+		"gen_task",
+		strconv.FormatUint(uint64(vo.ID), 10),
+		fmt.Sprintf("batch-task#%d", vo.ID),
+		nil,
+		vo,
+	)
+
+	c.JSON(http.StatusAccepted, vo)
+}
+
 // ListTasks 分页查询生成任务历史（GET /api/tasks）。
 func (h *AppHandlers) ListTasks(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -157,7 +216,7 @@ func (h *AppHandlers) CancelTask(c *gin.Context) {
 	}
 	taskID := uint(taskIDVal)
 
-	repoID, subdir, err := h.genSvc.GetTaskScope(c.Request.Context(), taskID)
+	repoID, scopes, err := h.genSvc.GetTaskScopesForCancel(c.Request.Context(), taskID)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
 			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标任务不存在", nil)
@@ -167,8 +226,10 @@ func (h *AppHandlers) CancelTask(c *gin.Context) {
 		return
 	}
 
-	if _, _, ok := h.CheckScopeWriteOrAbort(c, repoID, subdir); !ok {
-		return
+	for _, sc := range scopes {
+		if _, _, ok := h.CheckScopeWriteOrAbort(c, repoID, sc); !ok {
+			return
+		}
 	}
 
 	vo, err := h.genSvc.CancelTask(c.Request.Context(), taskID)

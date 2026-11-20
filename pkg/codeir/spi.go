@@ -16,8 +16,11 @@ type ExtractionResult struct {
 	Build             []BuildTarget
 	CompileOptions    []CompileOption
 	Scripts           []BuildScript
+	Subdirectories    []BuildSubdirFact
+	IncludeDirs       []BuildIncludeDirFact
 	ExternalDeps      []ExternalDep
 	InternalModules   []InternalModuleEdge
+	FileImports       []FileImportFact
 	ConfigKeys        []ConfigKeyFact
 	Symbols           []SymbolFact
 	IDLContracts      []ProtoFileFact

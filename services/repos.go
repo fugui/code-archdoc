@@ -54,10 +54,13 @@ type TaskRepo interface {
 	ListTasks(ctx context.Context, filter models.TaskListFilter) ([]models.GenTask, int64, error)
 	ListActiveTasksByRepos(ctx context.Context, repoIDs []uint) ([]models.GenTask, error)
 	TransitionTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error
+	TransitionBatchTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error
 	UpdateTaskFields(ctx context.Context, taskID uint, updates map[string]any) error
 	CreateSlotTasks(ctx context.Context, slots []models.GenSlotTask) error
 	UpdateSlotTask(ctx context.Context, slotTask *models.GenSlotTask) error
 	GetSlotTask(ctx context.Context, taskID, slotTaskID uint) (*models.GenSlotTask, error)
+	ListChildTasks(ctx context.Context, parentTaskID uint) ([]models.GenTask, error)
+	HasActiveTasksInSubdirs(ctx context.Context, repoID uint, subdirs []string) (bool, error)
 }
 
 // DocumentRepo 管理 archdoc_documents / archdoc_document_revisions / archdoc_section_evidences
@@ -79,6 +82,20 @@ type DocumentRepo interface {
 	UpdateSectionOwnership(ctx context.Context, docID, revID uint, slotID, ownership string, clearDriftReview bool) error
 	MarkPublished(ctx context.Context, docID, revID uint, commitSHA, relPath string, publishedBy uint, publishedAt time.Time) error
 	MarkUnpublished(ctx context.Context, docID uint) error
+	MigrateScopeDocuments(ctx context.Context, repoID uint, fromSubdir, toSubdir string, titleBuilder func(docTypeSlug, oldTitle string) string) ([]models.Document, error)
+}
+
+// ModuleRepo 管理 archdoc_repo_module_policies 与 archdoc_repo_modules（派生模块索引与策略）
+type ModuleRepo interface {
+	GetPolicy(ctx context.Context, repoID uint) (*models.RepoModulePolicy, error)
+	UpsertPolicy(ctx context.Context, policy *models.RepoModulePolicy) error
+	ListModulesByRepo(ctx context.Context, repoID uint) ([]models.RepoModule, error)
+	ListModulesByRepos(ctx context.Context, repoIDs []uint) ([]models.RepoModule, error)
+	GetModuleByID(ctx context.Context, repoID, moduleID uint) (*models.RepoModule, error)
+	UpsertModules(ctx context.Context, repoID uint, discovered []models.RepoModule, seenAt time.Time) error
+	UpdateModuleStatus(ctx context.Context, repoID, moduleID uint, status string) (*models.RepoModule, error)
+	UpsertSingleModule(ctx context.Context, mod *models.RepoModule) error
+	MarkSubdirMissing(ctx context.Context, repoID uint, subdir string) error
 }
 
 // ChatRepo 管理 archdoc_chat_sessions 与 archdoc_chat_messages (W2)

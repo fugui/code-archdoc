@@ -113,6 +113,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
         symbol: parsed.symbol,
         lineStart: parsed.lineStart,
         lineEnd: parsed.lineEnd,
+        scope: parsed.scope,
       });
     }
   }, [evidenceDeepLink, paramDocId, searchParams]);
@@ -213,6 +214,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
       lineStart: anchor.line_start,
       lineEnd: anchor.line_end,
       confidence: anchor.confidence,
+      scope: anchor.scope === 'repo' ? 'repo' : undefined,
     });
     setDrawerTab('evidence');
     setDrawerOpen(true);
@@ -227,6 +229,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
       symbol: params.symbol,
       lineStart: params.lineStart,
       lineEnd: params.lineEnd,
+      scope: params.scope,
     });
     setDrawerTab('evidence');
     setDrawerOpen(true);

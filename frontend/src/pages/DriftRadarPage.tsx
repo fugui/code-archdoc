@@ -62,6 +62,14 @@ function driftReasonLabel(reason: string): { text: string; status: StatusType } 
       return { text: '锚定符号语义变更', status: 'warning' };
     case 'file_modified':
       return { text: '证据文件内容变更', status: 'warning' };
+    case 'external_contract_removed':
+      return { text: '上游外部契约文件已移除', status: 'failed' };
+    case 'external_contract_modified':
+      return { text: '上游外部契约符号变更', status: 'warning' };
+    case 'module_digest_changed':
+      return { text: '子模块文档摘要已更新', status: 'warning' };
+    case 'module_scope_changed':
+      return { text: '仓库活跃模块范围变化', status: 'running' };
     case 'slot_added':
       return { text: '模板新增槽位', status: 'running' };
     case 'slot_removed':

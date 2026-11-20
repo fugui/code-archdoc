@@ -52,6 +52,8 @@ type SandboxToolkitConfig struct {
 	RepoRoot string
 	// IR 可选：L1 Code IR 事实包，供 get_symbol_impl 精确直达符号源码坐标。
 	IR *codeir.CodeIRBundle
+	// ExternalFileWhitelist 可选：module_context 声明的跨模块外部契约文件只读白名单（仓库根相对路径 -> true）。
+	ExternalFileWhitelist map[string]bool
 	// Redactor 三级凭据脱敏器；为空时自动初始化默认 SecretRedactor。
 	Redactor *security.SecretRedactor
 
@@ -64,17 +66,19 @@ type SandboxToolkitConfig struct {
 
 // SandboxSourceToolkit 实现零副作用、零 Shell、经 SafeJoin + 三级脱敏保护的只读代码探索工具集。
 type SandboxSourceToolkit struct {
-	scopeRoot        string
-	scopeRelFromRepo string
-	hasFS            bool
-	ir               *codeir.CodeIRBundle
-	redactor         *security.SecretRedactor
-	ignoreMatcher    *sandbox.IgnoreMatcher
-	maxReadLines     int
-	maxOutputBytes   int
-	maxGrepMatches   int
-	maxGrepFiles     int
-	maxFileBytes     int64
+	scopeRoot         string
+	repoRoot          string
+	scopeRelFromRepo  string
+	hasFS             bool
+	ir                *codeir.CodeIRBundle
+	externalWhitelist map[string]bool
+	redactor          *security.SecretRedactor
+	ignoreMatcher     *sandbox.IgnoreMatcher
+	maxReadLines      int
+	maxOutputBytes    int
+	maxGrepMatches    int
+	maxGrepFiles      int
+	maxFileBytes      int64
 }
 
 // NewSandboxSourceToolkit 构造受控只读源码工具集。
@@ -109,12 +113,14 @@ func NewSandboxSourceToolkit(cfg SandboxToolkitConfig) *SandboxSourceToolkit {
 
 	var ignoreMatcher *sandbox.IgnoreMatcher
 	var scopeRelFromRepo string
+	var resolvedRepoRoot string
 	ignoreBase := strings.TrimSpace(cfg.RepoRoot)
 	if ignoreBase == "" {
 		ignoreBase = scopeRoot
 	}
 	if ignoreBase != "" {
 		if resolvedBase, baseErr := sandbox.SafeJoin(ignoreBase, "."); baseErr == nil {
+			resolvedRepoRoot = resolvedBase
 			if ignorePath, err := sandbox.SafeJoin(resolvedBase, ".archdocignore"); err == nil {
 				if data, rErr := os.ReadFile(ignorePath); rErr == nil {
 					ignoreMatcher = sandbox.ParseIgnoreRules(string(data))
@@ -128,18 +134,33 @@ func NewSandboxSourceToolkit(cfg SandboxToolkitConfig) *SandboxSourceToolkit {
 		}
 	}
 
+	var extWhitelist map[string]bool
+	if len(cfg.ExternalFileWhitelist) > 0 {
+		extWhitelist = make(map[string]bool, len(cfg.ExternalFileWhitelist))
+		for k, v := range cfg.ExternalFileWhitelist {
+			if v {
+				cleanK := strings.TrimPrefix(path.Clean(strings.ReplaceAll(strings.TrimSpace(k), "\\", "/")), "./")
+				if cleanK != "" && cleanK != "." && !strings.HasPrefix(cleanK, "..") {
+					extWhitelist[cleanK] = true
+				}
+			}
+		}
+	}
+
 	return &SandboxSourceToolkit{
-		scopeRoot:        scopeRoot,
-		scopeRelFromRepo: scopeRelFromRepo,
-		hasFS:            hasFS,
-		ir:               cfg.IR,
-		redactor:         redactor,
-		ignoreMatcher:    ignoreMatcher,
-		maxReadLines:     maxRead,
-		maxOutputBytes:   maxOut,
-		maxGrepMatches:   maxGrep,
-		maxGrepFiles:     maxGrepFiles,
-		maxFileBytes:     maxFileBytes,
+		scopeRoot:         scopeRoot,
+		repoRoot:          resolvedRepoRoot,
+		scopeRelFromRepo:  scopeRelFromRepo,
+		hasFS:             hasFS,
+		ir:                cfg.IR,
+		externalWhitelist: extWhitelist,
+		redactor:          redactor,
+		ignoreMatcher:     ignoreMatcher,
+		maxReadLines:      maxRead,
+		maxOutputBytes:    maxOut,
+		maxGrepMatches:    maxGrep,
+		maxGrepFiles:      maxGrepFiles,
+		maxFileBytes:      maxFileBytes,
 	}
 }
 
@@ -813,6 +834,16 @@ func (t *SandboxSourceToolkit) validateReadableFile(rawRel string) (string, stri
 		return "", "", fmt.Errorf("目标文件越界或指向沙箱外符号链接，已拦截: %s", cleanRel)
 	}
 	info, err := os.Stat(safeAbs)
+	if err != nil && os.IsNotExist(err) && t.repoRoot != "" && t.externalWhitelist[cleanRel] {
+		// 若文件不在当前子目录内，但明确登记在 module_context 跨模块外部契约只读白名单中，允许经 SafeJoin(repoRoot) 只读访问
+		if repoAbs, rJoinErr := sandbox.SafeJoin(t.repoRoot, cleanRel); rJoinErr == nil {
+			if rInfo, rStatErr := os.Stat(repoAbs); rStatErr == nil {
+				safeAbs = repoAbs
+				info = rInfo
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", "", fmt.Errorf("文件不存在: %s", cleanRel)

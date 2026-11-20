@@ -3,9 +3,17 @@ import type {
   DocTypeDetailVO,
   DocTypeSummaryVO,
   ItemsResponse,
+  MigrateModuleResultVO,
+  MigrateRepoModulePayload,
+  RefreshModulesResultVO,
   RepoCoverageListResponse,
   RepoListQuery,
+  RepoModulePolicyVO,
+  RepoModuleVO,
+  RepoModulesListVO,
   RepoScopesDetailResponse,
+  UpdateRepoModulePolicyPayload,
+  UpdateRepoModuleStatusPayload,
 } from '../types';
 import { apiRequest } from './client';
 
@@ -40,4 +48,49 @@ export async function listRepos(query: RepoListQuery): Promise<RepoCoverageListR
 
 export async function getRepoScopes(repoId: number): Promise<RepoScopesDetailResponse> {
   return apiRequest<RepoScopesDetailResponse>(`/repos/${repoId}/scopes`);
+}
+
+export async function listRepoModules(repoId: number): Promise<RepoModulesListVO> {
+  return apiRequest<RepoModulesListVO>(`/repos/${repoId}/modules`);
+}
+
+export async function getRepoModulePolicy(repoId: number): Promise<RepoModulePolicyVO> {
+  return apiRequest<RepoModulePolicyVO>(`/repos/${repoId}/module-policy`);
+}
+
+export async function updateRepoModulePolicy(
+  repoId: number,
+  payload: UpdateRepoModulePolicyPayload,
+): Promise<RepoModulePolicyVO> {
+  return apiRequest<RepoModulePolicyVO>(`/repos/${repoId}/module-policy`, {
+    method: 'PUT',
+    bodyData: payload,
+  });
+}
+
+export async function refreshRepoModules(repoId: number): Promise<RefreshModulesResultVO> {
+  return apiRequest<RefreshModulesResultVO>(`/repos/${repoId}/modules/refresh`, {
+    method: 'POST',
+  });
+}
+
+export async function updateRepoModuleStatus(
+  repoId: number,
+  moduleId: number,
+  payload: UpdateRepoModuleStatusPayload,
+): Promise<RepoModuleVO> {
+  return apiRequest<RepoModuleVO>(`/repos/${repoId}/modules/${moduleId}/status`, {
+    method: 'PATCH',
+    bodyData: payload,
+  });
+}
+
+export async function migrateRepoModule(
+  repoId: number,
+  payload: MigrateRepoModulePayload,
+): Promise<MigrateModuleResultVO> {
+  return apiRequest<MigrateModuleResultVO>(`/repos/${repoId}/modules/migrate`, {
+    method: 'POST',
+    bodyData: payload,
+  });
 }

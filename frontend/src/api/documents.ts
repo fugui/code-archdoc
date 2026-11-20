@@ -114,6 +114,7 @@ export async function getSourcePreview(
   if (query.lineStart && query.lineStart > 0) qs.set('line_start', String(query.lineStart));
   if (query.lineEnd && query.lineEnd > 0) qs.set('line_end', String(query.lineEnd));
   if (query.symbol) qs.set('symbol', query.symbol);
+  if (query.scope === 'repo') qs.set('scope', 'repo');
   return apiRequest<SourcePreviewVO>(`/documents/${docId}/source-preview?${qs.toString()}`);
 }
 

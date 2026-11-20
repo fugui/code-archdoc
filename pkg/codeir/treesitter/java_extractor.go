@@ -94,6 +94,10 @@ func (w *javaWalker) walk(node *tree_sitter.Node, classStack []string, classRout
 		w.pkgName = w.extractPackageName(node)
 		return
 
+	case "import_declaration":
+		w.handleImportDecl(node)
+		return
+
 	case "class_declaration", "interface_declaration", "enum_declaration", "record_declaration":
 		w.handleTypeDecl(node, classStack)
 		return
@@ -116,6 +120,29 @@ func (w *javaWalker) extractPackageName(node *tree_sitter.Node) string {
 		}
 	}
 	return ""
+}
+
+func (w *javaWalker) handleImportDecl(node *tree_sitter.Node) {
+	raw := strings.TrimSpace(node.Utf8Text(w.src))
+	raw = strings.TrimPrefix(raw, "import")
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "static")
+	raw = strings.TrimSpace(strings.TrimSuffix(raw, ";"))
+	if raw == "" {
+		return
+	}
+	span := nodeSpan(w.filePath, node)
+	w.res.FileImports = append(w.res.FileImports, codeir.FileImportFact{
+		SourceFile: w.filePath,
+		RawTarget:  raw,
+		Kind:       "java_import",
+		SymbolHint: raw,
+		Meta: codeir.FactMeta{
+			Confidence:         codeir.ConfidenceExact,
+			Span:               span,
+			ContentFingerprint: ComputeNodeFingerprint(node, w.src),
+		},
+	})
 }
 
 func (w *javaWalker) fqName(parts ...string) string {

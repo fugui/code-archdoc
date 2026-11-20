@@ -19,6 +19,26 @@
     "runtime_primitives",
     "symbols"
   ],
+  "context_inputs": [
+    "module_context",
+    "module_digests"
+  ],
+  "repo_ir_facets": [
+    "config_keys",
+    "tree",
+    "build",
+    "deps"
+  ],
+  "module_digest_source": {
+    "doc_type_slug": "ops-and-config",
+    "slot_id": "deploy_topology",
+    "max_chars": 600,
+    "fallback_order": [
+      "approved",
+      "draft",
+      "glossary_fallback"
+    ]
+  },
   "slots": [
     {
       "slot_id": "config_inventory",

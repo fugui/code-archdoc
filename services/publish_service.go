@@ -244,6 +244,68 @@ func (s *PublishService) UnpublishDocument(ctx context.Context, docID uint) (*Un
 	}, nil
 }
 
+// RepublishAfterMigrate 在模块子目录迁移完成后，针对原已发布 (approved) 文档按新子目录重新渲染 Frontmatter/深链、
+// 原子写入新落盘路径、删除旧文件路径并重建 README.md，最后同步更新 DB 的 published_rel_path。
+func (s *PublishService) RepublishAfterMigrate(ctx context.Context, docID uint, oldRelPath string) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+
+	doc, err := s.docRepo.GetByID(ctx, docID)
+	if err != nil {
+		return err
+	}
+	if doc.Status != models.DocStatusApproved || doc.PublishedRevisionID == nil {
+		return nil
+	}
+
+	rev, secEvs, err := s.docRepo.GetRevisionByIDWithSections(ctx, doc.ID, *doc.PublishedRevisionID)
+	if err != nil {
+		return err
+	}
+	repo, err := s.masterRepo.GetRepository(ctx, doc.RepoID)
+	if err != nil {
+		return err
+	}
+
+	pubAt := time.Now()
+	if doc.PublishedAt != nil {
+		pubAt = *doc.PublishedAt
+	}
+	pubBy := s.resolveUserDisplayName(ctx, doc.PublishedBy, rev.CreatedBy)
+	var pubByID uint
+	if doc.PublishedBy != nil {
+		pubByID = *doc.PublishedBy
+	}
+
+	rendered, docTypeName, err := s.renderDocumentMarkdown(ctx, doc, repo, rev, secEvs, pubBy, pubAt, true)
+	if err != nil {
+		return err
+	}
+
+	newRelPath := publisher.BuildPublishRelPath(repo.Name, doc.Subdirectory, doc.DocTypeSlug)
+	entries, err := s.collectPublishedEntries(ctx, doc.ID, &publisher.PublishedDocEntry{
+		RepoName:     repo.Name,
+		Subdirectory: doc.Subdirectory,
+		DocTypeSlug:  doc.DocTypeSlug,
+		DocTypeName:  docTypeName,
+		Title:        doc.Title,
+		RelPath:      newRelPath,
+		CommitSHA:    rev.CommitSHA,
+		PublishedAt:  pubAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+
+	if s.sink != nil {
+		if err := s.sink.PublishDocument(ctx, newRelPath, oldRelPath, []byte(rendered.Markdown), entries); err != nil {
+			return fmt.Errorf("迁移后重新落盘发布文档失败: %w", err)
+		}
+	}
+
+	return s.docRepo.MarkPublished(ctx, doc.ID, rev.ID, rev.CommitSHA, newRelPath, pubByID, pubAt)
+}
+
 // ExportSingleDocument 流式导出单篇带 YAML Frontmatter 与平台深链的 Markdown 文件；普通用户仅允许导出已发布版本。
 func (s *PublishService) ExportSingleDocument(ctx context.Context, docID uint, canWrite bool) (string, []byte, error) {
 	doc, err := s.docRepo.GetByID(ctx, docID)
@@ -431,6 +493,7 @@ func (s *PublishService) renderDocumentMarkdown(
 		_ = json.Unmarshal(se.EvidencesJSON, &anchors)
 		for _, a := range anchors {
 			evRefs = append(evRefs, publisher.EvidenceRef{
+				Scope:      a.Scope,
 				FilePath:   a.FilePath,
 				SymbolKind: a.SymbolKind,
 				FQSymbol:   a.FQSymbol,
@@ -441,11 +504,45 @@ func (s *PublishService) renderDocumentMarkdown(
 		}
 	}
 
+	scopeType := "repo"
+	moduleName := ""
+	parentDocLink := ""
+	var childModuleDocs []publisher.ChildModuleNavEntry
+
+	repoApprovedDocs, _ := s.docRepo.ListApprovedDocumentsByRepo(ctx, doc.RepoID)
+	if strings.TrimSpace(doc.Subdirectory) != "" {
+		scopeType = "module"
+		moduleName = doc.Subdirectory
+		for _, d := range repoApprovedDocs {
+			if d.Subdirectory == "" && d.RefName == doc.RefName && d.DocTypeSlug == doc.DocTypeSlug && d.Status == models.DocStatusApproved {
+				parentDocLink = publisher.BuildParentDocRelLink(doc.Subdirectory, doc.DocTypeSlug)
+				break
+			}
+		}
+	} else {
+		for _, d := range repoApprovedDocs {
+			if d.Subdirectory != "" && d.RefName == doc.RefName && d.DocTypeSlug == doc.DocTypeSlug && d.Status == models.DocStatusApproved {
+				relLink := publisher.BuildChildModuleRelLink(d.Subdirectory, d.DocTypeSlug)
+				if relLink != "" {
+					childModuleDocs = append(childModuleDocs, publisher.ChildModuleNavEntry{
+						Subdirectory: d.Subdirectory,
+						Title:        d.Title,
+						RelLink:      relLink,
+						CommitSHA:    d.PublishedCommitSHA,
+					})
+				}
+			}
+		}
+	}
+
 	out := publisher.RenderMarkdown(publisher.RenderInput{
 		Frontmatter: publisher.FrontmatterData{
 			Title:           doc.Title,
 			Repo:            repo.Name,
 			Subdir:          doc.Subdirectory,
+			ScopeType:       scopeType,
+			Module:          moduleName,
+			ParentDoc:       parentDocLink,
 			DocType:         doc.DocTypeSlug,
 			DocTypeName:     docTypeName,
 			DocTypeRevision: docTypeRevNo,
@@ -460,6 +557,7 @@ func (s *PublishService) renderDocumentMarkdown(
 		BodyMarkdown:      rev.FullMarkdown,
 		Evidences:         evRefs,
 		PublishedDocTypes: publishedSlugs,
+		ChildModuleDocs:   childModuleDocs,
 	})
 	return out, docTypeName, nil
 }

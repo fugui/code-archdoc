@@ -55,7 +55,7 @@ func main() {
 		log.Fatalf("[%s] 加载配置失败: %v", config.ServiceName, err)
 	}
 
-	// 2. 初始化数据库与 16 张 archdoc_* 自有表自动迁移（共享公共表零 DDL）
+	// 2. 初始化数据库与 18 张 archdoc_* 自有表自动迁移（共享公共表零 DDL）
 	if err := models.InitDB(); err != nil {
 		log.Fatalf("[%s] 初始化数据库失败: %v", config.ServiceName, err)
 	}
@@ -91,9 +91,11 @@ func main() {
 	driftStore := models.NewDriftStore(models.DB)
 	govStore := models.NewGovernanceStore(models.DB)
 	chatStore := models.NewChatStore(models.DB)
+	moduleStore := models.NewModuleStore(models.DB)
 
 	rbacSvc := services.NewRBACService(masterStore)
-	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
+	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
+		WithModuleRepo(moduleStore)
 	llmSvc := services.NewLLMConfigService(govStore, keyCipher)
 	docTypeSvc := services.NewDocTypeService(docTypeRegistry, docTypeStore).
 		WithSpecDriftNotifier(docStore, driftStore)
@@ -124,7 +126,11 @@ func main() {
 		services.DefaultGitSyncer{},
 		config.AppConfig.Storage.SandboxDir(),
 		config.AppConfig.Storage.MaxFileBytes,
-	).WithLeaseManager(leaseMgr)
+	).WithLeaseManager(leaseMgr).
+		WithExtractLimits(
+			config.AppConfig.Extract.MaxRepoFiles,
+			time.Duration(config.AppConfig.Extract.MaxRepoDurationSeconds)*time.Second,
+		)
 	genSvc := services.NewGenerationOrchestrator(
 		masterStore,
 		docTypeStore,
@@ -136,14 +142,16 @@ func main() {
 		keyCipher,
 		llmClient,
 		config.AppConfig.Scheduler.MaxLLMConcurrency,
-	).WithGovernance(leaseMgr, taskScheduler)
+	).WithGovernance(leaseMgr, taskScheduler).
+		WithBatchBudgetLimit(config.AppConfig.Scheduler.MaxTokensPerBatch)
 	publishSink, err := publisher.NewLocalFSPublishSink(config.AppConfig.Storage.EffectivePublishDir())
 	if err != nil {
 		log.Fatalf("[%s] 初始化发布目录 publish_dir 失败: %v", config.ServiceName, err)
 	}
 	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, irAggregator, config.AppConfig.Storage.SandboxDir()).
-		WithLeaseManager(leaseMgr)
+		WithLeaseManager(leaseMgr).
+		WithSnapshotService(snapSvc)
 	driftSvc := services.NewDriftOrchestrator(
 		masterStore,
 		docStore,
@@ -156,9 +164,27 @@ func main() {
 		leaseMgr,
 		config.AppConfig.Storage.SandboxDir(),
 		config.AppConfig.Drift.PollIntervalMinutes,
-	)
+	).WithSnapshotService(snapSvc).
+		WithModuleRepo(moduleStore)
 	publishSvc := services.NewPublishService(docStore, docTypeStore, masterStore, govStore, publishSink).
 		WithDriftOrchestrator(driftSvc)
+	moduleSvc := services.NewModuleService(
+		masterStore,
+		moduleStore,
+		docStore,
+		docTypeStore,
+		taskStore,
+		driftStore,
+		snapSvc,
+		publishSvc,
+		driftSvc,
+	)
+	snapSvc.WithOnBaseExtracted(func(ctx context.Context, repoID uint, commitSHA string, tree *codeir.TreeFacet) {
+		if syncErr := moduleSvc.SyncModulesFromTree(ctx, repoID, commitSHA, tree); syncErr != nil {
+			log.Printf("[%s] 基础快照抽取后自动同步模块索引失败 (repo_id=%d): %v", config.ServiceName, repoID, syncErr)
+		}
+	})
+	genSvc.WithModuleGovernance(moduleStore, moduleSvc, rbacSvc)
 	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, keyCipher, llmClient)
 	metricsSvc := services.NewQualityMetricsService(govStore, docTypeStore)
 
@@ -192,6 +218,7 @@ func main() {
 	pollerSvc.Start(bgCtx)
 
 	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, genSvc).
+		WithModuleService(moduleSvc).
 		WithDocumentServices(revSvc, previewSvc, publishSvc).
 		WithChatService(chatSvc).
 		WithGovernanceServices(driftSvc, pollerSvc, metricsSvc, reaperSvc)

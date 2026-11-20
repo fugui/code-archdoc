@@ -1,4 +1,5 @@
 import type {
+  BatchGenerateTaskPayload,
   CancelTaskResponse,
   GenSlotTaskVO,
   GenTaskDetailVO,
@@ -10,6 +11,15 @@ import { apiRequest } from './client';
 
 export async function triggerGenerateTask(payload: GenerateTaskPayload): Promise<GenTaskDetailVO> {
   return apiRequest<GenTaskDetailVO>('/tasks/generate', {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
+export async function triggerBatchGenerateTask(
+  payload: BatchGenerateTaskPayload,
+): Promise<GenTaskDetailVO> {
+  return apiRequest<GenTaskDetailVO>('/tasks/generate-batch', {
     method: 'POST',
     bodyData: payload,
   });

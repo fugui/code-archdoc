@@ -566,3 +566,29 @@ export type ChatRefineSSEEvent =
   | { event: 'done'; data: { message_id: number; prompt_tokens: number; cached_prompt_tokens: number; completion_tokens: number; latency_ms: number } }
   | { event: 'error'; data: { code: string; message: string } };
 ```
+
+
+---
+
+## 7. ADR-04 契约增量（`M8`~`M10`）
+
+### 7.1 新增表与列（16 → 18 张表，+2 列）
+- 表 17 `archdoc_repo_module_policies`：唯一键 `(repo_id)`；
+- 表 18 `archdoc_repo_modules`：唯一键 `(repo_id, subdirectory)`，索引 `(repo_id)`、`(arch_element_id)`、`(status)`；**严禁含负责人字段**；
+- `archdoc_repo_snapshots`：新增可空索引列 `base_snapshot_id`；
+- `archdoc_gen_tasks`：新增可空索引列 `parent_task_id`。
+
+### 7.2 新增枚举与 JSONB 字段
+- `FacetName`：新增派生分片 `"module_context"`（仅切片快照使用）；
+- `TaskKind`：新增 `"batch"`；批次父任务允许 `generating -> ready`；
+- `SymbolKind`：新增 `"module_doc"`；
+- `ModuleStrategy`：`arch_elements | top_level_dirs | merged`；
+- `ModuleStatus`：`active | missing | ignored`；
+- `EvidenceAnchor` / `CitedAnchorCandidate`：新增可选字段 `scope?: "module" | "repo"`；
+- `SnapshotStats`：新增可选字段 `degraded_reason?: string`；
+- `BudgetAdvice`：新增可选字段 `module_breakdown?: BudgetModuleItem[]`；
+- `AffectedSlotDrift.Reason`：新增 `external_contract_modified`、`external_contract_removed`、`module_digest_changed`、`module_scope_changed`。
+
+### 7.3 `config/config.go` 新增配置项
+- `ExtractSection`（`yaml:"extract"`）：`MaxRepoFiles int`（默认 `50000`）、`MaxRepoDurationSeconds int`（默认 `600`）；
+- `SchedulerSection`：新增 `MaxTokensPerBatch int`（默认 `1000000`）。

@@ -34,7 +34,42 @@ var (
 	ErrTaskAlreadyTerminal = errors.New("任务已处于终态，不可取消")
 	// ErrSlotNotRetryable 槽位子任务非失败状态不可重试（HTTP 409 CONFLICT）。
 	ErrSlotNotRetryable = errors.New("仅允许对失败状态的槽位子任务发起独立重试")
+	// ErrBatchForbidden 批量生成包含当前用户无写权限的范围（HTTP 403 FORBIDDEN）。
+	ErrBatchForbidden = errors.New("批量生成包含无权操作的子目录或整仓范围")
 )
+
+// BatchForbiddenError 携带越权范围明细的批量生成权限错误。
+type BatchForbiddenError struct {
+	ForbiddenScopes []string
+}
+
+func (e *BatchForbiddenError) Error() string {
+	return fmt.Sprintf("无权对以下范围发起批量生成: %s", strings.Join(e.ForbiddenScopes, ", "))
+}
+
+func (e *BatchForbiddenError) Unwrap() error {
+	return ErrBatchForbidden
+}
+
+// BatchGenerateRequest 对应 POST /api/tasks/generate-batch 入参（ADR-04 D-5）。
+type BatchGenerateRequest struct {
+	RepoID           uint     `json:"repo_id"`
+	RefName          string   `json:"ref_name"`
+	Subdirectories   []string `json:"subdirectories"`
+	AllModules       bool     `json:"all_modules"`
+	IncludeRepoScope bool     `json:"include_repo_scope"`
+	DocTypes         []string `json:"doc_types"`
+	Mode             string   `json:"mode"` // generate | regenerate
+}
+
+// BatchSummaryVO 批量父任务的聚合子任务进度摘要。
+type BatchSummaryVO struct {
+	TotalChildren     int `json:"total_children"`
+	CompletedChildren int `json:"completed_children"`
+	FailedChildren    int `json:"failed_children"`
+	CanceledChildren  int `json:"canceled_children"`
+	RunningChildren   int `json:"running_children"`
+}
 
 // GenerateTaskRequest 对应 POST /api/tasks/generate 入参。
 type GenerateTaskRequest struct {
@@ -63,6 +98,7 @@ type GenSlotTaskVO struct {
 // GenTaskDetailVO 对应 POST /api/tasks/generate (202) 与 GET /api/tasks/:task_id (200) 响应。
 type GenTaskDetailVO struct {
 	ID               uint                 `json:"id"`
+	ParentTaskID     *uint                `json:"parent_task_id,omitempty"`
 	RepoID           uint                 `json:"repo_id"`
 	RepoName         string               `json:"repo_name,omitempty"`
 	Subdirectory     string               `json:"subdirectory"`
@@ -81,6 +117,8 @@ type GenTaskDetailVO struct {
 	ErrorMessage     string               `json:"error_message,omitempty"`
 	BudgetAdvice     *models.BudgetAdvice `json:"budget_advice,omitempty"`
 	SlotTasks        []GenSlotTaskVO      `json:"slot_tasks,omitempty"`
+	ChildTasks       []GenTaskDetailVO    `json:"child_tasks,omitempty"`
+	BatchSummary     *BatchSummaryVO      `json:"batch_summary,omitempty"`
 	TriggeredBy      uint                 `json:"triggered_by"`
 	StartedAt        *time.Time           `json:"started_at"`
 	FinishedAt       *time.Time           `json:"finished_at"`
@@ -101,20 +139,24 @@ type CancelTaskVO struct {
 	Status string `json:"status"`
 }
 
-// GenerationOrchestrator 编排双层任务状态机、预算熔断、共享术语表、槽位并发生成、取消与单槽位独立重试（F-05）。
+// GenerationOrchestrator 编排双层任务状态机、预算熔断、共享术语表、槽位并发生成、批量任务编排、取消与单槽位独立重试（F-05 / F-31）。
 type GenerationOrchestrator struct {
-	masterRepo  SharedMasterRepo
-	docTypeRepo DocTypeRepo
-	docTypeSvc  *DocTypeService
-	snapSvc     *SnapshotService
-	taskRepo    TaskRepo
-	docRepo     DocumentRepo
-	govRepo     GovernanceRepo
-	keyCipher   *security.Cipher
-	llmClient   *llm.Client
-	verifier    *verifier.Verifier
-	leaseMgr    *ActiveLeaseManager
-	scheduler   *TaskScheduler
+	masterRepo        SharedMasterRepo
+	docTypeRepo       DocTypeRepo
+	docTypeSvc        *DocTypeService
+	snapSvc           *SnapshotService
+	taskRepo          TaskRepo
+	docRepo           DocumentRepo
+	govRepo           GovernanceRepo
+	moduleRepo        ModuleRepo
+	moduleSvc         *ModuleService
+	rbacSvc           *RBACService
+	keyCipher         *security.Cipher
+	llmClient         *llm.Client
+	verifier          *verifier.Verifier
+	leaseMgr          *ActiveLeaseManager
+	scheduler         *TaskScheduler
+	maxTokensPerBatch int
 
 	llmSem      chan struct{}
 	baseCtx     context.Context
@@ -128,6 +170,22 @@ type GenerationOrchestrator struct {
 func (o *GenerationOrchestrator) WithGovernance(leaseMgr *ActiveLeaseManager, scheduler *TaskScheduler) *GenerationOrchestrator {
 	o.leaseMgr = leaseMgr
 	o.scheduler = scheduler
+	return o
+}
+
+// WithModuleGovernance 注入模块索引仓储、模块服务与 RBAC 服务（支持批量生成权限逐一校验与全模块发现）。
+func (o *GenerationOrchestrator) WithModuleGovernance(moduleRepo ModuleRepo, moduleSvc *ModuleService, rbacSvc *RBACService) *GenerationOrchestrator {
+	o.moduleRepo = moduleRepo
+	o.moduleSvc = moduleSvc
+	o.rbacSvc = rbacSvc
+	return o
+}
+
+// WithBatchBudgetLimit 配置单次批量生成的总 Token 熔断上限（默认 1,000,000，测试可注入较小阈值）。
+func (o *GenerationOrchestrator) WithBatchBudgetLimit(maxTokens int) *GenerationOrchestrator {
+	if maxTokens > 0 {
+		o.maxTokensPerBatch = maxTokens
+	}
 	return o
 }
 
@@ -195,20 +253,21 @@ func NewGenerationOrchestrator(
 	}
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 	return &GenerationOrchestrator{
-		masterRepo:  masterRepo,
-		docTypeRepo: docTypeRepo,
-		docTypeSvc:  docTypeSvc,
-		snapSvc:     snapSvc,
-		taskRepo:    taskRepo,
-		docRepo:     docRepo,
-		govRepo:     govRepo,
-		keyCipher:   keyCipher,
-		llmClient:   llmClient,
-		verifier:    verifier.New(),
-		llmSem:      make(chan struct{}, maxLLMConcurrency),
-		baseCtx:     baseCtx,
-		baseCancel:  baseCancel,
-		cancelFuncs: make(map[uint]context.CancelFunc),
+		masterRepo:        masterRepo,
+		docTypeRepo:       docTypeRepo,
+		docTypeSvc:        docTypeSvc,
+		snapSvc:           snapSvc,
+		taskRepo:          taskRepo,
+		docRepo:           docRepo,
+		govRepo:           govRepo,
+		keyCipher:         keyCipher,
+		llmClient:         llmClient,
+		verifier:          verifier.New(),
+		maxTokensPerBatch: 1000000,
+		llmSem:            make(chan struct{}, maxLLMConcurrency),
+		baseCtx:           baseCtx,
+		baseCancel:        baseCancel,
+		cancelFuncs:       make(map[uint]context.CancelFunc),
 	}
 }
 
@@ -453,7 +512,34 @@ func (o *GenerationOrchestrator) GetTaskScope(ctx context.Context, taskID uint) 
 	return task.RepoID, task.Subdirectory, nil
 }
 
-// GetTaskDetail 获取主任务详情、预算熔断建议及全部槽位子任务状态。
+// GetTaskScopesForCancel 返回取消任务前需校验的所有范围（普通任务为单个范围；批量任务包含所有子任务范围，空子列表时回退整仓 ""）。
+func (o *GenerationOrchestrator) GetTaskScopesForCancel(ctx context.Context, taskID uint) (uint, []string, error) {
+	task, _, err := o.taskRepo.GetTaskWithSlots(ctx, taskID)
+	if err != nil {
+		return 0, nil, err
+	}
+	if task.TaskKind != models.TaskKindBatch {
+		return task.RepoID, []string{task.Subdirectory}, nil
+	}
+	children, cErr := o.taskRepo.ListChildTasks(ctx, taskID)
+	if cErr != nil {
+		return 0, nil, cErr
+	}
+	if len(children) == 0 {
+		return task.RepoID, []string{""}, nil
+	}
+	seen := make(map[string]bool, len(children))
+	scopes := make([]string, 0, len(children))
+	for _, ch := range children {
+		if !seen[ch.Subdirectory] {
+			seen[ch.Subdirectory] = true
+			scopes = append(scopes, ch.Subdirectory)
+		}
+	}
+	return task.RepoID, scopes, nil
+}
+
+// GetTaskDetail 获取主任务详情、预算熔断建议、全部槽位子任务状态及批量子任务列表。
 func (o *GenerationOrchestrator) GetTaskDetail(ctx context.Context, taskID uint) (*GenTaskDetailVO, error) {
 	task, slots, err := o.taskRepo.GetTaskWithSlots(ctx, taskID)
 	if err != nil {
@@ -470,6 +556,29 @@ func (o *GenerationOrchestrator) GetTaskDetail(ctx context.Context, taskID uint)
 		}
 	}
 	vo := toGenTaskDetailVO(task, repoName, commitSHA, slots)
+	if task.TaskKind == models.TaskKindBatch {
+		children, cErr := o.taskRepo.ListChildTasks(ctx, task.ID)
+		if cErr == nil {
+			childVOs := make([]GenTaskDetailVO, 0, len(children))
+			summary := &BatchSummaryVO{TotalChildren: len(children)}
+			for i := range children {
+				ch := &children[i]
+				childVOs = append(childVOs, toGenTaskDetailVO(ch, repoName, "", nil))
+				switch ch.Status {
+				case models.TaskStatusReady:
+					summary.CompletedChildren++
+				case models.TaskStatusFailed:
+					summary.FailedChildren++
+				case models.TaskStatusCanceled:
+					summary.CanceledChildren++
+				default:
+					summary.RunningChildren++
+				}
+			}
+			vo.ChildTasks = childVOs
+			vo.BatchSummary = summary
+		}
+	}
 	return &vo, nil
 }
 
@@ -496,7 +605,7 @@ func (o *GenerationOrchestrator) ListTasks(ctx context.Context, filter models.Ta
 	}, nil
 }
 
-// CancelTask 取消排队中或运行中的任务，立即终止后续 LLM 请求并清理未执行槽位。
+// CancelTask 取消排队中或运行中的任务，立即终止后续 LLM 请求并清理未执行槽位；若为批量父任务则级联取消所有非终态子任务。
 func (o *GenerationOrchestrator) CancelTask(ctx context.Context, taskID uint) (*CancelTaskVO, error) {
 	task, slots, err := o.taskRepo.GetTaskWithSlots(ctx, taskID)
 	if err != nil {
@@ -511,9 +620,12 @@ func (o *GenerationOrchestrator) CancelTask(ctx context.Context, taskID uint) (*
 	o.triggerCancel(taskID)
 
 	now := time.Now()
-	// 尝试将主任务从当前活跃态原子流转至 canceled
+	transitionFn := o.taskRepo.TransitionTaskStatus
+	if task.TaskKind == models.TaskKindBatch {
+		transitionFn = o.taskRepo.TransitionBatchTaskStatus
+	}
 	for _, fromStatus := range []string{task.Status, models.TaskStatusPending, models.TaskStatusExtracting, models.TaskStatusGenerating} {
-		if transErr := o.taskRepo.TransitionTaskStatus(ctx, taskID, fromStatus, models.TaskStatusCanceled, map[string]any{
+		if transErr := transitionFn(ctx, taskID, fromStatus, models.TaskStatusCanceled, map[string]any{
 			"error_code":    "TASK_CANCELED",
 			"error_message": "任务已被用户主动取消",
 			"finished_at":   now,
@@ -527,6 +639,17 @@ func (o *GenerationOrchestrator) CancelTask(ctx context.Context, taskID uint) (*
 			slots[i].Status = models.SlotTaskCanceled
 			slots[i].FinishedAt = &now
 			_ = o.taskRepo.UpdateSlotTask(ctx, &slots[i])
+		}
+	}
+
+	// 批量父任务：级联取消全部未终态子任务，并阻止阶段二整仓子任务继续提交
+	if task.TaskKind == models.TaskKindBatch {
+		if children, cErr := o.taskRepo.ListChildTasks(ctx, taskID); cErr == nil {
+			for _, ch := range children {
+				if ch.Status != models.TaskStatusReady && ch.Status != models.TaskStatusFailed && ch.Status != models.TaskStatusCanceled {
+					_, _ = o.CancelTask(ctx, ch.ID)
+				}
+			}
 		}
 	}
 
@@ -628,14 +751,16 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 
 	// 3. 加载全部选中 DocType 的目录资产、DB 最新修订 ID 及既有文档的锁定槽位
 	type docTypePlan struct {
-		slug           string
-		asset          *doctype.AssetBundle
-		revID          uint
-		existingDoc    *models.Document
-		priorCommitSHA string
-		priorOrdered   []models.DocumentSectionSnapshot
-		priorSections  map[string]models.DocumentSectionSnapshot
-		priorEvAnchors map[string][]models.EvidenceAnchor
+		slug             string
+		asset            *doctype.AssetBundle
+		revID            uint
+		existingDoc      *models.Document
+		priorCommitSHA   string
+		priorOrdered     []models.DocumentSectionSnapshot
+		priorSections    map[string]models.DocumentSectionSnapshot
+		priorEvAnchors   map[string][]models.EvidenceAnchor
+		moduleDigests    []codeir.ModuleDigestInput
+		crossModuleGraph []codeir.CrossModuleEdge
 	}
 
 	plans := make([]*docTypePlan, 0, len(slugs))
@@ -747,6 +872,21 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		return
 	}
 
+	// 7b. 若为整仓生成 (Subdirectory == "")，为开启 module_digests 的 DocType 装配各活跃子模块确定性摘要与跨模块依赖图（ADR-04 D-4）
+	if task.Subdirectory == "" {
+		for _, p := range plans {
+			if hasContextInput(p.asset.Meta.ContextInputs, "module_digests") {
+				digests, activeMods := o.buildModuleDigestsForRepo(dbCtx, repo.ID, snapReady.Snapshot.RefName, p.asset, glossary)
+				if len(digests) > 0 {
+					p.moduleDigests = digests
+					p.crossModuleGraph = codeir.BuildCrossModuleGraph(snapReady.IR, activeMods)
+				}
+			}
+		}
+	} else if snapReady.ModuleContext == nil {
+		snapReady.ModuleContext = o.snapSvc.LoadModuleContext(dbCtx, snapReady.Snapshot, snapReady.Loc)
+	}
+
 	// 8. 创建槽位子任务记录（archdoc_gen_slot_tasks）
 	var slotTasks []models.GenSlotTask
 	for _, p := range plans {
@@ -851,17 +991,26 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 					}
 				}
 
+				slotSpecForCall := filterSlotSpecForScope(slotSpec, task.Subdirectory, planCopy.asset.Meta, len(planCopy.moduleDigests) > 0)
+				var modCtxForCall *codeir.ModuleContextFacet
+				if task.Subdirectory != "" && hasContextInput(planCopy.asset.Meta.ContextInputs, "module_context") {
+					modCtxForCall = snapReady.ModuleContext
+				}
+
 				resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-					RepoID:        repo.ID,
-					Subdirectory:  task.Subdirectory,
-					DocType:       planCopy.asset,
-					Slot:          slotSpec,
-					Glossary:      glossary,
-					IR:            snapReady.IR,
-					PriorHybridMD: priorHybrid,
-					Nonce:         batchNonce,
-					Endpoint:      epCfg,
-					MaxTokens:     maxOut,
+					RepoID:           repo.ID,
+					Subdirectory:     task.Subdirectory,
+					DocType:          planCopy.asset,
+					Slot:             slotSpecForCall,
+					Glossary:         glossary,
+					IR:               snapReady.IR,
+					ModuleContext:    modCtxForCall,
+					ModuleDigests:    planCopy.moduleDigests,
+					CrossModuleGraph: planCopy.crossModuleGraph,
+					PriorHybridMD:    priorHybrid,
+					Nonce:            batchNonce,
+					Endpoint:         epCfg,
+					MaxTokens:        maxOut,
 				})
 				finAt := time.Now()
 				slotRow.FinishedAt = &finAt
@@ -927,7 +1076,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 	// 11. 为每个 DocType 组装草稿章节、运行 Verifier 四重门禁并落库不可变 Revision
 	for _, p := range plans {
 		doc, docErr := o.persistGeneratedDocument(
-			dbCtx, repo, task, snapReady, p.asset, p.revID, slotTaskMap, p.priorOrdered, p.priorEvAnchors, p.priorCommitSHA, operatorID,
+			dbCtx, repo, task, snapReady, p.asset, p.revID, slotTaskMap, p.priorOrdered, p.priorEvAnchors, p.priorCommitSHA, p.moduleDigests, operatorID,
 		)
 		if docErr != nil {
 			o.markTaskFailed(dbCtx, taskID, models.TaskStatusVerifying, "VERIFY_PERSIST_FAILED", docErr.Error(), nil, budgetRes.Advice.EstimatedTokens)
@@ -1012,7 +1161,8 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	var snapReady *SnapshotReady
 	if !needSyncCode && prevRev.SnapshotID > 0 {
 		if snap, loc, irBundle, loadErr := o.snapSvc.LoadIRBundleBySnapshotID(dbCtx, prevRev.SnapshotID); loadErr == nil && snap != nil && irBundle != nil {
-			snapReady = &SnapshotReady{Snapshot: snap, Loc: loc, IR: irBundle, Reused: true}
+			modCtx := o.snapSvc.LoadModuleContext(dbCtx, snap, loc)
+			snapReady = &SnapshotReady{Snapshot: snap, Loc: loc, IR: irBundle, ModuleContext: modCtx, Reused: true}
 		}
 	}
 	if snapReady == nil {
@@ -1071,10 +1221,24 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 		return
 	}
 
-	// 增量刷新优先复用已有术语表缓存（不额外发起 Glossary LLM 调用，精确收敛单槽位调用次数）
+	// 增量刷新优先复用已有仓库级共享术语表缓存（不额外发起 Glossary LLM 调用，精确收敛单槽位调用次数）
 	var glossary *codeir.GlossaryCache
-	if cachedGlossary, gErr := o.snapSvc.facetStore.ReadGlossary(dbCtx, snapReady.Loc); gErr == nil && cachedGlossary != nil {
+	if cachedGlossary, gErr := o.snapSvc.ReadCachedGlossary(dbCtx, snapReady.Snapshot, snapReady.Loc); gErr == nil && cachedGlossary != nil {
 		glossary = cachedGlossary
+	}
+
+	var (
+		moduleDigests    []codeir.ModuleDigestInput
+		crossModuleGraph []codeir.CrossModuleEdge
+	)
+	if latestDoc.Subdirectory == "" && hasContextInput(asset.Meta.ContextInputs, "module_digests") {
+		digests, activeMods := o.buildModuleDigestsForRepo(dbCtx, repo.ID, snapReady.Snapshot.RefName, asset, glossary)
+		if len(digests) > 0 {
+			moduleDigests = digests
+			crossModuleGraph = codeir.BuildCrossModuleGraph(snapReady.IR, activeMods)
+		}
+	} else if latestDoc.Subdirectory != "" && snapReady.ModuleContext == nil {
+		snapReady.ModuleContext = o.snapSvc.LoadModuleContext(dbCtx, snapReady.Snapshot, snapReady.Loc)
 	}
 
 	// 仅对目标非锁定槽位创建活跃子任务并调用 LLM
@@ -1160,16 +1324,25 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 				priorHybrid = prev.Markdown
 			}
 
+			slotSpecForCall := filterSlotSpecForScope(slotSpec, snapReady.Loc.Subdir, asset.Meta, len(moduleDigests) > 0)
+			var modCtxForCall *codeir.ModuleContextFacet
+			if snapReady.Loc.Subdir != "" && hasContextInput(asset.Meta.ContextInputs, "module_context") {
+				modCtxForCall = snapReady.ModuleContext
+			}
+
 			resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-				RepoID:        repo.ID,
-				Subdirectory:  snapReady.Loc.Subdir,
-				DocType:       asset,
-				Slot:          slotSpec,
-				Glossary:      glossary,
-				IR:            snapReady.IR,
-				PriorHybridMD: priorHybrid,
-				Nonce:         batchNonce,
-				Endpoint:      epCfg,
+				RepoID:           repo.ID,
+				Subdirectory:     snapReady.Loc.Subdir,
+				DocType:          asset,
+				Slot:             slotSpecForCall,
+				Glossary:         glossary,
+				IR:               snapReady.IR,
+				ModuleContext:    modCtxForCall,
+				ModuleDigests:    moduleDigests,
+				CrossModuleGraph: crossModuleGraph,
+				PriorHybridMD:    priorHybrid,
+				Nonce:            batchNonce,
+				Endpoint:         epCfg,
 			})
 			finAt := time.Now()
 			slotRow.FinishedAt = &finAt
@@ -1290,6 +1463,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 			var priorCited []verifier.CitedAnchorCandidate
 			for _, a := range priorEvBySlot[prev.SlotID] {
 				priorCited = append(priorCited, verifier.CitedAnchorCandidate{
+					Scope:      a.Scope,
 					FilePath:   a.FilePath,
 					SymbolKind: a.SymbolKind,
 					FQSymbol:   a.FQSymbol,
@@ -1339,7 +1513,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	summary := fmt.Sprintf("章节级增量刷新（更新 %d 个受影响槽位）", completedSlots)
 	if _, err := o.verifyAndAppendRevision(
 		dbCtx, latestDoc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, dtRev.ID,
-		asset, snapReady.IR, mergedSections, mergedInputs,
+		asset, snapReady.IR, snapReady.ModuleContext, moduleDigests, mergedSections, mergedInputs,
 		models.RevSourceIncrementalRefresh, &taskID, summary, operatorID,
 	); err != nil {
 		o.markTaskFailed(dbCtx, taskID, models.TaskStatusVerifying, "VERIFY_PERSIST_FAILED", err.Error(), nil, 0)
@@ -1364,6 +1538,7 @@ func (o *GenerationOrchestrator) persistGeneratedDocument(
 	priorOrdered []models.DocumentSectionSnapshot,
 	priorEvAnchors map[string][]models.EvidenceAnchor,
 	priorCommitSHA string,
+	moduleDigests []codeir.ModuleDigestInput,
 	operatorID uint,
 ) (*models.Document, error) {
 	title := buildDocumentTitle(repo.Name, task.Subdirectory, asset.Meta.DisplayName)
@@ -1402,7 +1577,7 @@ func (o *GenerationOrchestrator) persistGeneratedDocument(
 		NewIR:          snapReady.IR,
 	})
 
-	return o.verifyAndAppendRevision(ctx, doc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, docTypeRevID, asset, snapReady.IR, merged.Sections, merged.SectionInputs, models.RevSourceAIGenerate, &task.ID, "AI 反推生成初稿", operatorID)
+	return o.verifyAndAppendRevision(ctx, doc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, docTypeRevID, asset, snapReady.IR, snapReady.ModuleContext, moduleDigests, merged.Sections, merged.SectionInputs, models.RevSourceAIGenerate, &task.ID, "AI 反推生成初稿", operatorID)
 }
 
 func (o *GenerationOrchestrator) executeSingleSlotRetry(
@@ -1456,17 +1631,38 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	}
 	epCfg := endpoints[asset.Meta.ModelTier]
 
-	glossary, _ := o.snapSvc.facetStore.ReadGlossary(ctx, loc)
+	glossary, _ := o.snapSvc.ReadCachedGlossary(ctx, snap, loc)
+	modCtx := o.snapSvc.LoadModuleContext(ctx, snap, loc)
+	var (
+		moduleDigests    []codeir.ModuleDigestInput
+		crossModuleGraph []codeir.CrossModuleEdge
+	)
+	if task.Subdirectory == "" && hasContextInput(asset.Meta.ContextInputs, "module_digests") {
+		digests, activeMods := o.buildModuleDigestsForRepo(ctx, task.RepoID, snap.RefName, asset, glossary)
+		if len(digests) > 0 {
+			moduleDigests = digests
+			crossModuleGraph = codeir.BuildCrossModuleGraph(irBundle, activeMods)
+		}
+	}
+
+	slotSpecForCall := filterSlotSpecForScope(*targetSlot, task.Subdirectory, asset.Meta, len(moduleDigests) > 0)
+	var modCtxForCall *codeir.ModuleContextFacet
+	if task.Subdirectory != "" && hasContextInput(asset.Meta.ContextInputs, "module_context") {
+		modCtxForCall = modCtx
+	}
 
 	o.llmSem <- struct{}{}
 	resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-		RepoID:       task.RepoID,
-		Subdirectory: task.Subdirectory,
-		DocType:      asset,
-		Slot:         *targetSlot,
-		Glossary:     glossary,
-		IR:           irBundle,
-		Endpoint:     epCfg,
+		RepoID:           task.RepoID,
+		Subdirectory:     task.Subdirectory,
+		DocType:          asset,
+		Slot:             slotSpecForCall,
+		Glossary:         glossary,
+		IR:               irBundle,
+		ModuleContext:    modCtxForCall,
+		ModuleDigests:    moduleDigests,
+		CrossModuleGraph: crossModuleGraph,
+		Endpoint:         epCfg,
 	})
 	<-o.llmSem
 
@@ -1547,7 +1743,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		})
 	}
 
-	if _, err := o.verifyAndAppendRevision(ctx, doc, snap.ID, snap.CommitSHA, dtRev.ID, asset, irBundle, sections, sectionInputs, models.RevSourceAIGenerate, &task.ID, fmt.Sprintf("单槽位独立重试补齐: %s", targetSlot.SlotID), operatorID); err != nil {
+	if _, err := o.verifyAndAppendRevision(ctx, doc, snap.ID, snap.CommitSHA, dtRev.ID, asset, irBundle, modCtx, moduleDigests, sections, sectionInputs, models.RevSourceAIGenerate, &task.ID, fmt.Sprintf("单槽位独立重试补齐: %s", targetSlot.SlotID), operatorID); err != nil {
 		log.Printf("[%s] 单槽位重试落库新修订失败: %v", config.ServiceName, err)
 	}
 }
@@ -1560,6 +1756,8 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 	docTypeRevID uint,
 	asset *doctype.AssetBundle,
 	irBundle *codeir.CodeIRBundle,
+	modCtx *codeir.ModuleContextFacet,
+	moduleDigests []codeir.ModuleDigestInput,
 	sectionSnapshots []models.DocumentSectionSnapshot,
 	sectionInputs []verifier.SectionInput,
 	source string,
@@ -1568,11 +1766,13 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 	operatorID uint,
 ) (*models.Document, error) {
 	vRes := o.verifier.Verify(verifier.VerifyInput{
-		CommitSHA: commitSHA,
-		IR:        irBundle,
-		Slots:     asset.Meta.Slots,
-		Policy:    asset.Meta.VerifyPolicy,
-		Sections:  sectionInputs,
+		CommitSHA:     commitSHA,
+		IR:            irBundle,
+		ModuleContext: modCtx,
+		ModuleDigests: moduleDigests,
+		Slots:         asset.Meta.Slots,
+		Policy:        asset.Meta.VerifyPolicy,
+		Sections:      sectionInputs,
 	})
 
 	fullMD := assembleFullMarkdown(asset.TemplateMD, sectionSnapshots)
@@ -1904,6 +2104,7 @@ func toGenTaskDetailVO(t *models.GenTask, repoName, commitSHA string, slots []mo
 
 	return GenTaskDetailVO{
 		ID:               t.ID,
+		ParentTaskID:     t.ParentTaskID,
 		RepoID:           t.RepoID,
 		RepoName:         repoName,
 		Subdirectory:     t.Subdirectory,
@@ -1946,16 +2147,19 @@ func toGenSlotTaskVO(s *models.GenSlotTask) GenSlotTaskVO {
 }
 
 type slotExecInput struct {
-	RepoID        uint
-	Subdirectory  string
-	DocType       *doctype.AssetBundle
-	Slot          doctype.SlotSpec
-	Glossary      *codeir.GlossaryCache
-	IR            *codeir.CodeIRBundle
-	PriorHybridMD string
-	Nonce         string
-	Endpoint      llm.EndpointConfig
-	MaxTokens     int
+	RepoID           uint
+	Subdirectory     string
+	DocType          *doctype.AssetBundle
+	Slot             doctype.SlotSpec
+	Glossary         *codeir.GlossaryCache
+	IR               *codeir.CodeIRBundle
+	ModuleContext    *codeir.ModuleContextFacet
+	ModuleDigests    []codeir.ModuleDigestInput
+	CrossModuleGraph []codeir.CrossModuleEdge
+	PriorHybridMD    string
+	Nonce            string
+	Endpoint         llm.EndpointConfig
+	MaxTokens        int
 }
 
 // executeSlotLLM 统一执行单槽位 L2 推理：
@@ -1970,10 +2174,23 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 		if o.snapSvc != nil {
 			repoRoot, scopeRoot, _ = o.snapSvc.ResolveSandboxScope(in.RepoID, in.Subdirectory)
 		}
+		var extWhitelist map[string]bool
+		if in.ModuleContext != nil {
+			extWhitelist = make(map[string]bool, len(in.ModuleContext.ExternalFileWhitelist)+len(in.ModuleContext.ReferencedExtSymbols))
+			for _, wf := range in.ModuleContext.ExternalFileWhitelist {
+				extWhitelist[wf] = true
+			}
+			for _, es := range in.ModuleContext.ReferencedExtSymbols {
+				if es.FilePath != "" {
+					extWhitelist[es.FilePath] = true
+				}
+			}
+		}
 		tk := llm.NewSandboxSourceToolkit(llm.SandboxToolkitConfig{
-			ScopeRoot: scopeRoot,
-			RepoRoot:  repoRoot,
-			IR:        in.IR,
+			ScopeRoot:             scopeRoot,
+			RepoRoot:              repoRoot,
+			IR:                    in.IR,
+			ExternalFileWhitelist: extWhitelist,
 		})
 		if tk.HasTools() {
 			toolkit = tk
@@ -1986,6 +2203,10 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 		Slot:              in.Slot,
 		Glossary:          in.Glossary,
 		IR:                in.IR,
+		CurrentModule:     in.Subdirectory,
+		ModuleContext:     in.ModuleContext,
+		ModuleDigests:     in.ModuleDigests,
+		CrossModuleGraph:  in.CrossModuleGraph,
 		PriorHybridMD:     in.PriorHybridMD,
 		Nonce:             in.Nonce,
 		EnableSourceTools: useTools,
@@ -2034,4 +2255,206 @@ func maxIntVal(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func hasContextInput(inputs []string, target string) bool {
+	for _, it := range inputs {
+		if strings.TrimSpace(it) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// filterSlotSpecForScope 当整仓生成 (subdir == "") 且存在多模块摘要 (hasModuleDigests == true) 时，
+// 按 DocType.Meta.RepoIRFacets 裁剪槽位订阅的 IR 分片，避免把全量 symbols / runtime_primitives 塞进整仓汇总 Prompt；
+// 单模块小仓 (hasModuleDigests == false) 或子模块生成保持原 SlotSpec 不变（100% 兼容既有基线）。
+func filterSlotSpecForScope(slot doctype.SlotSpec, subdir string, meta doctype.Meta, hasModuleDigests bool) doctype.SlotSpec {
+	if subdir != "" || !hasModuleDigests || len(meta.RepoIRFacets) == 0 {
+		return slot
+	}
+	allowed := make(map[string]bool, len(meta.RepoIRFacets))
+	for _, f := range meta.RepoIRFacets {
+		allowed[f] = true
+	}
+	var filtered []string
+	for _, sf := range slot.IRFacets {
+		if allowed[sf] {
+			filtered = append(filtered, sf)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, meta.RepoIRFacets...)
+	}
+	cp := slot
+	cp.IRFacets = filtered
+	return cp
+}
+
+// buildModuleDigestsForRepo 零 LLM 确定性构建某仓库各活跃子模块的架构摘要（approved -> draft -> glossary_fallback，ADR-04 D-4 §6.3）。
+func (o *GenerationOrchestrator) buildModuleDigestsForRepo(
+	ctx context.Context,
+	repoID uint,
+	refName string,
+	asset *doctype.AssetBundle,
+	glossary *codeir.GlossaryCache,
+) ([]codeir.ModuleDigestInput, []string) {
+	if o.moduleRepo == nil || asset == nil {
+		return nil, nil
+	}
+	mods, err := o.moduleRepo.ListModulesByRepo(ctx, repoID)
+	if err != nil || len(mods) == 0 {
+		return nil, nil
+	}
+	var activeSubdirs []string
+	for _, m := range mods {
+		if m.Status == models.ModuleStatusActive && m.Subdirectory != "" {
+			activeSubdirs = append(activeSubdirs, m.Subdirectory)
+		}
+	}
+	if len(activeSubdirs) == 0 {
+		return nil, nil
+	}
+
+	// 读取 architecture_elements 中文名映射
+	elemNameBySub := make(map[string]string)
+	if o.masterRepo != nil {
+		if elems, eErr := o.masterRepo.ListArchElementsByRepo(ctx, repoID); eErr == nil {
+			for _, el := range elems {
+				if ns, nErr := sandbox.NormalizeSubdir(el.Subdirectory); nErr == nil && ns != "" {
+					name := el.NameCn
+					if name == "" {
+						name = el.NameEn
+					}
+					if name != "" {
+						elemNameBySub[ns] = name
+					}
+				}
+			}
+		}
+	}
+
+	glossaryByPath := make(map[string]string)
+	if glossary != nil {
+		for _, ms := range glossary.ModuleSummaries {
+			p := strings.TrimPrefix(strings.TrimSpace(ms.Path), "./")
+			if p != "" && ms.Summary != "" {
+				glossaryByPath[p] = ms.Summary
+			}
+		}
+	}
+
+	srcSlug := asset.Slug
+	srcSlot := ""
+	if len(asset.Meta.Slots) > 0 {
+		srcSlot = asset.Meta.Slots[0].SlotID
+	}
+	maxChars := 600
+	if asset.Meta.ModuleDigestSource != nil {
+		if strings.TrimSpace(asset.Meta.ModuleDigestSource.DocTypeSlug) != "" {
+			srcSlug = strings.TrimSpace(asset.Meta.ModuleDigestSource.DocTypeSlug)
+		}
+		if strings.TrimSpace(asset.Meta.ModuleDigestSource.SlotID) != "" {
+			srcSlot = strings.TrimSpace(asset.Meta.ModuleDigestSource.SlotID)
+		}
+		if asset.Meta.ModuleDigestSource.MaxChars > 0 {
+			maxChars = asset.Meta.ModuleDigestSource.MaxChars
+		}
+	}
+
+	digests := make([]codeir.ModuleDigestInput, 0, len(activeSubdirs))
+	for _, sub := range activeSubdirs {
+		displayName := elemNameBySub[sub]
+		if displayName == "" {
+			displayName = sub
+		}
+
+		// 1. 优先尝试从子模块的同类型文档读取目标概览槽位（优先 approved 已发布修订，回退 draft 最新修订）
+		if o.docRepo != nil {
+			if modDoc, dErr := o.docRepo.GetByScope(ctx, repoID, sub, refName, srcSlug); dErr == nil && modDoc != nil {
+				var (
+					targetRev *models.DocumentRevision
+					sourceTag string
+				)
+				if modDoc.Status == models.DocStatusApproved && modDoc.PublishedRevisionID != nil {
+					if rev, _, rErr := o.docRepo.GetRevisionByIDWithSections(ctx, modDoc.ID, *modDoc.PublishedRevisionID); rErr == nil && rev != nil {
+						targetRev = rev
+						sourceTag = "approved"
+					}
+				}
+				if targetRev == nil && modDoc.CurrentRevisionNo > 0 {
+					if rev, _, rErr := o.docRepo.GetRevisionWithSections(ctx, modDoc.ID, modDoc.CurrentRevisionNo); rErr == nil && rev != nil {
+						targetRev = rev
+						sourceTag = "draft"
+					}
+				}
+				if targetRev != nil {
+					snaps := unmarshalSectionSnapshots(targetRev.SectionsJSON)
+					var picked *models.DocumentSectionSnapshot
+					for i := range snaps {
+						if snaps[i].SlotID == srcSlot {
+							picked = &snaps[i]
+							break
+						}
+					}
+					if picked == nil && len(snaps) > 0 {
+						picked = &snaps[0]
+					}
+					if picked != nil && strings.TrimSpace(picked.Markdown) != "" {
+						digestText := truncateRunes(strings.TrimSpace(picked.Markdown), maxChars)
+						contentSHA := picked.ContentSHA256
+						if contentSHA == "" {
+							contentSHA = sha256Hex(picked.Markdown)
+						}
+						docIDCopy := modDoc.ID
+						digests = append(digests, codeir.ModuleDigestInput{
+							ModulePath:     sub,
+							DisplayName:    displayName,
+							Source:         sourceTag,
+							DocID:          &docIDCopy,
+							RevisionNo:     targetRev.RevisionNo,
+							OverviewDigest: digestText,
+							ContentSHA256:  contentSHA,
+						})
+						continue
+					}
+				}
+			}
+		}
+
+		// 2. 回退至共享术语表 glossary.module_summaries
+		fallbackSummary := glossaryByPath[sub]
+		if fallbackSummary == "" {
+			for k, v := range glossaryByPath {
+				if strings.HasPrefix(k, sub+"/") || strings.HasSuffix(k, "/"+sub) {
+					fallbackSummary = v
+					break
+				}
+			}
+		}
+		if fallbackSummary == "" {
+			fallbackSummary = fmt.Sprintf("业务子模块 %s（%s）", sub, displayName)
+		}
+		fallbackSummary = truncateRunes(fallbackSummary, maxChars)
+		digests = append(digests, codeir.ModuleDigestInput{
+			ModulePath:     sub,
+			DisplayName:    displayName,
+			Source:         "glossary_fallback",
+			OverviewDigest: fallbackSummary,
+			ContentSHA256:  sha256Hex(fallbackSummary),
+		})
+	}
+
+	return digests, activeSubdirs
+}
+
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes])
 }

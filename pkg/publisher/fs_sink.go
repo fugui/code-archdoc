@@ -91,6 +91,48 @@ func BuildPublishRelPath(repoName, subdir, docTypeSlug string) string {
 	return path.Join(elems...)
 }
 
+// BuildParentDocRelLink 计算子模块落盘文档 (<repo>/sub/<part1>/.../<partD>/<docType>.md) 指向父级整仓同类型文档 (<repo>/<docType>.md) 的动态深度相对路径（ADR-04 D-5）。
+func BuildParentDocRelLink(subdir, docTypeSlug string) string {
+	cleanSub := strings.Trim(strings.TrimSpace(subdir), "/")
+	if cleanSub == "" {
+		return ""
+	}
+	rawParts := strings.Split(cleanSub, "/")
+	depth := 0
+	for _, p := range rawParts {
+		if strings.TrimSpace(p) == "" || p == "." || p == ".." {
+			continue
+		}
+		depth++
+	}
+	if depth == 0 {
+		return ""
+	}
+	docFile := SanitizePublishSegment(docTypeSlug) + ".md"
+	return strings.Repeat("../", depth+1) + docFile
+}
+
+// BuildChildModuleRelLink 计算整仓落盘文档 (<repo>/<docType>.md) 指向子模块同类型文档 (./sub/<sanitized_subdir>/<docType>.md) 的相对路径（ADR-04 D-5）。
+func BuildChildModuleRelLink(subdir, docTypeSlug string) string {
+	cleanSub := strings.Trim(strings.TrimSpace(subdir), "/")
+	if cleanSub == "" {
+		return ""
+	}
+	rawParts := strings.Split(cleanSub, "/")
+	safeParts := make([]string, 0, len(rawParts))
+	for _, p := range rawParts {
+		if strings.TrimSpace(p) == "" || p == "." || p == ".." {
+			continue
+		}
+		safeParts = append(safeParts, SanitizePublishSegment(p))
+	}
+	if len(safeParts) == 0 {
+		return ""
+	}
+	docFile := SanitizePublishSegment(docTypeSlug) + ".md"
+	return "./" + path.Join(append(append([]string{"sub"}, safeParts...), docFile)...)
+}
+
 // LocalFSPublishSink 基于本地受控 publish_dir 的原子落盘与索引重建实现（P0 同机符号链接挂载模式）。
 type LocalFSPublishSink struct {
 	rootDir string
@@ -380,20 +422,22 @@ func renderDirIndexMarkdown(dir string, entries []PublishedDocEntry) string {
 	sorted := make([]PublishedDocEntry, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Subdirectory != sorted[j].Subdirectory {
+			return sorted[i].Subdirectory < sorted[j].Subdirectory
+		}
 		return sorted[i].RelPath < sorted[j].RelPath
 	})
 
+	isSubdirIndex := strings.Contains(dir, "/sub/")
 	heading := dir
 	if len(sorted) > 0 {
 		heading = sorted[0].RepoName
-		if sorted[0].Subdirectory != "" && strings.Contains(dir, "/sub/") {
+		if isSubdirIndex && sorted[0].Subdirectory != "" {
 			heading = fmt.Sprintf("%s (%s)", sorted[0].RepoName, sorted[0].Subdirectory)
 		}
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "# %s 文档导航\n\n", heading)
-	for _, e := range sorted {
+	writeEntryBullet := func(sb *strings.Builder, e PublishedDocEntry) {
 		relFromDir := strings.TrimPrefix(e.RelPath, dir+"/")
 		if relFromDir == e.RelPath {
 			relFromDir = path.Base(e.RelPath)
@@ -409,7 +453,54 @@ func renderDirIndexMarkdown(dir string, entries []PublishedDocEntry) string {
 		if len(shortSHA) > 8 {
 			shortSHA = shortSHA[:8]
 		}
-		fmt.Fprintf(&sb, "- [%s](./%s) (`%s`)\n", label, relFromDir, shortSHA)
+		fmt.Fprintf(sb, "- [%s](./%s) (`%s`)\n", label, relFromDir, shortSHA)
 	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# %s 文档导航\n\n", heading)
+
+	if isSubdirIndex {
+		for _, e := range sorted {
+			writeEntryBullet(&sb, e)
+		}
+		return sb.String()
+	}
+
+	// 仓库根级 README.md 采用「整仓文档 + 模块文档」两级分组结构（ADR-04 D-5）
+	var repoDocs []PublishedDocEntry
+	var modDocs []PublishedDocEntry
+	for _, e := range sorted {
+		if strings.TrimSpace(e.Subdirectory) == "" {
+			repoDocs = append(repoDocs, e)
+		} else {
+			modDocs = append(modDocs, e)
+		}
+	}
+
+	if len(repoDocs) > 0 {
+		sb.WriteString("## 整仓文档\n\n")
+		for _, e := range repoDocs {
+			writeEntryBullet(&sb, e)
+		}
+		if len(modDocs) > 0 {
+			sb.WriteString("\n")
+		}
+	}
+
+	if len(modDocs) > 0 {
+		sb.WriteString("## 模块文档\n\n")
+		curSub := ""
+		for _, e := range modDocs {
+			if e.Subdirectory != curSub {
+				if curSub != "" {
+					sb.WriteString("\n")
+				}
+				curSub = e.Subdirectory
+				fmt.Fprintf(&sb, "### 模块：`%s`\n\n", curSub)
+			}
+			writeEntryBullet(&sb, e)
+		}
+	}
+
 	return sb.String()
 }

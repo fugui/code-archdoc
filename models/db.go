@@ -15,11 +15,13 @@ import (
 // DB 模块全局 GORM 数据库连接句柄（仅限 main.go 与 handlers 认证/审计兼容使用；pkg/ 与 services/ 严禁直接访问）
 var DB *gorm.DB
 
-// AllOwnModels 按基础域到关联域的依赖顺序返回本模块全部 16 张自有 archdoc_* GORM 模型。
+// AllOwnModels 按基础域到关联域的依赖顺序返回本模块全部 18 张自有 archdoc_* GORM 模型。
 func AllOwnModels() []any {
 	return []any{
 		&DocType{},
 		&DocTypeRevision{},
+		&RepoModulePolicy{},
+		&RepoModule{},
 		&RepoSnapshot{},
 		&CodeIRFacet{},
 		&GenTask{},

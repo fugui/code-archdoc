@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 工程实施路线图与 TDD 任务拆解总纲 (Roadmap)
 
 - **文档编号**：`01-roadmap.md`
-- **文档版本**：v1.0.0 (Stage 3 Frozen Roadmap)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 演进路线图：接续 M7，新增 M8~M10)
+- **编制日期**：2026-11-20
 - **归属阶段**：阶段三：契约冻结与 TDD 里程碑任务分解 (`04-tasks`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.3.1)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`docs/03-api/01-http-api-contract.md`](../03-api/01-http-api-contract.md)、[`docs/03-api/02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.4.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`docs/03-api/01-http-api-contract.md`](../03-api/01-http-api-contract.md)、[`docs/03-api/02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)、[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
 
 ---
 
@@ -58,6 +58,9 @@ flowchart TB
 | **M5** | **W2** | [`06-m5-w2-java-python-doctype-and-chat.md`](./06-m5-w2-java-python-doctype-and-chat.md) | `F-04`(W2), `F-03`(W2), `F-09`(W2) | `SC-05`, `SC-08` | `tree-sitter-java`/`python` 提取器；`DocType` 原子写盘 Web CRUD API + `AdminDocTypesPage`；SSE Chat 精修后端 + `ChatRefineTab` 前端 | ✅ 已完成 |
 | **M6** | **W2** | [`07-m6-w2-drift-metrics-and-governance.md`](./07-m6-w2-drift-metrics-and-governance.md) | `F-25`, `F-12`, `F-26`(W2), `F-27` | `SC-07`(W2), `SC-08`(漂移), `SC-11` | `RemoteHeadPoller` 轻量巡检与退避；`pkg/drift` 双维定位与增量刷新；`QualityMetricsService`；`ResourceReaper` LRU 与双优先级队列；`DriftRadarPage` & `QualityMetricsPage` | ✅ 已完成 |
 | **M7** | **交付** | [`08-m7-portal-integration-and-delivery.md`](./08-m7-portal-integration-and-delivery.md) | `D-01`~`D-04`, 全量 P0 收口 | `SC-01`~`SC-13` (除 P1 `SC-03`) | `code-bench` 网关与符号链接挂载联调；全量隔离回归测试与 `make eval-baseline`；运维部署手册更新与单二进制交付 | ✅ 已完成 |
+| **M8** | **ADR-04** | [`09-m8-module-discovery-batch-and-worktree-lock.md`](./09-m8-module-discovery-batch-and-worktree-lock.md) | `F-28`, `F-29` | `SC-14`, `SC-15`, `SC-16`(锁) | 18 张表与 2 列演进；一层模块发现、孤儿可见与原子迁移；可降级工作区读写锁（P-5）；`generate-batch` 批次编排与预算熔断 | ✅ 已完成 |
+| **M9** | **ADR-04** | [`10-m9-base-slice-module-context-and-repo-anchors.md`](./10-m9-base-slice-module-context-and-repo-anchors.md) | `F-30` | `SC-16`(切片), `SC-17` | Code IR Schema `1.1` 整仓抽取与纯函数 `SliceByModule`；超大仓降级；`module_context` 分片、`scope=repo` 锚点、白名单校验与外部契约漂移 | ✅ 已完成 |
+| **M10** | **ADR-04** | [`11-m10-hierarchical-rollup-drift-and-navigation.md`](./11-m10-hierarchical-rollup-drift-and-navigation.md) | `F-31` | `SC-18` | 仓库级共享术语表；`module_digests` 声明式汇总与 `module_doc` 锚点；双源合并漂移联动；模块导航与动态 `parent_doc`；前端闭环 | ✅ 已完成 |
 
 ---
 

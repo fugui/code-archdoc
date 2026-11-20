@@ -21,6 +21,28 @@
     "http_routes",
     "config_keys"
   ],
+  "context_inputs": [
+    "module_context",
+    "module_digests"
+  ],
+  "repo_ir_facets": [
+    "tree",
+    "build",
+    "deps",
+    "idl_contracts",
+    "http_routes",
+    "config_keys"
+  ],
+  "module_digest_source": {
+    "doc_type_slug": "system-architecture",
+    "slot_id": "overview_boundaries",
+    "max_chars": 600,
+    "fallback_order": [
+      "approved",
+      "draft",
+      "glossary_fallback"
+    ]
+  },
   "slots": [
     {
       "slot_id": "overview_boundaries",

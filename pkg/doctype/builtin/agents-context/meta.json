@@ -22,6 +22,28 @@
     "http_routes",
     "runtime_primitives"
   ],
+  "context_inputs": [
+    "module_context",
+    "module_digests"
+  ],
+  "repo_ir_facets": [
+    "tree",
+    "build",
+    "deps",
+    "config_keys",
+    "idl_contracts",
+    "http_routes"
+  ],
+  "module_digest_source": {
+    "doc_type_slug": "agents-context",
+    "slot_id": "agent_module_summary",
+    "max_chars": 500,
+    "fallback_order": [
+      "approved",
+      "draft",
+      "glossary_fallback"
+    ]
+  },
   "slots": [
     {
       "slot_id": "agent_module_summary",

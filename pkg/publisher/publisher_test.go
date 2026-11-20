@@ -264,3 +264,137 @@ func TestZipExportContainsIndexAndBlocksZipSlip(t *testing.T) {
 		t.Fatalf("文档 2 内容不匹配")
 	}
 }
+
+// 4. TestHierarchicalPublishing_FrontmatterModuleNavAndTwoLevelReadme (T-M10-01 / ADR-04 D-5)
+func TestHierarchicalPublishing_FrontmatterModuleNavAndTwoLevelReadme(t *testing.T) {
+	// 1. 验证动态深度 parent_doc 相对链接计算（P-10 防腐）
+	if got := BuildParentDocRelLink("order", "system-architecture"); got != "../../system-architecture.md" {
+		t.Fatalf("单层子目录 parent_doc 期望 ../../system-architecture.md，实际 %q", got)
+	}
+	if got := BuildParentDocRelLink("services/order", "system-architecture"); got != "../../../system-architecture.md" {
+		t.Fatalf("双层子目录 parent_doc 期望 ../../../system-architecture.md，实际 %q", got)
+	}
+	if got := BuildParentDocRelLink("a/b/c", "data-and-contract"); got != "../../../../data-and-contract.md" {
+		t.Fatalf("三层子目录 parent_doc 期望 ../../../../data-and-contract.md，实际 %q", got)
+	}
+
+	// 2. 验证子模块文档 Frontmatter 输出 scope_type、module、parent_doc 及 scope=repo 证据深链
+	modOut := RenderMarkdown(RenderInput{
+		Frontmatter: FrontmatterData{
+			Title:        "order-service (services/order) 系统架构",
+			Repo:         "order-service",
+			Subdir:       "services/order",
+			ScopeType:    "module",
+			Module:       "services/order",
+			ParentDoc:    BuildParentDocRelLink("services/order", "system-architecture"),
+			DocType:      "system-architecture",
+			DocID:        101,
+			RevisionNo:   2,
+			CommitSHA:    "1234567890abcdef",
+			SourceModule: "archdoc",
+		},
+		BodyMarkdown: "本模块依赖外部公共契约 `common/include/types.h:10-20`。",
+		Evidences: []EvidenceRef{
+			{
+				Scope:      "repo",
+				FilePath:   "common/include/types.h",
+				SymbolKind: "cpp_struct",
+				FQSymbol:   "common::RpcResult",
+				CommitSHA:  "1234567890abcdef",
+				LineStart:  10,
+				LineEnd:    20,
+			},
+		},
+	})
+	for _, want := range []string{
+		`scope_type: "module"`,
+		`module: "services/order"`,
+		`parent_doc: "../../../system-architecture.md"`,
+		`scope=repo`,
+	} {
+		if !strings.Contains(modOut.Markdown, want) {
+			t.Fatalf("子模块发布 Markdown 缺少预期内容 %q:\n%s", want, modOut.Markdown)
+		}
+	}
+
+	// 3. 验证整仓文档文末自动注入确定性「## 模块导航」表格
+	repoOut := RenderMarkdown(RenderInput{
+		Frontmatter: FrontmatterData{
+			Title:        "order-service 系统架构",
+			Repo:         "order-service",
+			ScopeType:    "repo",
+			DocType:      "system-architecture",
+			DocID:        100,
+			RevisionNo:   1,
+			CommitSHA:    "1234567890abcdef",
+			SourceModule: "archdoc",
+		},
+		BodyMarkdown: "## 1. 系统定位\n\n整仓架构总览。",
+		ChildModuleDocs: []ChildModuleNavEntry{
+			{
+				Subdirectory: "services/order",
+				Title:        "order-service (services/order) 系统架构",
+				RelLink:      BuildChildModuleRelLink("services/order", "system-architecture"),
+				CommitSHA:    "1234567890abcdef",
+			},
+		},
+	})
+	for _, want := range []string{
+		`scope_type: "repo"`,
+		`## 模块导航`,
+		"| `services/order` | [order-service (services/order) 系统架构](./sub/services/order/system-architecture.md) | `12345678` |",
+	} {
+		if !strings.Contains(repoOut.Markdown, want) {
+			t.Fatalf("整仓发布 Markdown 缺少预期模块导航内容 %q:\n%s", want, repoOut.Markdown)
+		}
+	}
+
+	// 4. 验证仓库根级 README.md 两级分组（## 整仓文档 + ## 模块文档）
+	ctx := context.Background()
+	publishRoot := t.TempDir()
+	sink, err := NewLocalFSPublishSink(publishRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRel := BuildPublishRelPath("order-service", "", "system-architecture")
+	modRel := BuildPublishRelPath("order-service", "services/order", "system-architecture")
+	allEntries := []PublishedDocEntry{
+		{
+			RepoName:    "order-service",
+			DocTypeSlug: "system-architecture",
+			Title:       "order-service 系统架构",
+			RelPath:     repoRel,
+			CommitSHA:   "1234567890abcdef",
+		},
+		{
+			RepoName:     "order-service",
+			Subdirectory: "services/order",
+			DocTypeSlug:  "system-architecture",
+			Title:        "order-service (services/order) 系统架构",
+			RelPath:      modRel,
+			CommitSHA:    "1234567890abcdef",
+		},
+	}
+	if err := sink.PublishDocument(ctx, repoRel, "", []byte(repoOut.Markdown), allEntries); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.PublishDocument(ctx, modRel, "", []byte(modOut.Markdown), allEntries); err != nil {
+		t.Fatal(err)
+	}
+	repoReadmeBytes, err := os.ReadFile(filepath.Join(publishRoot, "order-service", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoReadme := string(repoReadmeBytes)
+	for _, want := range []string{
+		"## 整仓文档",
+		"- [order-service 系统架构](./system-architecture.md) (`12345678`)",
+		"## 模块文档",
+		"### 模块：`services/order`",
+		"- [order-service (services/order) 系统架构](./sub/services/order/system-architecture.md) (`12345678`)",
+	} {
+		if !strings.Contains(repoReadme, want) {
+			t.Fatalf("仓库根 README.md 缺少预期两级分组结构 %q:\n%s", want, repoReadme)
+		}
+	}
+}

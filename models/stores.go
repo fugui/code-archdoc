@@ -464,7 +464,7 @@ func (s *SnapshotStore) UpsertSnapshot(ctx context.Context, snap *RepoSnapshot) 
 			{Name: "ir_schema_version"},
 		},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"status", "effective_files", "skipped_files", "total_loc",
+			"base_snapshot_id", "status", "effective_files", "skipped_files", "total_loc",
 			"glossary_path", "glossary_model", "stats_json", "last_accessed_at", "updated_at",
 		}),
 	}).Create(snap).Error
@@ -713,6 +713,53 @@ func (s *TaskStore) GetSlotTask(ctx context.Context, taskID, slotTaskID uint) (*
 		return nil, err
 	}
 	return &slot, nil
+}
+
+func (s *TaskStore) ListChildTasks(ctx context.Context, parentTaskID uint) ([]GenTask, error) {
+	var children []GenTask
+	if err := s.db.WithContext(ctx).
+		Where("parent_task_id = ?", parentTaskID).
+		Order("id ASC").
+		Find(&children).Error; err != nil {
+		return nil, err
+	}
+	return children, nil
+}
+
+func (s *TaskStore) TransitionBatchTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error {
+	if !CanTransitionBatchTaskStatus(from, to) {
+		return ErrInvalidStateTransition
+	}
+	payload := make(map[string]any, len(updates)+1)
+	for k, v := range updates {
+		payload[k] = v
+	}
+	payload["status"] = to
+
+	res := s.db.WithContext(ctx).Model(&GenTask{}).
+		Where("id = ? AND status = ?", taskID, from).
+		Updates(payload)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrInvalidStateTransition
+	}
+	return nil
+}
+
+func (s *TaskStore) HasActiveTasksInSubdirs(ctx context.Context, repoID uint, subdirs []string) (bool, error) {
+	if len(subdirs) == 0 {
+		return false, nil
+	}
+	activeStatuses := []string{TaskStatusPending, TaskStatusExtracting, TaskStatusGenerating, TaskStatusVerifying}
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&GenTask{}).
+		Where("repo_id = ? AND subdirectory IN ? AND status IN ?", repoID, subdirs, activeStatuses).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // ─── 5. DocumentStore ───
@@ -1042,6 +1089,66 @@ func (s *DocumentStore) MarkUnpublished(ctx context.Context, docID uint) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// MigrateScopeDocuments 在单个数据库事务中将 (repoID, fromSubdir) 下的全部文档迁移至 toSubdir，
+// 目标键存在任意冲突时整批回滚并返回 ErrMigrationConflict。返回迁移前的文档快照（含原 PublishedRelPath，供调用方执行重渲染与旧文件清理）。
+func (s *DocumentStore) MigrateScopeDocuments(
+	ctx context.Context,
+	repoID uint,
+	fromSubdir, toSubdir string,
+	titleBuilder func(docTypeSlug, oldTitle string) string,
+) ([]Document, error) {
+	var migratedBefore []Document
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var srcDocs []Document
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("repo_id = ? AND subdirectory = ?", repoID, fromSubdir).
+			Order("id ASC").
+			Find(&srcDocs).Error; err != nil {
+			return err
+		}
+		if len(srcDocs) == 0 {
+			return nil
+		}
+
+		// 冲突前置检查：目标 (repo_id, toSubdir, ref_name, doc_type_slug) 不得已存在文档
+		var existingTargets []Document
+		if err := tx.Where("repo_id = ? AND subdirectory = ?", repoID, toSubdir).Find(&existingTargets).Error; err != nil {
+			return err
+		}
+		conflictSet := make(map[string]bool, len(existingTargets))
+		for _, td := range existingTargets {
+			conflictSet[td.RefName+"\x00"+td.DocTypeSlug] = true
+		}
+		for _, sd := range srcDocs {
+			if conflictSet[sd.RefName+"\x00"+sd.DocTypeSlug] {
+				return ErrMigrationConflict
+			}
+		}
+
+		migratedBefore = make([]Document, len(srcDocs))
+		for i, sd := range srcDocs {
+			migratedBefore[i] = sd
+			newTitle := sd.Title
+			if titleBuilder != nil {
+				if built := titleBuilder(sd.DocTypeSlug, sd.Title); built != "" {
+					newTitle = built
+				}
+			}
+			if err := tx.Model(&Document{}).Where("id = ?", sd.ID).Updates(map[string]any{
+				"subdirectory": toSubdir,
+				"title":        newTitle,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return migratedBefore, nil
 }
 
 // ─── 6. ChatStore (W2 仓储实现就绪) ───

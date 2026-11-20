@@ -1,10 +1,10 @@
 # Git 沙箱、Code IR 静态抽取与 L2 生成/校验引擎设计
 
 - **文档编号**：`02-extraction-and-generation-engine.md`
-- **文档版本**：v1.0.0 (Stage 2 SDD Baseline)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 基线切片、工作区可降级读写锁与模块外部上下文扩展)
+- **编制日期**：2026-11-20
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-02`, `F-04`, `F-05`, `F-07`, `F-14`, `F-27`, `SC-02`, `SC-04`, `SC-06`, `SC-09`, `SC-13`, `NFR-3`~`NFR-6`, [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **关联基线**：`F-02`, `F-04`, `F-05`, `F-07`, `F-14`, `F-27`, `F-29`~`F-31`, `SC-02`, `SC-04`, `SC-06`, `SC-09`, `SC-13`, `SC-15`~`SC-18`, `NFR-3`~`NFR-6`, [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
 
 ---
 
@@ -337,3 +337,36 @@ flowchart LR
 - 归属维度：`task_id`、`document_id`、`repo_id`、`doc_type_slug`、`doc_type_revision_id`、`slot_id`、`operator_id`；
 - 执行维度：`stage`（`glossary` | `slot_gen` | `slot_retry` | `chat_refine`）、`model_tier`（`fast` | `flagship`）、`model_name`、`status`（`success` | `failed` | `canceled`）；
 - 成本维度：`prompt_tokens`、`cached_prompt_tokens`（记录推理服务返回的 KV Cache 命中量）、`completion_tokens`、`latency_ms`。
+
+
+---
+
+## 6. Monorepo 基线切片、工作区可降级读写锁与 `module_context` 扩展（[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)）
+
+### 6.1 Code IR Schema `1.1` 增量与纯函数切片（`pkg/codeir/slice.go`）
+
+- `codeir.SchemaVersion` 升至 **`1.1`**。为支持零 IO 纯函数切片与跨模块上下文构建，基线快照（`subdirectory = ""`）在既有 9 大分片内增量采集：
+  - `DepsFacet.FileImports []FileImportFact`：C/C++ `#include "..."`、Java `import`、Python `import`/`from ... import`、Proto `import` 的文件级引用明细；
+  - `BuildFacet.Subdirectories []BuildSubdirFact`：CMake `add_subdirectory`、Maven `<modules>`、Bazel 子包引用（含脱敏 `Snippet ≤ 400` 字符）；
+  - `BuildFacet.IncludeDirs []BuildIncludeDirFact`：CMake `include_directories`/`target_include_directories` 与 `compile_commands.json` `-I` 目录。
+- `SliceByModule(base *CodeIRBundle, subdir string, modules []string) (*CodeIRBundle, *ModuleContextFacet, error)` 为纯函数（零 IO / 零 DB）：
+  1. 仅保留 `file_path` 以 `<subdir>/` 为前缀的事实并重写路径为以模块为根（Python `FQSymbol` 同步剥离 `<subdir>.` 前缀，外部 `DeclSpan` 清空防污染）；
+  2. 重算 `Tree` 统计与模块内 `Deps.InternalModules`；
+  3. 确定性生成第 10 个派生分片 **`module_context`**（`OutboundDeps`、`InboundDeps`、`ExportedSurface`、`ConsumedContracts`、`RepoBuildContext`，超 4K Token 截断并置 `Truncated = true`），以 `facet_name = "module_context"` 仅持久化于切片快照。
+- **超大仓阈值降级**：当有效文件数超过 `extract.max_repo_files`（默认 `50000`）或耗时超过 `extract.max_repo_duration_seconds`（默认 `600`）时，退化为按子目录独立抽取并复用既有提取器构建轻量全仓依赖索引，`StatsJSON.degraded_reason` 记录降级原因。
+
+### 6.2 仓库级可降级读写锁与三层 `singleflight`（修复 P-5）
+
+- `SnapshotService` 唯一持有 `repoWorktreeLocks map[uint]*DowngradableRWMutex`：
+  - `Sync` 持**写锁**执行；若未命中缓存，**原子降级为读锁（`DowngradeToRLock`）**后再运行 L1 基线抽取，彻底消除 `Unlock -> RLock` 间隙竞态；
+  - `SourcePreviewService`、`DriftOrchestrator` 与 `source_tools` 统一经 `SnapshotService.WithRepoReadLock` 持读锁读取工作区；沙箱按需重拉经 `SnapshotService.EnsureSandboxSynced` 持写锁执行。
+- 三层 `singleflight` 键：`base:<repo_id>|<branch>`（同步+基线抽取）、`slice:<base_snapshot_id>|<subdir>`（切片）、`glossary:<base_snapshot_id>`（仓库级共享术语表）。
+
+### 6.3 范围感知 Prompt 注入、外部白名单工具与 `scope=repo` 校验
+
+- **模块外部上下文注入**：当 `subdir != ""` 且 `DocType.meta.context_inputs` 含 `"module_context"` 时，在 `nonce` 数据栅栏内注入 `module_context` 块并显式限定其仅用于依赖与集成描述；`SandboxSourceToolkit` 仅允许通过 `ExternalFileWhitelist` 读取 `module_context` 提及的仓库根相对路径（经 `SafeJoin(repoRoot, …)` 校验）。
+- **整仓汇总注入**：当 `subdir == ""`、`context_inputs` 含 `"module_digests"` 且存在 `active` 模块时，按 `repo_ir_facets` 收敛整仓 IR，并注入 `module_digests`（已发布优先 → 最新草稿 → 术语表兜底）与跨模块依赖图；单模块非 Monorepo 仓自动回退全量 `ir_facets`。
+- **Verifier 扩展**：
+  - `scope = "repo"` 候选锚点必须在 `module_context` 白名单内命中，未命中一律判 `error`（`can_approve = false`）；
+  - `symbol_kind = "module_doc"` 锚点与 `module_digests` 对齐（记录 `content_fingerprint = content_sha256`）。
+- **批次生成与防死锁**：`POST /api/tasks/generate-batch` 创建 `task_kind="batch"` 父任务 + `priority="batch"` 子任务；父任务协调协程不占 `TaskScheduler` 并发槽位；执行前按 `scheduler.max_tokens_per_batch`（默认 `1000000`）做批次预算前置熔断，0 次 LLM 调用。

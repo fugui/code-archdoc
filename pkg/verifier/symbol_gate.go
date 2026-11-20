@@ -53,7 +53,7 @@ func RunSymbolGate(
 	seenIssue := make(map[string]bool)
 	seenAnchor := make(map[string]bool)
 
-	addIssue := func(refKind, val string) {
+	addIssueWithSeverity := func(refKind, val, sev string) {
 		key := refKind + "::" + val
 		if seenIssue[key] {
 			return
@@ -63,16 +63,24 @@ func RunSymbolGate(
 			SlotID:   slotID,
 			RefKind:  refKind,
 			Value:    val,
-			Severity: severity,
+			Severity: sev,
 		})
+	}
+	addIssue := func(refKind, val string) {
+		addIssueWithSeverity(refKind, val, severity)
 	}
 
 	// 1. 先报告 L2 显式 cited_anchors 中未能对齐 Code IR 的项
+	// 安全红线（ADR-04 D-3 / SC-16）：不在 module_context 白名单内的 scope="repo" 越界引用无条件标为 error（阻断 can_approve）！
 	for _, c := range unmatchedCandidates {
+		candSev := severity
+		if strings.TrimSpace(c.Scope) == "repo" || c.SymbolKind == "module_doc" {
+			candSev = "error"
+		}
 		if c.FQSymbol != "" {
-			addIssue("symbol", c.FQSymbol)
+			addIssueWithSeverity("symbol", c.FQSymbol, candSev)
 		} else if c.FilePath != "" {
-			addIssue("file_path", c.FilePath)
+			addIssueWithSeverity("file_path", c.FilePath, candSev)
 		}
 	}
 
@@ -99,6 +107,11 @@ func RunSymbolGate(
 		if reKnownFilePath.MatchString(normPath) {
 			if _, ok := idx.Files[normPath]; ok {
 				if anc, aligned := alignSingleCandidate(idx, commitSHA, CitedAnchorCandidate{FilePath: normPath}); aligned && !seenAnchor[anc.AnchorKey] {
+					seenAnchor[anc.AnchorKey] = true
+					extraAnchors = append(extraAnchors, anc)
+				}
+			} else if idx.ExtFiles[normPath] {
+				if anc, aligned := alignSingleCandidate(idx, commitSHA, CitedAnchorCandidate{Scope: "repo", FilePath: normPath}); aligned && !seenAnchor[anc.AnchorKey] {
 					seenAnchor[anc.AnchorKey] = true
 					extraAnchors = append(extraAnchors, anc)
 				}
@@ -173,6 +186,12 @@ func matchKnownSymbol(idx *IRIndex, tok string) bool {
 		return true
 	}
 	if _, ok := idx.ExternalDeps[tok]; ok {
+		return true
+	}
+	if _, ok := idx.ExtSymbolsByFQ[tok]; ok {
+		return true
+	}
+	if len(idx.ExtSymbolsShort[tok]) > 0 {
 		return true
 	}
 	// 处理 enum 值如 order::OrderErrorCode::OK -> 校验前缀 order::OrderErrorCode

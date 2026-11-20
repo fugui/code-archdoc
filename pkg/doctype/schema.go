@@ -116,36 +116,50 @@ func (p *VerifyPolicy) Effective() VerifyPolicy {
 	return out
 }
 
+// ModuleDigestSourceSpec 声明整仓 Roll-up 时从各活跃子模块提取摘要的数据源规范（ADR-04 D-4）。
+type ModuleDigestSourceSpec struct {
+	DocTypeSlug   string   `json:"doc_type_slug"`
+	SlotID        string   `json:"slot_id"`
+	MaxChars      int      `json:"max_chars,omitempty"`
+	FallbackOrder []string `json:"fallback_order,omitempty"` // 默认 ["approved", "draft", "glossary_fallback"]
+}
+
 // Meta 描述 DocType meta.json 完整声明式配置，并通过 ExtraFields 无损保留所有未知扩展键。
 type Meta struct {
-	Name            string                     `json:"name"`
-	DisplayName     string                     `json:"display_name"`
-	Description     string                     `json:"description,omitempty"`
-	IsActive        bool                       `json:"is_active"`
-	IsBuiltin       bool                       `json:"is_builtin"`
-	ModelTier       string                     `json:"model_tier"`
-	TimeoutSeconds  int                        `json:"timeout_seconds,omitempty"`
-	MaxOutputTokens int                        `json:"max_output_tokens,omitempty"`
-	ScopeProfile    *ScopeProfileConfig        `json:"scope_profile,omitempty"`
-	IRFacets        []string                   `json:"ir_facets"`
-	Slots           []SlotSpec                 `json:"slots"`
-	VerifyPolicy    *VerifyPolicy              `json:"verify_policy,omitempty"`
-	ExtraFields     map[string]json.RawMessage `json:"-"`
+	Name               string                     `json:"name"`
+	DisplayName        string                     `json:"display_name"`
+	Description        string                     `json:"description,omitempty"`
+	IsActive           bool                       `json:"is_active"`
+	IsBuiltin          bool                       `json:"is_builtin"`
+	ModelTier          string                     `json:"model_tier"`
+	TimeoutSeconds     int                        `json:"timeout_seconds,omitempty"`
+	MaxOutputTokens    int                        `json:"max_output_tokens,omitempty"`
+	ScopeProfile       *ScopeProfileConfig        `json:"scope_profile,omitempty"`
+	IRFacets           []string                   `json:"ir_facets"`
+	ContextInputs      []string                   `json:"context_inputs,omitempty"`
+	RepoIRFacets       []string                   `json:"repo_ir_facets,omitempty"`
+	ModuleDigestSource *ModuleDigestSourceSpec    `json:"module_digest_source,omitempty"`
+	Slots              []SlotSpec                 `json:"slots"`
+	VerifyPolicy       *VerifyPolicy              `json:"verify_policy,omitempty"`
+	ExtraFields        map[string]json.RawMessage `json:"-"`
 }
 
 var knownMetaKeys = map[string]bool{
-	"name":              true,
-	"display_name":      true,
-	"description":       true,
-	"is_active":         true,
-	"is_builtin":        true,
-	"model_tier":        true,
-	"timeout_seconds":   true,
-	"max_output_tokens": true,
-	"scope_profile":     true,
-	"ir_facets":         true,
-	"slots":             true,
-	"verify_policy":     true,
+	"name":                 true,
+	"display_name":         true,
+	"description":          true,
+	"is_active":            true,
+	"is_builtin":           true,
+	"model_tier":           true,
+	"timeout_seconds":      true,
+	"max_output_tokens":    true,
+	"scope_profile":        true,
+	"ir_facets":            true,
+	"context_inputs":       true,
+	"repo_ir_facets":       true,
+	"module_digest_source": true,
+	"slots":                true,
+	"verify_policy":        true,
 }
 
 type metaAlias Meta
@@ -277,6 +291,26 @@ func (m *Meta) Validate(expectedSlug string) error {
 	for _, f := range m.IRFacets {
 		if !validFacets[f] {
 			return fmt.Errorf("%w: 非法 ir_facet %q", ErrInvalidMeta, f)
+		}
+	}
+	for _, rf := range m.RepoIRFacets {
+		if !validFacets[rf] {
+			return fmt.Errorf("%w: 非法 repo_ir_facet %q", ErrInvalidMeta, rf)
+		}
+	}
+	for _, ci := range m.ContextInputs {
+		if ci != "module_context" && ci != "module_digests" {
+			return fmt.Errorf("%w: 非法 context_input %q（仅支持 module_context 或 module_digests）", ErrInvalidMeta, ci)
+		}
+	}
+	if m.ModuleDigestSource != nil {
+		if strings.TrimSpace(m.ModuleDigestSource.DocTypeSlug) != "" {
+			if err := ValidateSlug(m.ModuleDigestSource.DocTypeSlug); err != nil {
+				return fmt.Errorf("%w: module_digest_source.doc_type_slug 非法: %v", ErrInvalidMeta, err)
+			}
+		}
+		if strings.TrimSpace(m.ModuleDigestSource.SlotID) != "" && !SlotIDPattern.MatchString(m.ModuleDigestSource.SlotID) {
+			return fmt.Errorf("%w: module_digest_source.slot_id 非法 (%q)", ErrInvalidMeta, m.ModuleDigestSource.SlotID)
 		}
 	}
 	if len(m.Slots) == 0 {

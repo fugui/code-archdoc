@@ -129,8 +129,9 @@ func (e *CommonExtractor) extractCppCommon(filePath, src string) *ExtractionResu
 	res := &ExtractionResult{}
 	fromMod := topModuleDir(filePath)
 
-	for _, m := range reLocalInclude.FindAllStringSubmatch(src, -1) {
-		incPath := strings.TrimSpace(m[1])
+	for _, loc := range reLocalInclude.FindAllStringSubmatchIndex(src, -1) {
+		incPath := strings.TrimSpace(src[loc[2]:loc[3]])
+		lineNo := 1 + strings.Count(src[:loc[0]], "\n")
 		toMod := path.Dir(incPath)
 		if toMod == "." || toMod == "" {
 			toMod = incPath
@@ -142,6 +143,16 @@ func (e *CommonExtractor) extractCppCommon(filePath, src string) *ExtractionResu
 				Weight: 1,
 			})
 		}
+		res.FileImports = append(res.FileImports, FileImportFact{
+			SourceFile: filePath,
+			RawTarget:  incPath,
+			Kind:       "cpp_include",
+			Meta: FactMeta{
+				Confidence:         ConfidenceExact,
+				Span:               SourceSpan{FilePath: filePath, LineStart: lineNo, LineEnd: lineNo},
+				ContentFingerprint: fingerprintString("cpp_include:" + incPath),
+			},
+		})
 	}
 
 	for _, loc := range reCppHTTPRoute.FindAllStringSubmatchIndex(src, -1) {

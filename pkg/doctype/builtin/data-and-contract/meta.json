@@ -18,6 +18,25 @@
     "symbols",
     "runtime_primitives"
   ],
+  "context_inputs": [
+    "module_context",
+    "module_digests"
+  ],
+  "repo_ir_facets": [
+    "idl_contracts",
+    "http_routes",
+    "data_models"
+  ],
+  "module_digest_source": {
+    "doc_type_slug": "data-and-contract",
+    "slot_id": "service_interfaces",
+    "max_chars": 600,
+    "fallback_order": [
+      "approved",
+      "draft",
+      "glossary_fallback"
+    ]
+  },
   "slots": [
     {
       "slot_id": "service_interfaces",

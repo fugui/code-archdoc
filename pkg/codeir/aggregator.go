@@ -268,10 +268,13 @@ func mergeResult(b *CodeIRBundle, r *ExtractionResult, buildSysSet map[string]bo
 	b.Build.Targets = append(b.Build.Targets, r.Build...)
 	b.Build.CompileOptions = append(b.Build.CompileOptions, r.CompileOptions...)
 	b.Build.Scripts = append(b.Build.Scripts, r.Scripts...)
+	b.Build.Subdirectories = append(b.Build.Subdirectories, r.Subdirectories...)
+	b.Build.IncludeDirs = append(b.Build.IncludeDirs, r.IncludeDirs...)
 	b.Deps.ExternalDeps = append(b.Deps.ExternalDeps, r.ExternalDeps...)
 	for _, edge := range r.InternalModules {
 		edgeWeight[edge.From+"->"+edge.To] += edge.Weight
 	}
+	b.Deps.FileImports = append(b.Deps.FileImports, r.FileImports...)
 	b.ConfigKeys.Keys = append(b.ConfigKeys.Keys, r.ConfigKeys...)
 	b.Symbols.Symbols = append(b.Symbols.Symbols, r.Symbols...)
 	b.IDLContracts.Protos = append(b.IDLContracts.Protos, r.IDLContracts...)

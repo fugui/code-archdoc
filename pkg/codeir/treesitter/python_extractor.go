@@ -194,6 +194,10 @@ func (w *pythonWalker) walk(node *tree_sitter.Node, classStack []string, pending
 	case "function_definition":
 		w.handleFuncDef(node, classStack, pendingDecorators)
 		return
+
+	case "import_statement", "import_from_statement":
+		w.handlePyImport(node)
+		return
 	}
 
 	for i := uint(0); i < node.ChildCount(); i++ {
@@ -300,6 +304,92 @@ func (w *pythonWalker) handleFuncDef(node *tree_sitter.Node, classStack []string
 	for _, dec := range decorators {
 		w.extractPyRouteFromDecorator(dec, fqSym, paramList, retType, span, fp)
 		w.extractPySchedulerFromDecorator(dec, fqSym, span, fp)
+	}
+}
+
+func (w *pythonWalker) handlePyImport(node *tree_sitter.Node) {
+	raw := strings.TrimSpace(node.Utf8Text(w.src))
+	if raw == "" {
+		return
+	}
+	span := nodeSpan(w.filePath, node)
+	fp := ComputeNodeFingerprint(node, w.src)
+
+	if node.Kind() == "import_from_statement" {
+		modNode := node.ChildByFieldName("module_name")
+		modName := ""
+		if modNode != nil {
+			modName = strings.TrimSpace(modNode.Utf8Text(w.src))
+		}
+		if modName == "" {
+			return
+		}
+		// 提取 from <modName> import <sym1>, <sym2>
+		foundSym := false
+		for i := uint(0); i < node.ChildCount(); i++ {
+			ch := node.Child(i)
+			if modNode != nil && ch.Id() == modNode.Id() {
+				continue
+			}
+			if ch.Kind() == "dotted_name" || ch.Kind() == "aliased_import" {
+				symTxt := strings.TrimSpace(ch.Utf8Text(w.src))
+				if idx := strings.Index(symTxt, " as "); idx > 0 {
+					symTxt = strings.TrimSpace(symTxt[:idx])
+				}
+				if symTxt != "" && symTxt != modName {
+					foundSym = true
+					w.res.FileImports = append(w.res.FileImports, codeir.FileImportFact{
+						SourceFile: w.filePath,
+						RawTarget:  modName,
+						Kind:       "py_import",
+						SymbolHint: modName + "." + symTxt,
+						Meta: codeir.FactMeta{
+							Confidence:         codeir.ConfidenceExact,
+							Span:               span,
+							ContentFingerprint: fp,
+						},
+					})
+				}
+			}
+		}
+		if !foundSym {
+			w.res.FileImports = append(w.res.FileImports, codeir.FileImportFact{
+				SourceFile: w.filePath,
+				RawTarget:  modName,
+				Kind:       "py_import",
+				SymbolHint: modName,
+				Meta: codeir.FactMeta{
+					Confidence:         codeir.ConfidenceExact,
+					Span:               span,
+					ContentFingerprint: fp,
+				},
+			})
+		}
+		return
+	}
+
+	// import a.b, c.d
+	for i := uint(0); i < node.ChildCount(); i++ {
+		ch := node.Child(i)
+		if ch.Kind() == "dotted_name" || ch.Kind() == "aliased_import" {
+			modTxt := strings.TrimSpace(ch.Utf8Text(w.src))
+			if idx := strings.Index(modTxt, " as "); idx > 0 {
+				modTxt = strings.TrimSpace(modTxt[:idx])
+			}
+			if modTxt != "" {
+				w.res.FileImports = append(w.res.FileImports, codeir.FileImportFact{
+					SourceFile: w.filePath,
+					RawTarget:  modTxt,
+					Kind:       "py_import",
+					SymbolHint: modTxt,
+					Meta: codeir.FactMeta{
+						Confidence:         codeir.ConfidenceExact,
+						Span:               span,
+						ContentFingerprint: fp,
+					},
+				})
+			}
+		}
 	}
 }
 

@@ -11,7 +11,8 @@ export type FacetName =
   | 'idl_contracts'
   | 'http_routes'
   | 'data_models'
-  | 'runtime_primitives';
+  | 'runtime_primitives'
+  | 'module_context';
 
 export type SectionOwnership = 'auto' | 'hybrid' | 'locked';
 export type DocumentStatus = 'draft' | 'approved';
@@ -22,7 +23,7 @@ export type RevisionSource =
   | 'chat_refine'
   | 'rollback';
 
-export type TaskKind = 'generate' | 'regenerate' | 'incremental_refresh';
+export type TaskKind = 'generate' | 'regenerate' | 'incremental_refresh' | 'batch_generate';
 export type TaskPriority = 'interactive' | 'batch';
 export type TaskStatus =
   | 'pending'
@@ -84,6 +85,7 @@ export interface ApiErrorBody {
 export interface EvidenceAnchor {
   anchor_id: string;
   anchor_key: string;
+  scope?: 'module' | 'repo' | '';
   file_path: string;
   symbol_kind: string;
   fq_symbol: string;
@@ -182,6 +184,16 @@ export interface DocStatusSummaryVO {
   updated_at: string;
 }
 
+export type ScopeStatus = 'active' | 'missing' | 'orphan';
+export type ModuleDiscoveryStrategy =
+  | 'merged'
+  | 'arch_elements'
+  | 'build_manifests'
+  | 'first_level_dirs'
+  | 'disabled';
+export type ModuleSource = 'arch_element' | 'build_manifest' | 'first_level_dir' | 'manual';
+export type ModuleStatus = 'active' | 'ignored' | 'missing';
+
 export interface RepoScopeCoverageVO {
   repo_id: number;
   repo_name: string;
@@ -189,6 +201,10 @@ export interface RepoScopeCoverageVO {
   department_name: string;
   subdirectory: string;
   scope_type: ScopeType;
+  scope_status?: ScopeStatus;
+  module_source?: string;
+  effective_files?: number;
+  total_loc?: number;
   arch_element_id: number | null;
   arch_element_name: string;
   branch: string;
@@ -199,6 +215,52 @@ export interface RepoScopeCoverageVO {
   remote_head_sha: string;
   active_task_id: number | null;
   doc_statuses: Record<string, DocStatusSummaryVO>;
+}
+
+export interface RepoModulePolicyVO {
+  repo_id: number;
+  strategy: ModuleDiscoveryStrategy;
+  exclude_globs: string[];
+  min_effective_files: number;
+  updated_by?: number | null;
+  updated_at?: string | null;
+}
+
+export interface RepoModuleVO {
+  id: number;
+  repo_id: number;
+  subdirectory: string;
+  source: string;
+  status: ModuleStatus;
+  arch_element_id: number | null;
+  arch_element_name: string;
+  owner_id: number;
+  owner_name: string;
+  effective_files: number;
+  total_loc: number;
+  last_seen_commit: string;
+  last_seen_at: string;
+}
+
+export interface RepoModulesListVO {
+  repo_id: number;
+  policy: RepoModulePolicyVO;
+  modules: RepoModuleVO[];
+}
+
+export interface RefreshModulesResultVO {
+  repo_id: number;
+  commit_sha: string;
+  active_count: number;
+  modules: RepoModuleVO[];
+}
+
+export interface MigrateModuleResultVO {
+  repo_id: number;
+  from_subdir: string;
+  to_subdir: string;
+  migrated_documents: number;
+  republished_documents: number;
 }
 
 export interface RepoCoverageSummaryVO {
@@ -363,6 +425,12 @@ export interface BudgetDocTypeItem {
   estimated_tokens: number;
 }
 
+export interface BudgetModuleItem {
+  subdirectory: string;
+  estimated_tokens: number;
+  effective_files: number;
+}
+
 export interface BudgetAdvice {
   estimated_tokens: number;
   max_tokens_per_task: number;
@@ -370,7 +438,16 @@ export interface BudgetAdvice {
   max_files_per_task: number;
   top_directories: BudgetDirectoryItem[];
   top_doc_types: BudgetDocTypeItem[];
+  module_breakdown?: BudgetModuleItem[];
   suggestions: string[];
+}
+
+export interface BatchSummaryVO {
+  total_children: number;
+  completed_children: number;
+  failed_children: number;
+  canceled_children: number;
+  running_children: number;
 }
 
 export interface GenSlotTaskVO {
@@ -389,6 +466,7 @@ export interface GenSlotTaskVO {
 
 export interface GenTaskDetailVO {
   id: number;
+  parent_task_id?: number | null;
   repo_id: number;
   repo_name?: string;
   subdirectory: string;
@@ -407,6 +485,8 @@ export interface GenTaskDetailVO {
   error_message?: string;
   budget_advice?: BudgetAdvice | null;
   slot_tasks?: GenSlotTaskVO[];
+  child_tasks?: GenTaskDetailVO[];
+  batch_summary?: BatchSummaryVO | null;
   triggered_by: number;
   started_at: string | null;
   finished_at: string | null;

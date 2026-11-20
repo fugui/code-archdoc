@@ -74,7 +74,16 @@ lint-arch:
 		echo "❌ [ArchGuard Failed] Own GORM models must return archdoc_ table prefix:"; \
 		echo "$$bad_tables"; exit 1; \
 	fi; \
-	echo "✅ [ArchGuard Passed] All 5 architectural boundary rules are clean."
+	if [ -f "models/module.go" ] && grep -En 'OwnerID|owner_id' models/module.go >/dev/null 2>&1; then \
+		echo "❌ [ArchGuard Failed] ADR-04: archdoc_repo_modules must not duplicate OwnerID (use architecture_elements):"; \
+		grep -En 'OwnerID|owner_id' models/module.go; exit 1; \
+	fi; \
+	bad_gitsync=$$(grep -rn "gitsync\.Sync(" handlers/ pkg/ 2>/dev/null || true); \
+	if [ -n "$$bad_gitsync" ]; then \
+		echo "❌ [ArchGuard Failed] ADR-04: handlers/ and pkg/ must not call gitsync.Sync directly:"; \
+		echo "$$bad_gitsync"; exit 1; \
+	fi; \
+	echo "✅ [ArchGuard Passed] All architectural boundary rules (incl. ADR-04) are clean."
 
 # 完整打包构建（前端 dist + 内嵌单二进制）
 build: check-cgo $(BINARY)

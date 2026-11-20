@@ -23,7 +23,7 @@ database:
   port: 5432
   user: "postgres"
   password: "YOUR_POSTGRES_PASSWORD"    # 生产环境建议使用最小权限专用账户并通过受控配置/密钥中心注入
-  dbname: "code_shield"                 # 与平台共享的核心数据库名（自有 16 张表统一加 archdoc_ 前缀防冲突）
+  dbname: "code_shield"                 # 与平台共享的核心数据库名（自有 18 张表统一加 archdoc_ 前缀防冲突）
   sslmode: "disable"                    # 生产环境建议开启 require / verify-full
   timezone: "Asia/Shanghai"
   max_open_conns: 30                    # 生产推荐 30~50（控制总连接数保护共享 PG）
@@ -73,6 +73,12 @@ scheduler:
   max_user_concurrency: 2               # 单用户最大并发生成任务数（防止单人占满队列）
   interactive_queue_cap: 64             # 交互式高优队列容量（单仓生成 / 增量刷新，4:1 优先于批量队列）
   batch_queue_cap: 256                  # 批量低优队列容量（队列满返回 429 QUEUE_FULL）
+  max_tokens_per_batch: 1000000         # 批量生成预估 Token 前置熔断上限（ADR-04 D-5）
+
+# ── 整仓基线抽取与超大仓降级阈值配置 (ADR-04 D-2) ──
+extract:
+  max_repo_files: 50000                 # 整仓基线抽取有效文件数上限，超出降级为按子目录独立抽取
+  max_repo_duration_seconds: 600        # 整仓基线抽取耗时上限（秒），默认 10 分钟
 
 # ── 远端变更轻量巡检与漂移重算配置 (F-12 / F-25) ──
 drift:

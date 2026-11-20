@@ -12,16 +12,18 @@ import (
 
 // CitedAnchorCandidate L2 模型输出的候选证据引用。
 type CitedAnchorCandidate struct {
+	Scope      string `json:"scope,omitempty"` // "" (默认 module) | "repo"
 	FilePath   string `json:"file_path"`
 	SymbolKind string `json:"symbol_kind,omitempty"`
 	FQSymbol   string `json:"fq_symbol,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
 
-// EvidenceAnchor 规范化跨提交稳定证据锚点（严格对齐 ADR-03 §2.1）。
+// EvidenceAnchor 规范化跨提交稳定证据锚点（严格对齐 ADR-03 §2.1 & ADR-04 D-3）。
 type EvidenceAnchor struct {
 	AnchorID           string `json:"anchor_id"`
 	AnchorKey          string `json:"anchor_key"`
+	Scope              string `json:"scope,omitempty"` // "" (默认 module) | "repo"
 	FilePath           string `json:"file_path"`
 	SymbolKind         string `json:"symbol_kind"`
 	FQSymbol           string `json:"fq_symbol"`
@@ -34,19 +36,23 @@ type EvidenceAnchor struct {
 
 // IRIndex 对 L1 Code IR 构建多维度倒排索引，支撑证据对齐与 Gate 1 存在性校验。
 type IRIndex struct {
-	Files          map[string]codeir.FileSummary
-	FileByBase     map[string][]string
-	SymbolsByFQ    map[string]codeir.SymbolFact
-	SymbolsByShort map[string][]codeir.SymbolFact
-	ProtoRPCs      map[string]protoRPCRef
-	ProtoTypes     map[string]codeir.SourceSpan
-	HTTPRoutes     map[string]codeir.HTTPRouteFact
-	DataModels     map[string]codeir.DataModelFact
-	ConfigKeys     map[string]codeir.ConfigKeyFact
-	Primitives     map[string][]codeir.RuntimePrimitiveFact
-	BuildTargets   map[string]codeir.BuildTarget
-	CompileOpts    map[string]codeir.CompileOption
-	ExternalDeps   map[string]codeir.ExternalDep
+	Files            map[string]codeir.FileSummary
+	FileByBase       map[string][]string
+	SymbolsByFQ      map[string]codeir.SymbolFact
+	SymbolsByShort   map[string][]codeir.SymbolFact
+	ProtoRPCs        map[string]protoRPCRef
+	ProtoTypes       map[string]codeir.SourceSpan
+	HTTPRoutes       map[string]codeir.HTTPRouteFact
+	DataModels       map[string]codeir.DataModelFact
+	ConfigKeys       map[string]codeir.ConfigKeyFact
+	Primitives       map[string][]codeir.RuntimePrimitiveFact
+	BuildTargets     map[string]codeir.BuildTarget
+	CompileOpts      map[string]codeir.CompileOption
+	ExternalDeps     map[string]codeir.ExternalDep
+	ExtFiles         map[string]bool
+	ExtSymbolsByFQ   map[string]codeir.ExternalSymbolRef
+	ExtSymbolsShort  map[string][]codeir.ExternalSymbolRef
+	ModuleDigestsMap map[string]codeir.ModuleDigestInput
 }
 
 type protoRPCRef struct {
@@ -56,21 +62,72 @@ type protoRPCRef struct {
 
 // BuildIRIndex 从 CodeIRBundle 构建确定性倒排索引。
 func BuildIRIndex(ir *codeir.CodeIRBundle) *IRIndex {
+	return BuildIRIndexWithContext(ir, nil, nil)
+}
+
+// BuildIRIndexWithContext 从 CodeIRBundle 及可选 ModuleContextFacet / ModuleDigestInput 构建完整倒排索引。
+func BuildIRIndexWithContext(ir *codeir.CodeIRBundle, modCtx *codeir.ModuleContextFacet, digests []codeir.ModuleDigestInput) *IRIndex {
 	idx := &IRIndex{
-		Files:          make(map[string]codeir.FileSummary),
-		FileByBase:     make(map[string][]string),
-		SymbolsByFQ:    make(map[string]codeir.SymbolFact),
-		SymbolsByShort: make(map[string][]codeir.SymbolFact),
-		ProtoRPCs:      make(map[string]protoRPCRef),
-		ProtoTypes:     make(map[string]codeir.SourceSpan),
-		HTTPRoutes:     make(map[string]codeir.HTTPRouteFact),
-		DataModels:     make(map[string]codeir.DataModelFact),
-		ConfigKeys:     make(map[string]codeir.ConfigKeyFact),
-		Primitives:     make(map[string][]codeir.RuntimePrimitiveFact),
-		BuildTargets:   make(map[string]codeir.BuildTarget),
-		CompileOpts:    make(map[string]codeir.CompileOption),
-		ExternalDeps:   make(map[string]codeir.ExternalDep),
+		Files:            make(map[string]codeir.FileSummary),
+		FileByBase:       make(map[string][]string),
+		SymbolsByFQ:      make(map[string]codeir.SymbolFact),
+		SymbolsByShort:   make(map[string][]codeir.SymbolFact),
+		ProtoRPCs:        make(map[string]protoRPCRef),
+		ProtoTypes:       make(map[string]codeir.SourceSpan),
+		HTTPRoutes:       make(map[string]codeir.HTTPRouteFact),
+		DataModels:       make(map[string]codeir.DataModelFact),
+		ConfigKeys:       make(map[string]codeir.ConfigKeyFact),
+		Primitives:       make(map[string][]codeir.RuntimePrimitiveFact),
+		BuildTargets:     make(map[string]codeir.BuildTarget),
+		CompileOpts:      make(map[string]codeir.CompileOption),
+		ExternalDeps:     make(map[string]codeir.ExternalDep),
+		ExtFiles:         make(map[string]bool),
+		ExtSymbolsByFQ:   make(map[string]codeir.ExternalSymbolRef),
+		ExtSymbolsShort:  make(map[string][]codeir.ExternalSymbolRef),
+		ModuleDigestsMap: make(map[string]codeir.ModuleDigestInput),
 	}
+
+	if modCtx != nil {
+		for _, wf := range modCtx.ExternalFileWhitelist {
+			clean := strings.TrimPrefix(path.Clean(strings.TrimSpace(wf)), "./")
+			if clean != "" && clean != "." {
+				idx.ExtFiles[clean] = true
+			}
+		}
+		for _, up := range modCtx.UpstreamModules {
+			for _, sf := range up.SampleFiles {
+				clean := strings.TrimPrefix(path.Clean(strings.TrimSpace(sf)), "./")
+				if clean != "" && clean != "." {
+					idx.ExtFiles[clean] = true
+				}
+			}
+		}
+		for _, bc := range modCtx.RepoBuildContext {
+			clean := strings.TrimPrefix(path.Clean(strings.TrimSpace(bc.BuildFile)), "./")
+			if clean != "" && clean != "." {
+				idx.ExtFiles[clean] = true
+			}
+		}
+		for _, es := range modCtx.ReferencedExtSymbols {
+			cleanFile := strings.TrimPrefix(path.Clean(strings.TrimSpace(es.FilePath)), "./")
+			if cleanFile != "" && cleanFile != "." {
+				idx.ExtFiles[cleanFile] = true
+			}
+			if es.FQSymbol != "" {
+				idx.ExtSymbolsByFQ[es.FQSymbol] = es
+				short := lastSymbolSegment(es.FQSymbol)
+				idx.ExtSymbolsShort[short] = append(idx.ExtSymbolsShort[short], es)
+			}
+		}
+	}
+
+	for _, dg := range digests {
+		modPath := strings.TrimSpace(dg.ModulePath)
+		if modPath != "" {
+			idx.ModuleDigestsMap[modPath] = dg
+		}
+	}
+
 	if ir == nil {
 		return idx
 	}
@@ -218,6 +275,30 @@ func AlignCandidates(idx *IRIndex, commitSHA string, candidates []CitedAnchorCan
 func alignSingleCandidate(idx *IRIndex, commitSHA string, cand CitedAnchorCandidate) (EvidenceAnchor, bool) {
 	normFile := strings.TrimPrefix(strings.TrimSpace(cand.FilePath), "./")
 	fq := strings.TrimSpace(cand.FQSymbol)
+	scope := strings.TrimSpace(cand.Scope)
+
+	// 0a. 整仓汇总子模块架构摘要锚点 (symbol_kind == "module_doc")
+	if cand.SymbolKind == "module_doc" || (len(idx.ModuleDigestsMap) > 0 && strings.Contains(fq, "::")) {
+		modKey := normFile
+		if modKey == "" && strings.Contains(fq, "::") {
+			modKey = strings.SplitN(fq, "::", 2)[0]
+		}
+		if dg, ok := idx.ModuleDigestsMap[modKey]; ok {
+			fqVal := fq
+			if fqVal == "" {
+				fqVal = modKey + "::module_doc"
+			}
+			return buildScopedAnchor("", "module_doc", dg.ModulePath, fqVal, dg.ContentSHA256, commitSHA, 1, 1, string(codeir.ConfidenceExact)), true
+		}
+		if cand.SymbolKind == "module_doc" {
+			return EvidenceAnchor{}, false
+		}
+	}
+
+	// 0b. 跨模块仓库根相对锚点 (scope == "repo")：严格限定在 module_context 白名单内对齐！
+	if scope == "repo" {
+		return alignRepoScopedCandidate(idx, commitSHA, normFile, fq)
+	}
 
 	// 1. 优先精确匹配 Symbols
 	if fq != "" {
@@ -321,6 +402,65 @@ func alignSingleCandidate(idx *IRIndex, commitSHA string, cand CitedAnchorCandid
 		}
 	}
 
+	// 8. 若未显式声明 scope="repo"，但恰好命中了 module_context 白名单中的外部符号/文件，自动升级为 scope="repo" 锚点
+	if anc, ok := alignRepoScopedCandidate(idx, commitSHA, normFile, fq); ok {
+		return anc, true
+	}
+
+	return EvidenceAnchor{}, false
+}
+
+func alignRepoScopedCandidate(idx *IRIndex, commitSHA, normFile, fq string) (EvidenceAnchor, bool) {
+	if idx == nil {
+		return EvidenceAnchor{}, false
+	}
+	if fq != "" {
+		if es, ok := idx.ExtSymbolsByFQ[fq]; ok {
+			if normFile == "" || es.FilePath == normFile {
+				return buildScopedAnchor(
+					"repo",
+					es.SymbolKind,
+					es.FilePath,
+					es.FQSymbol,
+					es.Fingerprint,
+					commitSHA,
+					es.Span.LineStart,
+					es.Span.LineEnd,
+					string(es.Confidence),
+				), true
+			}
+		}
+		if list := idx.ExtSymbolsShort[fq]; len(list) > 0 {
+			for _, es := range list {
+				if normFile == "" || es.FilePath == normFile {
+					return buildScopedAnchor(
+						"repo",
+						es.SymbolKind,
+						es.FilePath,
+						es.FQSymbol,
+						es.Fingerprint,
+						commitSHA,
+						es.Span.LineStart,
+						es.Span.LineEnd,
+						string(es.Confidence),
+					), true
+				}
+			}
+		}
+	}
+	if normFile != "" && fq == "" && idx.ExtFiles[normFile] {
+		return buildScopedAnchor(
+			"repo",
+			"file",
+			normFile,
+			"",
+			hashShort("repo::file::"+normFile),
+			commitSHA,
+			1,
+			1,
+			string(codeir.ConfidenceExact),
+		), true
+	}
 	return EvidenceAnchor{}, false
 }
 
@@ -363,6 +503,10 @@ func mapSymbolKind(lang, kind string) string {
 }
 
 func buildAnchor(symbolKind, filePath, fqSymbol, fingerprint, commitSHA string, lineStart, lineEnd int, confidence string) EvidenceAnchor {
+	return buildScopedAnchor("", symbolKind, filePath, fqSymbol, fingerprint, commitSHA, lineStart, lineEnd, confidence)
+}
+
+func buildScopedAnchor(scope, symbolKind, filePath, fqSymbol, fingerprint, commitSHA string, lineStart, lineEnd int, confidence string) EvidenceAnchor {
 	if lineStart <= 0 {
 		lineStart = 1
 	}
@@ -373,6 +517,9 @@ func buildAnchor(symbolKind, filePath, fqSymbol, fingerprint, commitSHA string, 
 		confidence = string(codeir.ConfidenceExact)
 	}
 	anchorKey := fmt.Sprintf("%s::%s::%s", symbolKind, filePath, fqSymbol)
+	if scope == "repo" {
+		anchorKey = fmt.Sprintf("repo::%s::%s::%s", symbolKind, filePath, fqSymbol)
+	}
 	if fingerprint == "" {
 		fingerprint = hashShort(anchorKey)
 	}
@@ -381,6 +528,7 @@ func buildAnchor(symbolKind, filePath, fqSymbol, fingerprint, commitSHA string, 
 	return EvidenceAnchor{
 		AnchorID:           anchorID,
 		AnchorKey:          anchorKey,
+		Scope:              scope,
 		FilePath:           filePath,
 		SymbolKind:         symbolKind,
 		FQSymbol:           fqSymbol,

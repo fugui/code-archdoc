@@ -15,7 +15,8 @@ type RepoSnapshot struct {
 	Subdirectory    string         `gorm:"size:512;not null;default:'';uniqueIndex:idx_archdoc_snapshot_key,priority:2" json:"subdirectory"`
 	RefName         string         `gorm:"size:128;not null;default:'master';uniqueIndex:idx_archdoc_snapshot_key,priority:3" json:"ref_name"`
 	CommitSHA       string         `gorm:"size:40;not null;uniqueIndex:idx_archdoc_snapshot_key,priority:4" json:"commit_sha"`
-	IRSchemaVersion string         `gorm:"size:16;not null;default:'1.0';uniqueIndex:idx_archdoc_snapshot_key,priority:5" json:"ir_schema_version"`
+	IRSchemaVersion string         `gorm:"size:16;not null;default:'1.1';uniqueIndex:idx_archdoc_snapshot_key,priority:5" json:"ir_schema_version"`
+	BaseSnapshotID  *uint          `gorm:"index" json:"base_snapshot_id"`
 	Status          string         `gorm:"size:20;not null;default:'extracting'" json:"status"`
 	EffectiveFiles  int            `gorm:"default:0;not null" json:"effective_files"`
 	SkippedFiles    int            `gorm:"default:0;not null" json:"skipped_files"`

@@ -14,6 +14,7 @@ export interface EvidenceInspectRequest {
   lineStart?: number;
   lineEnd?: number;
   confidence?: 'exact' | 'heuristic';
+  scope?: 'module' | 'repo';
 }
 
 export interface EvidenceSourceTabProps {
@@ -47,6 +48,7 @@ export const EvidenceSourceTab: React.FC<EvidenceSourceTabProps> = ({ request })
       lineStart: request.lineStart,
       lineEnd: request.lineEnd,
       symbol: request.symbol,
+      scope: request.scope,
     })
       .then((res) => {
         if (!active) return;
@@ -105,6 +107,9 @@ export const EvidenceSourceTab: React.FC<EvidenceSourceTabProps> = ({ request })
         </div>
 
         <div className="code-archdoc-evidence-tags">
+          {request.scope === 'repo' && (
+            <span className="code-badge code-badge--warning">跨模块契约 (scope=repo)</span>
+          )}
           {(preview?.commit_sha || request.commit) && (
             <span className="code-badge code-badge--muted">
               Commit {shortSha(preview?.commit_sha || request.commit)}

@@ -8,11 +8,19 @@ import {
   Square,
 } from 'lucide-react';
 import { Modal, StatusTag, useConfirm, useToast, type StatusType } from '@code/common';
-import { cancelTask, getTaskDetail, retrySlotTask, triggerGenerateTask } from '../api/tasks';
+import { listRepoModules } from '../api/repos';
+import {
+  cancelTask,
+  getTaskDetail,
+  retrySlotTask,
+  triggerBatchGenerateTask,
+  triggerGenerateTask,
+} from '../api/tasks';
 import type {
   DocTypeSummaryVO,
   GenSlotTaskVO,
   GenTaskDetailVO,
+  RepoModuleVO,
   SlotTaskStatus,
   TaskStatus,
 } from '../types';
@@ -34,6 +42,7 @@ export interface GenerateTaskModalProps {
   initialDocTypeSlugs?: string[];
   initialMode?: 'generate' | 'regenerate';
   initialTaskId?: number | null;
+  batchMode?: boolean;
   onClose: () => void;
   onTaskCompleted?: () => void;
   onOpenStudio?: (repoId: number, docId?: number, subdirectory?: string) => void;
@@ -97,6 +106,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   initialDocTypeSlugs,
   initialMode = 'generate',
   initialTaskId = null,
+  batchMode = false,
   onClose,
   onTaskCompleted,
   onOpenStudio,
@@ -114,7 +124,39 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   const [taskDetail, setTaskDetail] = useState<GenTaskDetailVO | null>(null);
   const [pollError, setPollError] = useState<string>('');
 
+  // 批量模式状态（F-31）
+  const [repoModules, setRepoModules] = useState<RepoModuleVO[]>([]);
+  const [loadingModules, setLoadingModules] = useState<boolean>(false);
+  const [allModules, setAllModules] = useState<boolean>(true);
+  const [selectedModules, setSelectedModules] = useState<string[]>([]);
+  const [includeRepoScope, setIncludeRepoScope] = useState<boolean>(true);
+
   const notifiedReadyRef = useRef<number | null>(null);
+
+  // 批量模式打开时加载活跃子模块清单
+  useEffect(() => {
+    if (!open || !batchMode || !scope || initialTaskId) return;
+    let active = true;
+    setLoadingModules(true);
+    setAllModules(true);
+    setIncludeRepoScope(true);
+    void listRepoModules(scope.repoId)
+      .then((res) => {
+        if (!active) return;
+        const actives = (res.modules || []).filter((m) => m.status === 'active');
+        setRepoModules(actives);
+        setSelectedModules(actives.map((m) => m.subdirectory));
+      })
+      .catch(() => {
+        if (active) setRepoModules([]);
+      })
+      .finally(() => {
+        if (active) setLoadingModules(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, batchMode, scope, initialTaskId]);
 
   // 打开弹窗时初始化选中状态或加载既有任务
   useEffect(() => {
@@ -176,6 +218,12 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     );
   };
 
+  const toggleModuleSubdir = (subdir: string) => {
+    setSelectedModules((prev) =>
+      prev.includes(subdir) ? prev.filter((item) => item !== subdir) : [...prev, subdir],
+    );
+  };
+
   const handleSubmitGenerate = async () => {
     if (!scope) return;
     if (selectedSlugs.length === 0) {
@@ -183,19 +231,39 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       return;
     }
 
+    if (batchMode && !allModules && selectedModules.length === 0 && !includeRepoScope) {
+      showToast('请至少选择 1 个子模块或勾选整仓总览文档', 'warning');
+      return;
+    }
+
     setSubmitting(true);
     setPollError('');
     try {
-      const created = await triggerGenerateTask({
-        repo_id: scope.repoId,
-        subdirectory: scope.subdirectory,
-        ref_name: scope.branch,
-        doc_types: selectedSlugs,
-        mode,
-      });
+      const created = batchMode
+        ? await triggerBatchGenerateTask({
+            repo_id: scope.repoId,
+            ref_name: scope.branch,
+            all_modules: allModules,
+            subdirectories: allModules ? undefined : selectedModules,
+            include_repo_scope: includeRepoScope,
+            doc_types: selectedSlugs,
+            mode,
+          })
+        : await triggerGenerateTask({
+            repo_id: scope.repoId,
+            subdirectory: scope.subdirectory,
+            ref_name: scope.branch,
+            doc_types: selectedSlugs,
+            mode,
+          });
       notifiedReadyRef.current = null;
       setTaskDetail(created);
-      showToast(`已提交文档反推任务 #${created.id}`, 'success');
+      showToast(
+        batchMode
+          ? `已提交批量文档生成编排任务 #${created.id}`
+          : `已提交文档反推任务 #${created.id}`,
+        'success',
+      );
     } catch (err: unknown) {
       const formatted = formatApiError(err, '提交生成任务失败');
       showToast(`${formatted.title}：${formatted.message}`, 'error');
@@ -259,7 +327,13 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     <Modal
       open={open}
       onClose={onClose}
-      title={taskDetail ? `生成任务监控 · #${taskDetail.id}` : '触发代码设计文档反推'}
+      title={
+        taskDetail
+          ? `${taskDetail.task_kind === 'batch_generate' ? '批量任务监控' : '生成任务监控'} · #${taskDetail.id}`
+          : batchMode
+            ? '批量生成多模块 + 整仓分层文档'
+            : '触发代码设计文档反推'
+      }
       subtitle={
         scope
           ? `${scope.repoName}${scope.subdirectory ? ` / ${scope.subdirectory}` : ' (整仓)'} · 分支 ${scope.branch}`
@@ -339,9 +413,60 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           </div>
         )}
 
-        {/* 配置态：选择 1~N DocType */}
+        {/* 配置态：批量范围选择 + 选择 1~N DocType */}
         {!taskDetail && !initialTaskId && (
           <>
+            {batchMode && (
+              <div className="code-archdoc-batch-panel">
+                <div className="code-archdoc-batch-panel-head">
+                  <span className="code-archdoc-field-label">批量目标范围（阶段 1 子模块并发 → 阶段 2 整仓上卷）</span>
+                  <div className="code-archdoc-batch-toggles">
+                    <label className="code-archdoc-radio-label">
+                      <input
+                        type="checkbox"
+                        checked={allModules}
+                        onChange={(e) => setAllModules(e.target.checked)}
+                      />
+                      <span>全部活跃子模块 ({repoModules.length})</span>
+                    </label>
+                    <label className="code-archdoc-radio-label">
+                      <input
+                        type="checkbox"
+                        checked={includeRepoScope}
+                        onChange={(e) => setIncludeRepoScope(e.target.checked)}
+                      />
+                      <span>阶段 2 同步生成整仓总览文档</span>
+                    </label>
+                  </div>
+                </div>
+                {loadingModules ? (
+                  <div className="text-secondary">正在读取活跃模块清单...</div>
+                ) : !allModules && repoModules.length > 0 ? (
+                  <div className="code-archdoc-batch-module-chips">
+                    {repoModules.map((mod) => {
+                      const checked = selectedModules.includes(mod.subdirectory);
+                      return (
+                        <label
+                          key={mod.id}
+                          className={`code-archdoc-batch-chip ${
+                            checked ? 'code-archdoc-batch-chip--checked' : ''
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleModuleSubdir(mod.subdirectory)}
+                          />
+                          <code className="code-archdoc-mono">{mod.subdirectory}</code>
+                          <span className="text-muted">({mod.effective_files} 文件)</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            )}
+
             <div className="code-archdoc-task-mode-row">
               <span className="text-secondary">生成策略：</span>
               <label className="code-archdoc-radio-label">
@@ -494,6 +619,20 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                     </ul>
                   </div>
                 )}
+                {taskDetail.budget_advice.module_breakdown &&
+                  taskDetail.budget_advice.module_breakdown.length > 0 && (
+                    <div>
+                      <div className="text-secondary">各模块预估预算拆解：</div>
+                      <ul className="code-archdoc-budget-list">
+                        {taskDetail.budget_advice.module_breakdown.map((mb) => (
+                          <li key={mb.subdirectory || 'root'}>
+                            <code className="code-archdoc-mono">{mb.subdirectory || '整仓 (Root)'}</code> — 约{' '}
+                            {mb.estimated_tokens.toLocaleString()} Tokens（{mb.effective_files} 文件）
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 {taskDetail.budget_advice.suggestions?.length > 0 && (
                   <ul className="code-archdoc-budget-list">
                     {taskDetail.budget_advice.suggestions.map((tip) => (
@@ -501,6 +640,82 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                     ))}
                   </ul>
                 )}
+              </div>
+            )}
+
+            {/* 批量父任务聚合摘要与子任务列表（F-31） */}
+            {taskDetail.batch_summary && (
+              <div className="code-archdoc-batch-summary">
+                <span className="code-badge code-badge--muted">
+                  总子任务 {taskDetail.batch_summary.total_children}
+                </span>
+                <span className="code-badge code-badge--success">
+                  已完成 {taskDetail.batch_summary.completed_children}
+                </span>
+                <span className="code-badge code-badge--primary">
+                  执行中 {taskDetail.batch_summary.running_children}
+                </span>
+                {taskDetail.batch_summary.failed_children > 0 && (
+                  <span className="code-badge code-badge--danger">
+                    失败 {taskDetail.batch_summary.failed_children}
+                  </span>
+                )}
+                {taskDetail.batch_summary.canceled_children > 0 && (
+                  <span className="code-badge code-badge--muted">
+                    已取消 {taskDetail.batch_summary.canceled_children}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {taskDetail.child_tasks && taskDetail.child_tasks.length > 0 && (
+              <div className="code-archdoc-slot-table-wrap">
+                <table className="code-table">
+                  <thead>
+                    <tr>
+                      <th>子任务</th>
+                      <th>范围</th>
+                      <th>状态</th>
+                      <th>进度</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {taskDetail.child_tasks.map((child) => {
+                      const cm = taskStatusMeta(child.status);
+                      return (
+                        <tr key={child.id}>
+                          <td>
+                            <code className="code-archdoc-mono">#{child.id}</code>
+                          </td>
+                          <td>
+                            <code className="code-archdoc-mono">
+                              {child.subdirectory || '整仓 (Root)'}
+                            </code>
+                            {child.error_message && (
+                              <div className="text-muted">{child.error_message}</div>
+                            )}
+                          </td>
+                          <td>
+                            <StatusTag status={cm.tag} text={cm.label} size="sm" />
+                          </td>
+                          <td>
+                            <span className="code-archdoc-mono">{child.progress_percent}%</span>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-text btn-small"
+                              onClick={() => void refreshTask(child.id)}
+                            >
+                              查看明细
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
 

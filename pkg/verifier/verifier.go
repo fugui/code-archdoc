@@ -16,11 +16,13 @@ type SectionInput struct {
 
 // VerifyInput Verifier 四重确定性门禁完整入参。
 type VerifyInput struct {
-	CommitSHA string
-	IR        *codeir.CodeIRBundle
-	Slots     []doctype.SlotSpec
-	Policy    *doctype.VerifyPolicy
-	Sections  []SectionInput
+	CommitSHA     string
+	IR            *codeir.CodeIRBundle
+	ModuleContext *codeir.ModuleContextFacet // 可选：子模块跨模块外部引用白名单（支撑 scope="repo" 校验）
+	ModuleDigests []codeir.ModuleDigestInput // 可选：整仓汇总引用的子模块摘要集合（支撑 symbol_kind="module_doc" 校验）
+	Slots         []doctype.SlotSpec
+	Policy        *doctype.VerifyPolicy
+	Sections      []SectionInput
 }
 
 // SectionVerifierSummary 单章节维度的校验计数汇总（对齐 models.SectionVerifierSummary）。
@@ -67,7 +69,7 @@ func New() *Verifier {
 // Verify 同步执行证据对齐 + 四重确定性门禁（Gate 1 符号路径 / Gate 2 必填槽位 / Gate 3 Mermaid / Gate 4 凭据防泄漏）。
 func (v *Verifier) Verify(input VerifyInput) *VerifyResult {
 	policy := input.Policy.Effective()
-	idx := BuildIRIndex(input.IR)
+	idx := BuildIRIndexWithContext(input.IR, input.ModuleContext, input.ModuleDigests)
 
 	report := VerifierReport{
 		MissingRequiredSlots: []string{},

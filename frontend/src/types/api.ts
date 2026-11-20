@@ -2,6 +2,7 @@ import type {
   DriftFilterType,
   FacetName,
   ModelTier,
+  ModuleDiscoveryStrategy,
   RepoScopeFilter,
   RepoStatusFilter,
   SectionOwnership,
@@ -19,11 +20,13 @@ export type ArchdocErrorCode =
   | 'PATH_ESCAPE'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'MIGRATION_CONFLICT'
   | 'DOC_TYPE_IN_USE'
   | 'OPTIMISTIC_LOCK_CONFLICT'
   | 'VERIFIER_BLOCKED'
   | 'QUEUE_FULL'
   | 'TOKEN_BUDGET_EXCEEDED'
+  | 'BATCH_TOKEN_BUDGET_EXCEEDED'
   | 'FILE_BUDGET_EXCEEDED'
   | 'INTERNAL_ERROR';
 
@@ -43,6 +46,31 @@ export interface GenerateTaskPayload {
   ref_name?: string;
   doc_types: string[];
   mode?: 'generate' | 'regenerate';
+}
+
+export interface BatchGenerateTaskPayload {
+  repo_id: number;
+  ref_name?: string;
+  subdirectories?: string[];
+  all_modules?: boolean;
+  include_repo_scope?: boolean;
+  doc_types: string[];
+  mode?: 'generate' | 'regenerate';
+}
+
+export interface UpdateRepoModulePolicyPayload {
+  strategy: ModuleDiscoveryStrategy;
+  exclude_globs: string[];
+  min_effective_files: number;
+}
+
+export interface UpdateRepoModuleStatusPayload {
+  status: 'active' | 'ignored';
+}
+
+export interface MigrateRepoModulePayload {
+  from_subdir: string;
+  to_subdir: string;
 }
 
 export interface TaskListQuery {
@@ -85,6 +113,7 @@ export interface SourcePreviewQuery {
   lineStart?: number;
   lineEnd?: number;
   symbol?: string;
+  scope?: 'module' | 'repo';
 }
 
 export interface PublishDocumentPayload {

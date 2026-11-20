@@ -80,6 +80,13 @@ type SchedulerSection struct {
 	MaxUserConcurrency  int `yaml:"max_user_concurrency"`  // 单用户最大并发任务数，默认 2
 	InteractiveQueueCap int `yaml:"interactive_queue_cap"` // 高优交互队列容量，默认 64
 	BatchQueueCap       int `yaml:"batch_queue_cap"`       // 低优批量队列容量，默认 256
+	MaxTokensPerBatch   int `yaml:"max_tokens_per_batch"`  // 批次生成预估 Token 前置熔断上限，默认 1000000
+}
+
+// ExtractSection 定义整仓基线抽取阈值与降级配置（ADR-04 §4.3）
+type ExtractSection struct {
+	MaxRepoFiles           int `yaml:"max_repo_files"`            // 整仓基线抽取有效文件数上限，默认 50000
+	MaxRepoDurationSeconds int `yaml:"max_repo_duration_seconds"` // 整仓基线抽取超时降级阈值（秒），默认 600
 }
 
 // DriftSection 定义远端变更轻量巡检与漂移重算配置
@@ -97,6 +104,7 @@ type Config struct {
 	Storage   StorageSection              `yaml:"storage"`
 	Security  SecuritySection             `yaml:"security"`
 	Scheduler SchedulerSection            `yaml:"scheduler"`
+	Extract   ExtractSection              `yaml:"extract"`
 	Drift     DriftSection                `yaml:"drift"`
 }
 
@@ -182,6 +190,17 @@ func applyDefaults() {
 	}
 	if AppConfig.Scheduler.BatchQueueCap <= 0 {
 		AppConfig.Scheduler.BatchQueueCap = 256
+	}
+	if AppConfig.Scheduler.MaxTokensPerBatch <= 0 {
+		AppConfig.Scheduler.MaxTokensPerBatch = 1000000
+	}
+
+	// Extract 默认值（ADR-04 §4.3 超大仓降级阈值）
+	if AppConfig.Extract.MaxRepoFiles <= 0 {
+		AppConfig.Extract.MaxRepoFiles = 50000
+	}
+	if AppConfig.Extract.MaxRepoDurationSeconds <= 0 {
+		AppConfig.Extract.MaxRepoDurationSeconds = 600
 	}
 
 	// Drift 默认值

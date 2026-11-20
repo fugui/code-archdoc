@@ -37,7 +37,11 @@ type RepoScopeCoverageVO struct {
 	DepartmentID    uint                          `json:"department_id"`
 	DepartmentName  string                        `json:"department_name"`
 	Subdirectory    string                        `json:"subdirectory"`
-	ScopeType       string                        `json:"scope_type"` // "repo" | "subdir"
+	ScopeType       string                        `json:"scope_type"`   // "repo" | "subdir"
+	ScopeStatus     string                        `json:"scope_status"` // "active" | "missing" | "orphan"
+	ModuleSource    string                        `json:"module_source,omitempty"`
+	EffectiveFiles  int                           `json:"effective_files"`
+	TotalLOC        int                           `json:"total_loc"`
 	ArchElementID   *uint                         `json:"arch_element_id"`
 	ArchElementName string                        `json:"arch_element_name"`
 	Branch          string                        `json:"branch"`
@@ -109,7 +113,14 @@ type RepoService struct {
 	snapRepo   SnapshotRepo
 	taskRepo   TaskRepo
 	driftRepo  DriftRepo
+	moduleRepo ModuleRepo
 	rbacSvc    *RBACService
+}
+
+// WithModuleRepo 注入派生模块索引仓储，使覆盖全景矩阵融合自动发现模块、已消失模块与孤儿文档范围（ADR-04 D-1）。
+func (s *RepoService) WithModuleRepo(moduleRepo ModuleRepo) *RepoService {
+	s.moduleRepo = moduleRepo
+	return s
 }
 
 func NewRepoService(
@@ -384,6 +395,16 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 	}
 
+	// 批量加载派生模块索引（可选：未注入或尚未刷新的仓库保持架构元素向后兼容）
+	modulesByRepo := make(map[uint][]models.RepoModule)
+	if s.moduleRepo != nil {
+		if mods, mErr := s.moduleRepo.ListModulesByRepos(ctx, repoIDs); mErr == nil {
+			for _, m := range mods {
+				modulesByRepo[m.RepoID] = append(modulesByRepo[m.RepoID], m)
+			}
+		}
+	}
+
 	// 按仓库分组架构元素，并按规范化子目录聚合文档
 	elemsByRepo := make(map[uint][]models.ArchitectureElement)
 	for _, el := range elems {
@@ -392,9 +413,24 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 	}
 	docsByScope := make(map[scopeKey][]models.Document)
+	docSubdirsByRepo := make(map[uint][]string)
+	seenDocSubdir := make(map[scopeKey]bool)
 	for _, d := range docs {
 		k := scopeKey{repoID: d.RepoID, subdir: d.Subdirectory}
 		docsByScope[k] = append(docsByScope[k], d)
+		if d.Subdirectory != "" && !seenDocSubdir[k] {
+			seenDocSubdir[k] = true
+			docSubdirsByRepo[d.RepoID] = append(docSubdirsByRepo[d.RepoID], d.Subdirectory)
+		}
+	}
+
+	// 整仓最新快照文件数/LOC（供整仓行展示）
+	latestSnapByScope := make(map[scopeKey]models.RepoSnapshot)
+	for _, sn := range snaps {
+		k := scopeKey{repoID: sn.RepoID, subdir: sn.Subdirectory}
+		if _, exists := latestSnapByScope[k]; !exists {
+			latestSnapByScope[k] = sn
+		}
 	}
 
 	rows := make([]RepoScopeCoverageVO, 0, len(repos)+len(elems))
@@ -411,7 +447,8 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		repoLevelWrite := IsRepoLevelWriter(user, repo)
 
 		// 1. 整仓范围行 (subdirectory == "")
-		rows = append(rows, buildSingleScopeRow(
+		repoSnap := latestSnapByScope[scopeKey{repoID: repo.ID, subdir: ""}]
+		repoRow := buildSingleScopeRow(
 			repo, branch, "", "repo", nil, "",
 			repo.OwnerID, repoOwnerName, repoLevelWrite,
 			docsByScope[scopeKey{repoID: repo.ID, subdir: ""}],
@@ -419,59 +456,142 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 			latestCommitByScope[scopeKey{repoID: repo.ID, subdir: ""}],
 			remoteHeadByRepo[repo.ID],
 			activeTaskByScope[scopeKey{repoID: repo.ID, subdir: ""}],
-		))
+		)
+		repoRow.ScopeStatus = models.ModuleStatusActive
+		repoRow.EffectiveFiles = repoSnap.EffectiveFiles
+		repoRow.TotalLOC = repoSnap.TotalLOC
+		rows = append(rows, repoRow)
 
-		// 2. Monorepo 子目录范围行（按规范化子目录去重，严格核算子目录负责人权限）
+		// 2. 构建该仓库下架构元素索引与当前用户子目录写权限集合
 		repoElems := elemsByRepo[repo.ID]
-		// 先收集当前用户在该仓库下负责的所有子目录集合
+		elemBySub := make(map[string]models.ArchitectureElement, len(repoElems))
 		userOwnedSubdirs := make(map[string]bool)
-		if user != nil && user.ID > 0 {
-			for _, el := range repoElems {
-				if el.OwnerID != nil && *el.OwnerID == user.ID {
-					if ns, normErr := sandbox.NormalizeSubdir(el.Subdirectory); normErr == nil && ns != "" {
-						userOwnedSubdirs[ns] = true
-					}
-				}
+		for _, el := range repoElems {
+			ns, normErr := sandbox.NormalizeSubdir(el.Subdirectory)
+			if normErr != nil || ns == "" {
+				continue
+			}
+			if _, exists := elemBySub[ns]; !exists {
+				elemBySub[ns] = el
+			}
+			if user != nil && user.ID > 0 && el.OwnerID != nil && *el.OwnerID == user.ID {
+				userOwnedSubdirs[ns] = true
 			}
 		}
 
-		seenSubdirs := make(map[string]bool)
-		for _, el := range repoElems {
-			normSub, normErr := sandbox.NormalizeSubdir(el.Subdirectory)
-			if normErr != nil || normSub == "" || seenSubdirs[normSub] {
-				continue
-			}
-			seenSubdirs[normSub] = true
-
-			elID := el.ID
-			elName := el.NameCn
-			if elName == "" {
-				elName = el.NameEn
-			}
+		resolveSubdirMeta := func(normSub string) (*uint, string, uint, string) {
 			scopeOwnerID := repo.OwnerID
 			scopeOwnerName := repoOwnerName
-			if el.OwnerID != nil && *el.OwnerID > 0 {
-				scopeOwnerID = *el.OwnerID
-				if u, ok := elemUsers[*el.OwnerID]; ok {
-					if u.Name != "" {
-						scopeOwnerName = u.Name
-					} else {
-						scopeOwnerName = u.Username
+			var elIDPtr *uint
+			elName := ""
+			if el, ok := elemBySub[normSub]; ok {
+				id := el.ID
+				elIDPtr = &id
+				elName = el.NameCn
+				if elName == "" {
+					elName = el.NameEn
+				}
+				if el.OwnerID != nil && *el.OwnerID > 0 {
+					scopeOwnerID = *el.OwnerID
+					if u, uOK := elemUsers[*el.OwnerID]; uOK {
+						if u.Name != "" {
+							scopeOwnerName = u.Name
+						} else {
+							scopeOwnerName = u.Username
+						}
 					}
 				}
 			}
+			return elIDPtr, elName, scopeOwnerID, scopeOwnerName
+		}
 
-			canWrite := repoLevelWrite || userOwnedSubdirs[normSub]
-			k := scopeKey{repoID: repo.ID, subdir: normSub}
-			rows = append(rows, buildSingleScopeRow(
-				repo, branch, normSub, "subdir", &elID, elName,
+		seenSubdirs := make(map[string]bool)
+		ignoredSubdirs := make(map[string]bool)
+		repoMods := modulesByRepo[repo.ID]
+
+		if len(repoMods) > 0 {
+			// 已刷新模块索引的仓库：展示 active / missing 模块（ignored 隐藏，若仍有文档则下面以 orphan 兜底）
+			for _, mod := range repoMods {
+				if mod.Status == models.ModuleStatusIgnored {
+					ignoredSubdirs[mod.Subdirectory] = true
+					continue
+				}
+				if mod.Subdirectory == "" || seenSubdirs[mod.Subdirectory] {
+					continue
+				}
+				seenSubdirs[mod.Subdirectory] = true
+				elIDPtr, elName, scopeOwnerID, scopeOwnerName := resolveSubdirMeta(mod.Subdirectory)
+				canWrite := repoLevelWrite || userOwnedSubdirs[mod.Subdirectory]
+				k := scopeKey{repoID: repo.ID, subdir: mod.Subdirectory}
+				row := buildSingleScopeRow(
+					repo, branch, mod.Subdirectory, "subdir", elIDPtr, elName,
+					scopeOwnerID, scopeOwnerName, canWrite,
+					docsByScope[k],
+					revMap, codeDriftByDoc, specDriftByDoc,
+					latestCommitByScope[k],
+					remoteHeadByRepo[repo.ID],
+					activeTaskByScope[k],
+				)
+				row.ScopeStatus = mod.Status
+				row.ModuleSource = mod.Source
+				row.EffectiveFiles = mod.EffectiveFiles
+				row.TotalLOC = mod.TotalLOC
+				rows = append(rows, row)
+			}
+		} else {
+			// 尚未刷新模块索引的仓库：保持 100% 向后兼容，继续展示 architecture_elements 声明的子目录
+			for _, el := range repoElems {
+				normSub, normErr := sandbox.NormalizeSubdir(el.Subdirectory)
+				if normErr != nil || normSub == "" || seenSubdirs[normSub] {
+					continue
+				}
+				seenSubdirs[normSub] = true
+				elIDPtr, elName, scopeOwnerID, scopeOwnerName := resolveSubdirMeta(normSub)
+				canWrite := repoLevelWrite || userOwnedSubdirs[normSub]
+				k := scopeKey{repoID: repo.ID, subdir: normSub}
+				row := buildSingleScopeRow(
+					repo, branch, normSub, "subdir", elIDPtr, elName,
+					scopeOwnerID, scopeOwnerName, canWrite,
+					docsByScope[k],
+					revMap, codeDriftByDoc, specDriftByDoc,
+					latestCommitByScope[k],
+					remoteHeadByRepo[repo.ID],
+					activeTaskByScope[k],
+				)
+				row.ScopeStatus = models.ModuleStatusActive
+				row.ModuleSource = models.ModuleSourceArchElement
+				if sn, ok := latestSnapByScope[k]; ok {
+					row.EffectiveFiles = sn.EffectiveFiles
+					row.TotalLOC = sn.TotalLOC
+				}
+				rows = append(rows, row)
+			}
+		}
+
+		// 3. 孤儿文档范围兜底：对不在活跃/缺失模块集合内但已有历史文档的子目录，标注 scope_status="orphan" 保障可见可迁移
+		for _, docSub := range docSubdirsByRepo[repo.ID] {
+			if seenSubdirs[docSub] {
+				continue
+			}
+			// 若已被显式忽略且当前用户看不到任何可见文档则跳过
+			k := scopeKey{repoID: repo.ID, subdir: docSub}
+			canWrite := repoLevelWrite || userOwnedSubdirs[docSub]
+			elIDPtr, elName, scopeOwnerID, scopeOwnerName := resolveSubdirMeta(docSub)
+			row := buildSingleScopeRow(
+				repo, branch, docSub, "subdir", elIDPtr, elName,
 				scopeOwnerID, scopeOwnerName, canWrite,
 				docsByScope[k],
 				revMap, codeDriftByDoc, specDriftByDoc,
 				latestCommitByScope[k],
 				remoteHeadByRepo[repo.ID],
 				activeTaskByScope[k],
-			))
+			)
+			if len(row.DocStatuses) == 0 && ignoredSubdirs[docSub] {
+				continue
+			}
+			seenSubdirs[docSub] = true
+			row.ScopeStatus = "orphan"
+			rows = append(rows, row)
 		}
 	}
 

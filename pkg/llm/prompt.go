@@ -67,10 +67,14 @@ type SlotPromptInput struct {
 	Slot              doctype.SlotSpec
 	Glossary          *codeir.GlossaryCache
 	IR                *codeir.CodeIRBundle
-	SourceSnippets    map[string]string // 可选：已脱敏的代表性源码片段 (relPath -> text)
-	PriorHybridMD     string            // 可选：hybrid 模式下的历史人工修改参考段落
-	Nonce             string            // 可选：同批次指定或自动生成 128-bit 随机 Nonce
-	EnableSourceTools bool              // 可选：是否为当前槽位开放受限只读源码工具
+	CurrentModule     string                     // 可选：当前子模块规范化路径（空串表示整仓）
+	ModuleContext     *codeir.ModuleContextFacet // 可选：子模块跨模块上下文分片（ADR-04 D-2）
+	ModuleDigests     []codeir.ModuleDigestInput // 可选：整仓汇总时各活跃子模块摘要（ADR-04 D-4）
+	CrossModuleGraph  []codeir.CrossModuleEdge   // 可选：整仓跨模块依赖拓扑图（ADR-04 D-4）
+	SourceSnippets    map[string]string          // 可选：已脱敏的代表性源码片段 (relPath -> text)
+	PriorHybridMD     string                     // 可选：hybrid 模式下的历史人工修改参考段落
+	Nonce             string                     // 可选：同批次指定或自动生成 128-bit 随机 Nonce
+	EnableSourceTools bool                       // 可选：是否为当前槽位开放受限只读源码工具
 }
 
 // BuildSlotMessages 按 KV Cache 固定前缀顺序（NFR-6）与防注入数据栅栏（SC-13）构造 OpenAI 消息数组：
@@ -105,6 +109,25 @@ func BuildSlotMessages(in SlotPromptInput) ([]Message, string) {
 	sharedSummary := serializeSharedIRPrefix(in.IR)
 	userBuilder.WriteString(WrapUntrustedDataWithNonce(nonce, "shared_ir_overview", sharedSummary))
 	userBuilder.WriteString("\n\n")
+
+	if in.ModuleContext != nil {
+		userBuilder.WriteString("## 跨模块边界与外部契约（非本模块实现，仅供参考；引用其中的仓库根相对路径或外部符号时，必须在 cited_anchors 中显式标注 \"scope\": \"repo\"）\n")
+		mcBytes, _ := json.Marshal(in.ModuleContext)
+		userBuilder.WriteString(WrapUntrustedDataWithNonce(nonce, "cross_module_context", string(mcBytes)))
+		userBuilder.WriteString("\n\n")
+	}
+
+	if len(in.ModuleDigests) > 0 {
+		userBuilder.WriteString("## 各业务子模块架构摘要与跨模块依赖拓扑（整仓两级汇总输入；引用子模块架构结论时请在 cited_anchors 中标注 \"symbol_kind\": \"module_doc\", \"file_path\": \"<module_path>\", \"fq_symbol\": \"<module_path>::<doc_type_slug>\"）\n")
+		digestsBytes, _ := json.Marshal(in.ModuleDigests)
+		userBuilder.WriteString(WrapUntrustedDataWithNonce(nonce, "module_architecture_digests", string(digestsBytes)))
+		userBuilder.WriteString("\n\n")
+		if len(in.CrossModuleGraph) > 0 {
+			graphBytes, _ := json.Marshal(in.CrossModuleGraph)
+			userBuilder.WriteString(WrapUntrustedDataWithNonce(nonce, "cross_module_dependency_graph", string(graphBytes)))
+			userBuilder.WriteString("\n\n")
+		}
+	}
 
 	// 3. 槽位专属尾部（仅此处随 slot_id 变化）
 	userBuilder.WriteString(fmt.Sprintf("## 当前目标章节槽位\n- slot_id: `%s`\n- 章节标题: %s\n- 所有权模式: %s\n",

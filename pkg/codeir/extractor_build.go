@@ -62,7 +62,7 @@ func (e *BuildExtractor) ExtractFile(ctx context.Context, file FileEntry, conten
 }
 
 var (
-	reCMakeCall     = regexp.MustCompile(`(?is)\b(project|set|add_executable|add_library|find_package|target_link_libraries|add_compile_definitions|add_definitions|target_compile_definitions)\s*\(([^)]*)\)`)
+	reCMakeCall     = regexp.MustCompile(`(?is)\b(project|set|add_executable|add_library|find_package|target_link_libraries|add_compile_definitions|add_definitions|target_compile_definitions|add_subdirectory|include_directories|target_include_directories)\s*\(([^)]*)\)`)
 	reMakefileTgt   = regexp.MustCompile(`^([A-Za-z0-9_.-]+)\s*:(?:[^=]|$)`)
 	reBazelRule     = regexp.MustCompile(`(?s)\b(cc_library|cc_binary|cc_test|proto_library)\s*\((.*?)\n\)`)
 	reBazelName     = regexp.MustCompile(`name\s*=\s*["']([^"']+)["']`)
@@ -223,6 +223,46 @@ func (e *BuildExtractor) parseCMake(filePath, src string) *ExtractionResult {
 					Meta:       meta,
 				})
 			}
+		case "add_subdirectory":
+			subRaw := normalizeCMakeRelDir(filePath, tokens[0])
+			if subRaw != "" {
+				res.Subdirectories = append(res.Subdirectories, BuildSubdirFact{
+					ParentBuildFile: filePath,
+					Subdirectory:    subRaw,
+					BuildSystem:     "cmake",
+					Meta:            meta,
+				})
+			}
+		case "include_directories":
+			for _, tok := range tokens {
+				up := strings.ToUpper(tok)
+				if up == "AFTER" || up == "BEFORE" || up == "SYSTEM" {
+					continue
+				}
+				if incDir := normalizeCMakeRelDir(filePath, tok); incDir != "" {
+					res.IncludeDirs = append(res.IncludeDirs, BuildIncludeDirFact{
+						BuildFile:  filePath,
+						IncludeDir: incDir,
+						Meta:       meta,
+					})
+				}
+			}
+		case "target_include_directories":
+			tgtName := tokens[0]
+			for _, tok := range tokens[1:] {
+				up := strings.ToUpper(tok)
+				if up == "PRIVATE" || up == "PUBLIC" || up == "INTERFACE" || up == "SYSTEM" || up == "BEFORE" || up == "AFTER" {
+					continue
+				}
+				if incDir := normalizeCMakeRelDir(filePath, tok); incDir != "" {
+					res.IncludeDirs = append(res.IncludeDirs, BuildIncludeDirFact{
+						BuildFile:  filePath,
+						Target:     tgtName,
+						IncludeDir: incDir,
+						Meta:       meta,
+					})
+				}
+			}
 		}
 	}
 
@@ -292,16 +332,25 @@ func (e *BuildExtractor) parseCompileCommands(filePath string, content []byte) *
 					continue
 				}
 				seen[arg] = true
+				incRaw := strings.TrimPrefix(arg, "-I")
+				meta := FactMeta{
+					Confidence:         ConfidenceExact,
+					Span:               SourceSpan{FilePath: filePath, LineStart: 1, LineEnd: 1},
+					ContentFingerprint: fingerprintString("cc:" + arg),
+				}
 				res.CompileOptions = append(res.CompileOptions, CompileOption{
 					Key:    "include_dir",
-					Value:  strings.TrimPrefix(arg, "-I"),
+					Value:  incRaw,
 					Source: "compile_commands",
-					Meta: FactMeta{
-						Confidence:         ConfidenceExact,
-						Span:               SourceSpan{FilePath: filePath, LineStart: 1, LineEnd: 1},
-						ContentFingerprint: fingerprintString("cc:" + arg),
-					},
+					Meta:   meta,
 				})
+				if incClean := normalizeCMakeRelDir(filePath, incRaw); incClean != "" {
+					res.IncludeDirs = append(res.IncludeDirs, BuildIncludeDirFact{
+						BuildFile:  filePath,
+						IncludeDir: incClean,
+						Meta:       meta,
+					})
+				}
 			}
 		}
 	}
@@ -446,4 +495,43 @@ func isCMakeKeyword(tok string) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeCMakeRelDir(buildFilePath, raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	baseDir := path.Dir(buildFilePath)
+	if baseDir == "." {
+		baseDir = ""
+	}
+	for _, v := range []string{"${CMAKE_SOURCE_DIR}", "${PROJECT_SOURCE_DIR}"} {
+		if strings.HasPrefix(s, v) {
+			rest := strings.TrimPrefix(s[len(v):], "/")
+			cleaned := path.Clean(rest)
+			if cleaned == "." || strings.HasPrefix(cleaned, "..") {
+				return ""
+			}
+			return cleaned
+		}
+	}
+	for _, v := range []string{"${CMAKE_CURRENT_SOURCE_DIR}", "${CMAKE_CURRENT_LIST_DIR}"} {
+		if strings.HasPrefix(s, v) {
+			s = strings.TrimPrefix(s[len(v):], "/")
+			break
+		}
+	}
+	if strings.Contains(s, "${") || strings.HasPrefix(s, "/") {
+		return ""
+	}
+	joined := s
+	if baseDir != "" {
+		joined = path.Join(baseDir, s)
+	}
+	cleaned := path.Clean(joined)
+	if cleaned == "." || strings.HasPrefix(cleaned, "..") {
+		return ""
+	}
+	return cleaned
 }

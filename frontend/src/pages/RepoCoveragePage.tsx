@@ -7,7 +7,9 @@ import {
   BookOpen,
   CheckCircle2,
   FolderGit2,
+  FolderTree,
   Layers,
+  Layers3,
   RefreshCw,
   RotateCcw,
   Sparkles,
@@ -24,6 +26,9 @@ import {
 import { exportDocumentsZip } from '../api/documents';
 import { listDepartments, listDocTypes, listRepos } from '../api/repos';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
+import ModuleGovernanceModal, {
+  type ModuleGovernanceTarget,
+} from '../components/ModuleGovernanceModal';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
   DepartmentVO,
@@ -49,6 +54,27 @@ interface ModalLaunchState {
   scope: GenerateTaskScope | null;
   initialDocTypeSlugs?: string[];
   initialTaskId?: number | null;
+  batchMode?: boolean;
+}
+
+interface ModuleModalState {
+  open: boolean;
+  target: ModuleGovernanceTarget | null;
+}
+
+function moduleSourceShortLabel(source?: string): string {
+  switch (source) {
+    case 'arch_element':
+      return '架构元素';
+    case 'build_manifest':
+      return '构建清单';
+    case 'first_level_dir':
+      return '自动发现';
+    case 'manual':
+      return '手动';
+    default:
+      return '';
+  }
 }
 
 function docStatusTag(ds: DocStatusSummaryVO): { status: StatusType; label: string } {
@@ -92,6 +118,11 @@ export const RepoCoveragePage: React.FC = () => {
   const [taskModal, setTaskModal] = useState<ModalLaunchState>({
     open: false,
     scope: null,
+    batchMode: false,
+  });
+  const [moduleModal, setModuleModal] = useState<ModuleModalState>({
+    open: false,
+    target: null,
   });
 
   // 浏览器前进/后退时同步搜索输入框
@@ -198,7 +229,11 @@ export const RepoCoveragePage: React.FC = () => {
 
   const openGenerateModal = (
     row: RepoScopeCoverageVO,
-    options?: { initialDocTypeSlugs?: string[]; initialTaskId?: number | null },
+    options?: {
+      initialDocTypeSlugs?: string[];
+      initialTaskId?: number | null;
+      batchMode?: boolean;
+    },
   ) => {
     setTaskModal({
       open: true,
@@ -211,6 +246,19 @@ export const RepoCoveragePage: React.FC = () => {
       },
       initialDocTypeSlugs: options?.initialDocTypeSlugs,
       initialTaskId: options?.initialTaskId ?? null,
+      batchMode: Boolean(options?.batchMode),
+    });
+  };
+
+  const openModuleGovernanceModal = (row: RepoScopeCoverageVO) => {
+    setModuleModal({
+      open: true,
+      target: {
+        repoId: row.repo_id,
+        repoName: row.repo_name,
+        branch: row.branch || 'master',
+        canWrite: row.can_write,
+      },
     });
   };
 
@@ -447,6 +495,21 @@ export const RepoCoveragePage: React.FC = () => {
                             ) : (
                               <span className="code-badge code-badge--muted">整仓</span>
                             )}
+                            {row.scope_status === 'missing' && (
+                              <span className="code-badge code-badge--warning" title="该子目录在最近提交中已缺失，可在模块治理中迁移文档">
+                                目录已缺失
+                              </span>
+                            )}
+                            {row.scope_status === 'orphan' && (
+                              <span className="code-badge code-badge--warning" title="历史遗留子目录文档范围（未在当前模块索引中），建议在模块治理中迁移">
+                                孤立范围
+                              </span>
+                            )}
+                            {row.module_source && moduleSourceShortLabel(row.module_source) && (
+                              <span className="code-badge code-badge--muted">
+                                {moduleSourceShortLabel(row.module_source)}
+                              </span>
+                            )}
                             {row.active_task_id && (
                               <button
                                 type="button"
@@ -465,6 +528,14 @@ export const RepoCoveragePage: React.FC = () => {
                             {row.department_name && <span>{row.department_name}</span>}
                             {row.arch_element_name && <span>· {row.arch_element_name}</span>}
                             <span className="code-archdoc-mono">{row.branch || 'master'}</span>
+                            {typeof row.effective_files === 'number' && row.effective_files > 0 && (
+                              <span>
+                                · {row.effective_files} 文件
+                                {typeof row.total_loc === 'number' && row.total_loc > 0
+                                  ? ` / ${row.total_loc.toLocaleString()} LOC`
+                                  : ''}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -545,6 +616,35 @@ export const RepoCoveragePage: React.FC = () => {
                             <span>触发生成</span>
                           </button>
 
+                          {row.scope_type === 'repo' && (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-text btn-small"
+                                disabled={!row.can_write}
+                                onClick={() => openGenerateModal(row, { batchMode: true })}
+                                title={
+                                  row.can_write
+                                    ? '一键批量生成各活跃子模块与整仓分层文档'
+                                    : '权限不足：仅仓库负责人或管理员可发起批量生成'
+                                }
+                              >
+                                <Layers3 size={14} />
+                                <span>批量生成</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                className="btn btn-text btn-small"
+                                onClick={() => openModuleGovernanceModal(row)}
+                                title="配置模块发现策略、扫描子模块或迁移重命名目录文档"
+                              >
+                                <FolderTree size={14} />
+                                <span>模块治理</span>
+                              </button>
+                            </>
+                          )}
+
                           <button
                             type="button"
                             className="btn btn-text btn-small"
@@ -580,16 +680,25 @@ export const RepoCoveragePage: React.FC = () => {
         )}
       </div>
 
-      {/* 生成任务触发与实时进度监控弹窗 */}
+      {/* 生成任务触发与实时进度监控弹窗（兼容单范围与批量分层编排） */}
       <GenerateTaskModal
         open={taskModal.open}
         scope={taskModal.scope}
         docTypes={docTypes}
         initialDocTypeSlugs={taskModal.initialDocTypeSlugs}
         initialTaskId={taskModal.initialTaskId}
+        batchMode={taskModal.batchMode}
         onClose={() => setTaskModal((prev) => ({ ...prev, open: false }))}
         onTaskCompleted={() => void fetchCoverage()}
         onOpenStudio={openStudio}
+      />
+
+      {/* 仓库模块发现与子目录迁移治理弹窗 */}
+      <ModuleGovernanceModal
+        open={moduleModal.open}
+        target={moduleModal.target}
+        onClose={() => setModuleModal((prev) => ({ ...prev, open: false }))}
+        onChanged={() => void fetchCoverage()}
       />
     </div>
   );

@@ -15,6 +15,7 @@ import (
 	"code-archdoc/config"
 	"code-archdoc/models"
 	"code-archdoc/pkg/codeir"
+	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/drift"
 	"code-common/backend/gitsync"
 	commonModels "code-common/backend/models"
@@ -74,12 +75,26 @@ type DriftOrchestrator struct {
 	docTypeRepo         DocTypeRepo
 	docTypeSvc          *DocTypeService
 	driftRepo           DriftRepo
+	moduleRepo          ModuleRepo
 	rbacSvc             *RBACService
 	genSvc              *GenerationOrchestrator
+	snapSvc             *SnapshotService
 	aggregator          *codeir.Aggregator
 	leaseMgr            *ActiveLeaseManager
 	sandboxDir          string
 	pollIntervalMinutes int
+}
+
+// WithSnapshotService 注入快照服务以共享按仓库粒度的工作树读锁（消除与 Git 同步的并发竞态）。
+func (s *DriftOrchestrator) WithSnapshotService(snapSvc *SnapshotService) *DriftOrchestrator {
+	s.snapSvc = snapSvc
+	return s
+}
+
+// WithModuleRepo 注入模块索引仓储以支持整仓文档的模块范围/摘要漂移评估（ADR-04 D-4）。
+func (s *DriftOrchestrator) WithModuleRepo(moduleRepo ModuleRepo) *DriftOrchestrator {
+	s.moduleRepo = moduleRepo
+	return s
 }
 
 // NewDriftOrchestrator 构造双维漂移雷达编排服务。
@@ -135,6 +150,23 @@ func (s *DriftOrchestrator) EvaluateRepoCodeDrift(
 	releaseRepoLease := s.leaseMgr.AcquireRepo(repo.RepoID)
 	defer releaseRepoLease()
 
+	evalFn := func() error {
+		return s.evaluateRepoCodeDriftLocked(ctx, repo, docs, remoteHeadSHA, resolvedBranch)
+	}
+	if s.snapSvc != nil {
+		return s.snapSvc.WithRepoReadLock(repo.RepoID, evalFn)
+	}
+	return evalFn()
+}
+
+func (s *DriftOrchestrator) evaluateRepoCodeDriftLocked(
+	ctx context.Context,
+	repo models.PollableRepoRecord,
+	docs []models.Document,
+	remoteHeadSHA string,
+	resolvedBranch string,
+) error {
+	_ = resolvedBranch
 	localPath := filepath.Join(s.sandboxDir, fmt.Sprintf("repo_%d", repo.RepoID))
 	gitDir, cleanupTmp, repoReady := s.ensureMetadataGitDir(ctx, localPath, repo.RepoURL, remoteHeadSHA)
 	if cleanupTmp != nil {
@@ -155,9 +187,14 @@ func (s *DriftOrchestrator) EvaluateRepoCodeDrift(
 		}
 
 		pubSHA := strings.TrimSpace(doc.PublishedCommitSHA)
-		// 快速路径：无新提交 -> 零解析，清除旧 Code Drift
+		// 快速路径：无新提交 -> 零 Git 解析，但整仓文档仍需保留/合并模块级上卷漂移
 		if pubSHA != "" && pubSHA == remoteHeadSHA {
-			if err := s.upsertCodeDrift(ctx, doc.ID, false, models.DriftPrecisionSectionLevel, pubSHA, remoteHeadSHA, []models.AffectedSlotDrift{}, now); err != nil {
+			var modSlots []drift.AffectedSlot
+			if doc.Subdirectory == "" {
+				modSlots = s.computeModuleDriftForRepoDoc(ctx, &doc, nil, nil, false)
+			}
+			merged := toModelAffectedSlots(drift.MergeCodeAndModuleDriftSlots(nil, modSlots))
+			if err := s.upsertCodeDrift(ctx, doc.ID, len(merged) > 0, models.DriftPrecisionSectionLevel, pubSHA, remoteHeadSHA, merged, now); err != nil {
 				return err
 			}
 			continue
@@ -216,20 +253,15 @@ func (s *DriftOrchestrator) EvaluateRepoCodeDrift(
 			ExtractSymbols: s.extractSingleFileFingerprints,
 		})
 
-		affectedModels := make([]models.AffectedSlotDrift, 0, len(result.AffectedSlots))
-		for _, sl := range result.AffectedSlots {
-			affectedModels = append(affectedModels, models.AffectedSlotDrift{
-				SlotID:         sl.SlotID,
-				SlotTitle:      sl.SlotTitle,
-				Ownership:      sl.Ownership,
-				Reason:         sl.Reason,
-				ChangeKind:     sl.ChangeKind,
-				ChangedSymbols: sl.ChangedSymbols,
-				ChangedFiles:   sl.ChangedFiles,
-			})
+		affectedSlots := result.AffectedSlots
+		if doc.Subdirectory == "" {
+			modSlots := s.computeModuleDriftForRepoDoc(ctx, &doc, pubRev, secEvs, false)
+			affectedSlots = drift.MergeCodeAndModuleDriftSlots(affectedSlots, modSlots)
 		}
+		affectedModels := toModelAffectedSlots(affectedSlots)
+		hasDrift := result.HasDrift || len(affectedModels) > 0
 
-		if err := s.upsertCodeDrift(ctx, doc.ID, result.HasDrift, result.Precision, pubSHA, remoteHeadSHA, affectedModels, now); err != nil {
+		if err := s.upsertCodeDrift(ctx, doc.ID, hasDrift, result.Precision, pubSHA, remoteHeadSHA, affectedModels, now); err != nil {
 			return err
 		}
 	}
@@ -257,7 +289,8 @@ func (s *DriftOrchestrator) RecomputeAllSpecDrifts(ctx context.Context) error {
 	return nil
 }
 
-// OnDocumentPublished 在文档发布/重新发布后即时同步刷新该文档的 Code Drift 与 Spec Drift 状态。
+// OnDocumentPublished 在文档发布/重新发布后即时同步刷新该文档的 Code Drift 与 Spec Drift 状态，
+// 并在子模块文档发布时联动重算同仓库整仓已发布文档的 module_digest_changed / module_scope_changed 漂移（ADR-04 D-4）。
 func (s *DriftOrchestrator) OnDocumentPublished(ctx context.Context, docID uint) {
 	if s == nil || s.docRepo == nil || s.driftRepo == nil {
 		return
@@ -275,23 +308,250 @@ func (s *DriftOrchestrator) OnDocumentPublished(ctx context.Context, docID uint)
 	if err == nil {
 		for _, h := range heads {
 			if h.RemoteHeadSHA != "" && h.RemoteHeadSHA == doc.PublishedCommitSHA {
-				if clearErr := s.upsertCodeDrift(ctx, doc.ID, false, models.DriftPrecisionSectionLevel, doc.PublishedCommitSHA, h.RemoteHeadSHA, []models.AffectedSlotDrift{}, time.Now()); clearErr != nil {
-					log.Printf("[%s] 发布后清除已对齐 Code Drift 失败 (doc=%d): %v", config.ServiceName, doc.ID, clearErr)
+				var modSlots []drift.AffectedSlot
+				if doc.Subdirectory == "" {
+					modSlots = s.computeModuleDriftForRepoDoc(ctx, doc, nil, nil, false)
+				}
+				merged := toModelAffectedSlots(drift.MergeCodeAndModuleDriftSlots(nil, modSlots))
+				if clearErr := s.upsertCodeDrift(ctx, doc.ID, len(merged) > 0, models.DriftPrecisionSectionLevel, doc.PublishedCommitSHA, h.RemoteHeadSHA, merged, time.Now()); clearErr != nil {
+					log.Printf("[%s] 发布后同步 Code Drift 失败 (doc=%d): %v", config.ServiceName, doc.ID, clearErr)
 				}
 				break
 			}
 		}
 	}
+	if doc.Subdirectory != "" {
+		s.recomputeRepoModuleDrift(ctx, doc.RepoID, false)
+	} else {
+		s.recomputeSingleRepoDocModuleDrift(ctx, doc, false)
+	}
 }
 
-// OnDocumentUnpublished 在文档撤回发布后清理其漂移状态记录。
+// OnDocumentUnpublished 在文档撤回发布后清理其漂移状态记录，并在子模块撤回时联动重算整仓模块漂移。
 func (s *DriftOrchestrator) OnDocumentUnpublished(ctx context.Context, docID uint) {
 	if s == nil || s.driftRepo == nil {
 		return
 	}
+	var doc *models.Document
+	if s.docRepo != nil {
+		doc, _ = s.docRepo.GetByID(ctx, docID)
+	}
 	if err := s.driftRepo.ClearDocumentDrifts(ctx, docID); err != nil {
 		log.Printf("[%s] 撤回发布后清理漂移状态失败 (doc=%d): %v", config.ServiceName, docID, err)
 	}
+	if doc != nil && doc.Subdirectory != "" {
+		s.recomputeRepoModuleDrift(ctx, doc.RepoID, false)
+	}
+}
+
+// OnRepoModulesChanged 在仓库模块索引刷新、状态变更或迁移后触发整仓已发布文档的模块范围漂移评估（ADR-04 D-4）。
+func (s *DriftOrchestrator) OnRepoModulesChanged(ctx context.Context, repoID uint) {
+	if s == nil || s.docRepo == nil || s.driftRepo == nil || repoID == 0 {
+		return
+	}
+	s.recomputeRepoModuleDrift(ctx, repoID, true)
+}
+
+func (s *DriftOrchestrator) recomputeRepoModuleDrift(ctx context.Context, repoID uint, forceScopeCheck bool) {
+	if s == nil || s.docRepo == nil || s.driftRepo == nil || repoID == 0 {
+		return
+	}
+	docs, err := s.docRepo.ListApprovedDocumentsByRepo(ctx, repoID)
+	if err != nil {
+		return
+	}
+	for i := range docs {
+		if docs[i].Subdirectory == "" && docs[i].PublishedRevisionID != nil {
+			s.recomputeSingleRepoDocModuleDrift(ctx, &docs[i], forceScopeCheck)
+		}
+	}
+}
+
+func (s *DriftOrchestrator) recomputeSingleRepoDocModuleDrift(ctx context.Context, doc *models.Document, forceScopeCheck bool) {
+	if doc == nil || doc.Subdirectory != "" || doc.PublishedRevisionID == nil {
+		return
+	}
+	existingDrifts, _ := s.driftRepo.ListDriftsByDocIDs(ctx, []uint{doc.ID})
+	var existingCode *models.DocumentDrift
+	var gitSlots []drift.AffectedSlot
+	for i := range existingDrifts {
+		if existingDrifts[i].DriftType == models.DriftTypeCode {
+			existingCode = &existingDrifts[i]
+			var prevSlots []models.AffectedSlotDrift
+			_ = json.Unmarshal(existingDrifts[i].AffectedSlotsJSON, &prevSlots)
+			gitSlots, _ = drift.SplitGitAndModuleDriftSlots(fromModelAffectedSlots(prevSlots))
+			break
+		}
+	}
+
+	modSlots := s.computeModuleDriftForRepoDoc(ctx, doc, nil, nil, forceScopeCheck)
+	merged := toModelAffectedSlots(drift.MergeCodeAndModuleDriftSlots(gitSlots, modSlots))
+
+	remoteSHA := doc.PublishedCommitSHA
+	precision := models.DriftPrecisionSectionLevel
+	repoLevelDrift := false
+	if existingCode != nil {
+		if existingCode.RemoteHeadSHA != "" {
+			remoteSHA = existingCode.RemoteHeadSHA
+		}
+		if existingCode.Precision == models.DriftPrecisionRepoLevel && existingCode.HasDrift {
+			repoLevelDrift = true
+			if len(merged) == 0 {
+				precision = models.DriftPrecisionRepoLevel
+			}
+		}
+	} else if heads, hErr := s.driftRepo.ListRemoteHeadsByRepos(ctx, []uint{doc.RepoID}); hErr == nil && len(heads) > 0 && heads[0].RemoteHeadSHA != "" {
+		remoteSHA = heads[0].RemoteHeadSHA
+	}
+
+	hasDrift := len(merged) > 0 || repoLevelDrift
+	if err := s.upsertCodeDrift(ctx, doc.ID, hasDrift, precision, doc.PublishedCommitSHA, remoteSHA, merged, time.Now()); err != nil {
+		log.Printf("[%s] 重算整仓文档模块漂移失败 (doc=%d): %v", config.ServiceName, doc.ID, err)
+	}
+}
+
+func (s *DriftOrchestrator) computeModuleDriftForRepoDoc(
+	ctx context.Context,
+	doc *models.Document,
+	pubRev *models.DocumentRevision,
+	secEvs []models.SectionEvidence,
+	forceScopeCheck bool,
+) []drift.AffectedSlot {
+	if doc == nil || doc.Subdirectory != "" || doc.PublishedRevisionID == nil {
+		return nil
+	}
+	if pubRev == nil {
+		rev, evs, err := s.docRepo.GetRevisionByIDWithSections(ctx, doc.ID, *doc.PublishedRevisionID)
+		if err != nil || rev == nil {
+			return nil
+		}
+		pubRev = rev
+		secEvs = evs
+	}
+
+	srcSlug := doc.DocTypeSlug
+	srcSlot := "overview_boundaries"
+	maxChars := 600
+	if s.docTypeRepo != nil && pubRev.DocTypeRevisionID > 0 {
+		if dtRev, rErr := s.docTypeRepo.GetRevisionByID(ctx, pubRev.DocTypeRevisionID); rErr == nil && dtRev != nil {
+			var meta doctype.Meta
+			if jErr := json.Unmarshal(dtRev.MetaJSON, &meta); jErr == nil {
+				if len(meta.Slots) > 0 && meta.Slots[0].SlotID != "" {
+					srcSlot = meta.Slots[0].SlotID
+				}
+				if meta.ModuleDigestSource != nil {
+					if strings.TrimSpace(meta.ModuleDigestSource.DocTypeSlug) != "" {
+						srcSlug = strings.TrimSpace(meta.ModuleDigestSource.DocTypeSlug)
+					}
+					if strings.TrimSpace(meta.ModuleDigestSource.SlotID) != "" {
+						srcSlot = strings.TrimSpace(meta.ModuleDigestSource.SlotID)
+					}
+					if meta.ModuleDigestSource.MaxChars > 0 {
+						maxChars = meta.ModuleDigestSource.MaxChars
+					}
+				}
+			}
+		}
+	}
+
+	var activeSubdirs []string
+	if s.moduleRepo != nil {
+		if mods, mErr := s.moduleRepo.ListModulesByRepo(ctx, doc.RepoID); mErr == nil {
+			for _, m := range mods {
+				if m.Status != models.ModuleStatusActive {
+					continue
+				}
+				sub := strings.Trim(strings.TrimSpace(m.Subdirectory), "/")
+				if sub != "" {
+					activeSubdirs = append(activeSubdirs, sub)
+				}
+			}
+		}
+	}
+
+	sectionsInput := buildSectionEvidenceInputs(pubRev, secEvs)
+	candidateSubs := make(map[string]bool, len(activeSubdirs))
+	for _, sub := range activeSubdirs {
+		candidateSubs[sub] = true
+	}
+	for _, sec := range sectionsInput {
+		for _, ev := range sec.Evidences {
+			if ev.SymbolKind == "module_doc" {
+				modPath := strings.Trim(strings.TrimSpace(ev.FQSymbol), "/")
+				if modPath != "" {
+					candidateSubs[modPath] = true
+				}
+			}
+		}
+	}
+	if len(candidateSubs) == 0 {
+		return nil
+	}
+
+	currentDigests := make(map[string]string, len(candidateSubs))
+	for sub := range candidateSubs {
+		if fp := s.resolveChildModuleDigestFingerprint(ctx, doc.RepoID, sub, doc.RefName, srcSlug, srcSlot, maxChars); fp != "" {
+			currentDigests[sub] = fp
+		}
+	}
+
+	return drift.DetectModuleDocDrift(drift.ModuleDocDriftInput{
+		Sections:        sectionsInput,
+		CurrentDigests:  currentDigests,
+		ActiveModules:   activeSubdirs,
+		OverviewSlotID:  srcSlot,
+		ForceScopeCheck: forceScopeCheck,
+	})
+}
+
+func (s *DriftOrchestrator) resolveChildModuleDigestFingerprint(
+	ctx context.Context,
+	repoID uint,
+	subdir string,
+	refName string,
+	srcSlug string,
+	srcSlot string,
+	maxChars int,
+) string {
+	if s.docRepo == nil {
+		return ""
+	}
+	modDoc, err := s.docRepo.GetByScope(ctx, repoID, subdir, refName, srcSlug)
+	if err != nil || modDoc == nil {
+		return ""
+	}
+	var targetRev *models.DocumentRevision
+	if modDoc.Status == models.DocStatusApproved && modDoc.PublishedRevisionID != nil {
+		if rev, _, rErr := s.docRepo.GetRevisionByIDWithSections(ctx, modDoc.ID, *modDoc.PublishedRevisionID); rErr == nil && rev != nil {
+			targetRev = rev
+		}
+	}
+	if targetRev == nil && modDoc.CurrentRevisionNo > 0 {
+		if rev, _, rErr := s.docRepo.GetRevisionWithSections(ctx, modDoc.ID, modDoc.CurrentRevisionNo); rErr == nil && rev != nil {
+			targetRev = rev
+		}
+	}
+	if targetRev == nil {
+		return ""
+	}
+	snaps := unmarshalSectionSnapshots(targetRev.SectionsJSON)
+	var picked *models.DocumentSectionSnapshot
+	for i := range snaps {
+		if snaps[i].SlotID == srcSlot {
+			picked = &snaps[i]
+			break
+		}
+	}
+	if picked == nil && len(snaps) > 0 {
+		picked = &snaps[0]
+	}
+	if picked == nil || strings.TrimSpace(picked.Markdown) == "" {
+		return ""
+	}
+	if picked.ContentSHA256 != "" {
+		return picked.ContentSHA256
+	}
+	return sha256Hex(truncateRunes(strings.TrimSpace(picked.Markdown), maxChars))
 }
 
 // GetSummary 返回双维漂移汇总 KPI（GET /api/drift/summary）。
@@ -694,6 +954,7 @@ func buildSectionEvidenceInputs(rev *models.DocumentRevision, secEvs []models.Se
 		anchors := make([]drift.AnchorEvidenceInput, 0, len(rawAnchors))
 		for _, a := range rawAnchors {
 			anchors = append(anchors, drift.AnchorEvidenceInput{
+				Scope:              a.Scope,
 				FilePath:           a.FilePath,
 				SymbolKind:         a.SymbolKind,
 				FQSymbol:           a.FQSymbol,
@@ -728,6 +989,38 @@ func toDriftDimensionVO(dr *models.DocumentDrift) *DriftDimensionVO {
 		AffectedSlots:     affected,
 		DetectedAt:        dr.DetectedAt,
 	}
+}
+
+func toModelAffectedSlots(in []drift.AffectedSlot) []models.AffectedSlotDrift {
+	out := make([]models.AffectedSlotDrift, 0, len(in))
+	for _, sl := range in {
+		out = append(out, models.AffectedSlotDrift{
+			SlotID:         sl.SlotID,
+			SlotTitle:      sl.SlotTitle,
+			Ownership:      sl.Ownership,
+			Reason:         sl.Reason,
+			ChangeKind:     sl.ChangeKind,
+			ChangedSymbols: sl.ChangedSymbols,
+			ChangedFiles:   sl.ChangedFiles,
+		})
+	}
+	return out
+}
+
+func fromModelAffectedSlots(in []models.AffectedSlotDrift) []drift.AffectedSlot {
+	out := make([]drift.AffectedSlot, 0, len(in))
+	for _, sl := range in {
+		out = append(out, drift.AffectedSlot{
+			SlotID:         sl.SlotID,
+			SlotTitle:      sl.SlotTitle,
+			Ownership:      sl.Ownership,
+			Reason:         sl.Reason,
+			ChangeKind:     sl.ChangeKind,
+			ChangedSymbols: sl.ChangedSymbols,
+			ChangedFiles:   sl.ChangedFiles,
+		})
+	}
+	return out
 }
 
 func detectDriftFileLanguage(relPath string) string {

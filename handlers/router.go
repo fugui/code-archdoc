@@ -13,6 +13,7 @@ import (
 type AppHandlers struct {
 	rbacSvc    *services.RBACService
 	repoSvc    *services.RepoService
+	moduleSvc  *services.ModuleService
 	llmSvc     *services.LLMConfigService
 	docTypeSvc *services.DocTypeService
 	genSvc     *services.GenerationOrchestrator
@@ -61,6 +62,12 @@ func (h *AppHandlers) WithChatService(chatSvc *services.ChatService) *AppHandler
 	return h
 }
 
+// WithModuleService 注入模块发现、策略配置与子目录迁移服务（M8）。
+func (h *AppHandlers) WithModuleService(moduleSvc *services.ModuleService) *AppHandlers {
+	h.moduleSvc = moduleSvc
+	return h
+}
+
 // WithGovernanceServices 注入 M6 双维漂移编排、远端变更巡检、在线质量度量与磁盘配额治理服务。
 func (h *AppHandlers) WithGovernanceServices(
 	driftSvc *services.DriftOrchestrator,
@@ -103,9 +110,17 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 		protected.GET("/users", SearchUsers)
 		protected.GET("/departments", h.ListDepartments)
 
-		// 域 1：仓库与 Monorepo 子目录覆盖视图 (F-01)
+		// 域 1：仓库与 Monorepo 子目录覆盖视图 (F-01 / F-28)
 		protected.GET("/repos", h.ListRepos)
 		protected.GET("/repos/:repo_id/scopes", h.GetRepoScopes)
+		if h.moduleSvc != nil {
+			protected.GET("/repos/:repo_id/modules", h.ListRepoModules)
+			protected.GET("/repos/:repo_id/module-policy", h.GetRepoModulePolicy)
+			protected.PUT("/repos/:repo_id/module-policy", h.UpdateRepoModulePolicy)
+			protected.POST("/repos/:repo_id/modules/refresh", h.RefreshRepoModules)
+			protected.PATCH("/repos/:repo_id/modules/:module_id/status", h.UpdateRepoModuleStatus)
+			protected.POST("/repos/:repo_id/modules/migrate", h.MigrateRepoModule)
+		}
 
 		// 域 2：可管理文档类型注册表 W1 只读查询 (F-03)
 		if h.docTypeSvc != nil {
@@ -114,9 +129,10 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.GET("/doc-types/:slug/revisions", h.ListDocTypeRevisions)
 		}
 
-		// 域 3：反推生成任务编排与监控 (F-05)
+		// 域 3：反推生成任务编排与监控 (F-05 / F-31)
 		if h.genSvc != nil {
 			protected.POST("/tasks/generate", h.TriggerGenerateTask)
+			protected.POST("/tasks/generate-batch", h.TriggerBatchGenerateTask)
 			protected.GET("/tasks", h.ListTasks)
 			protected.GET("/tasks/:task_id", h.GetTaskDetail)
 			protected.POST("/tasks/:task_id/cancel", h.CancelTask)

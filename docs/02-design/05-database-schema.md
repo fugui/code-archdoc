@@ -1,10 +1,10 @@
 # PostgreSQL 物理模型与 `archdoc_*` GORM 建模字典
 
 - **文档编号**：`05-database-schema.md`
-- **文档版本**：v1.0.1 (Stage 2 SDD Baseline，同步阶段三增量刷新任务字段)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 扩展：16 → 18 张自有表，新增 `base_snapshot_id` 与 `parent_task_id`)
+- **编制日期**：2026-11-20
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`, `F-26`, `F-27`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-31`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
 
 ---
 
@@ -54,10 +54,12 @@ func (ArchitectureElement) TableName() string {
 
 ## 2. 全局物理实体关系图（Mermaid ER Diagram）
 
-本模块共设计 **16 张自有业务表**，全部严格遵循 `archdoc_` 表前缀约束，划分为 7 个领域子域：
+本模块共设计 **18 张自有业务表**，全部严格遵循 `archdoc_` 表前缀约束，划分为 8 个领域子域（严格遵守共享公共表零 DDL 红线）：
 
 ```mermaid
 erDiagram
+    REPOSITORIES ||--o| ARCHDOC_REPO_MODULE_POLICIES : "repo_id"
+    REPOSITORIES ||--o{ ARCHDOC_REPO_MODULES : "repo_id"
     REPOSITORIES ||--o{ ARCHDOC_REPO_SNAPSHOTS : "repo_id"
     REPOSITORIES ||--o{ ARCHDOC_DOCUMENTS : "repo_id"
     REPOSITORIES ||--o{ ARCHDOC_GEN_TASKS : "repo_id"
@@ -69,10 +71,12 @@ erDiagram
     ARCHDOC_DOC_TYPES ||--o{ ARCHDOC_DOCUMENTS : "doc_type_slug"
     ARCHDOC_DOC_TYPE_REVISIONS ||--o{ ARCHDOC_DOCUMENTS : "doc_type_revision_id"
 
+    ARCHDOC_REPO_SNAPSHOTS ||--o{ ARCHDOC_REPO_SNAPSHOTS : "base_snapshot_id"
     ARCHDOC_REPO_SNAPSHOTS ||--o{ ARCHDOC_CODE_IR_FACETS : "snapshot_id"
     ARCHDOC_REPO_SNAPSHOTS ||--o{ ARCHDOC_GEN_TASKS : "snapshot_id"
     ARCHDOC_REPO_SNAPSHOTS ||--o{ ARCHDOC_DOCUMENT_REVISIONS : "snapshot_id"
 
+    ARCHDOC_GEN_TASKS ||--o{ ARCHDOC_GEN_TASKS : "parent_task_id"
     ARCHDOC_GEN_TASKS ||--o{ ARCHDOC_GEN_SLOT_TASKS : "task_id"
     ARCHDOC_GEN_TASKS ||--o{ ARCHDOC_LLM_USAGE_LOGS : "task_id"
 
@@ -157,7 +161,8 @@ type RepoSnapshot struct {
 	Subdirectory      string         `gorm:"size:512;not null;default:'';uniqueIndex:idx_archdoc_snapshot_key,priority:2" json:"subdirectory"` // 规范化子目录，整仓为 ""
 	RefName           string         `gorm:"size:128;not null;default:'master';uniqueIndex:idx_archdoc_snapshot_key,priority:3" json:"ref_name"` // P0 追踪主干；P1 支持多分支/Tag 基线
 	CommitSHA         string         `gorm:"size:40;not null;uniqueIndex:idx_archdoc_snapshot_key,priority:4" json:"commit_sha"`
-	IRSchemaVersion   string         `gorm:"size:16;not null;default:'1.0';uniqueIndex:idx_archdoc_snapshot_key,priority:5" json:"ir_schema_version"`
+	IRSchemaVersion   string         `gorm:"size:16;not null;default:'1.1';uniqueIndex:idx_archdoc_snapshot_key,priority:5" json:"ir_schema_version"`
+	BaseSnapshotID    *uint          `gorm:"index" json:"base_snapshot_id"`                      // ADR-04：切片快照指向整仓基线快照 ID（基线快照为 nil）
 	Status            string         `gorm:"size:20;not null;default:'extracting'" json:"status"` // extracting | ready | failed
 	EffectiveFiles    int            `gorm:"default:0;not null" json:"effective_files"`           // 降噪后有效分析文件数
 	SkippedFiles      int            `gorm:"default:0;not null" json:"skipped_files"`             // 被三层降噪跳过的文件数
@@ -202,7 +207,8 @@ type GenTask struct {
 	Subdirectory    string         `gorm:"size:512;not null;default:'';index:idx_archdoc_task_scope,priority:2" json:"subdirectory"`
 	RefName         string         `gorm:"size:128;not null;default:'master'" json:"ref_name"` // P1 多分支预留
 	SnapshotID      *uint          `gorm:"index" json:"snapshot_id"`
-	TaskKind         string         `gorm:"size:32;not null;default:'generate'" json:"task_kind"` // generate | regenerate | incremental_refresh
+	ParentTaskID    *uint          `gorm:"index" json:"parent_task_id"`                          // ADR-04：批量子任务指向批次父任务 ID
+	TaskKind         string         `gorm:"size:32;not null;default:'generate'" json:"task_kind"` // generate | regenerate | incremental_refresh | batch
 	Priority         string         `gorm:"size:20;not null;default:'interactive';index" json:"priority"` // interactive | batch (F-27)
 	DocTypesJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`    // 本次请求生成的 doc_type slug 列表
 	TargetDocumentID *uint          `gorm:"index" json:"target_document_id"`                      // 仅 incremental_refresh 时非空：指向被增量刷新的目标文档 ID
@@ -464,13 +470,49 @@ type QualityMetric struct {
 func (QualityMetric) TableName() string { return config.TablePrefix + "quality_metrics" }
 ```
 
+### 3.8 Monorepo 模块发现域（`F-28`，[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)）
+
+```go
+// RepoModulePolicy 仓库级模块发现策略（缺省行使用默认策略 merged + MinEffectiveFiles=3）
+type RepoModulePolicy struct {
+	ID                uint           `gorm:"primaryKey" json:"id"`
+	RepoID            uint           `gorm:"not null;uniqueIndex" json:"repo_id"`
+	Strategy          string         `gorm:"size:20;not null;default:'merged'" json:"strategy"`       // arch_elements | top_level_dirs | merged
+	ExcludeGlobs      datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"exclude_globs"`   // 叠加默认排除名单
+	MinEffectiveFiles int            `gorm:"not null;default:3" json:"min_effective_files"`           // 降噪后有效文件数下限
+	UpdatedBy         *uint          `json:"updated_by"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+func (RepoModulePolicy) TableName() string { return config.TablePrefix + "repo_module_policies" }
+
+// RepoModule 派生模块索引（非主数据，严禁冗余负责人字段；负责人以 architecture_elements 为唯一事实源）
+type RepoModule struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	RepoID         uint      `gorm:"not null;uniqueIndex:idx_archdoc_repo_module,priority:1;index" json:"repo_id"`
+	Subdirectory   string    `gorm:"size:512;not null;uniqueIndex:idx_archdoc_repo_module,priority:2" json:"subdirectory"`
+	Source         string    `gorm:"size:20;not null" json:"source"`                          // arch_element | discovered
+	ArchElementID  *uint     `gorm:"index" json:"arch_element_id"`
+	Status         string    `gorm:"size:16;not null;default:'active';index" json:"status"`   // active | missing | ignored
+	EffectiveFiles int       `gorm:"not null;default:0" json:"effective_files"`
+	TotalLOC       int       `gorm:"not null;default:0" json:"total_loc"`
+	LastSeenCommit string    `gorm:"size:40;default:''" json:"last_seen_commit"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules" }
+```
+
 ---
 
 ## 4. 一致性、加密与物理隔离测试约束
 
 ### 4.1 `AutoMigrate` 初始化顺序与幂等 Seed 规则
 
-1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 16 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ChatSession` → `ChatMessage` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
+1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 18 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ChatSession` → `ChatMessage` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
 2. **幂等初始化**：
    - `LLMConfig`：若 `fast` / `flagship` 记录不存在，自动 Seed 默认空配置骨架行（`is_active = false`，提示管理员在后台配置）；重复启动零变更；
    - `DocType`：启动时将内嵌 5 类默认 `DocType` 释放至 `doc_types/`（仅补缺失目录），再调用 `DocTypeRegistry.SyncAll()` 计算聚合哈希同步入库，重复启动零重复记录、零多余修订。

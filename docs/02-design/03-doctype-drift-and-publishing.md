@@ -1,10 +1,10 @@
 # `DocType` 注册表、双维漂移雷达、发布挂载与质量度量设计
 
 - **文档编号**：`03-doctype-drift-and-publishing.md`
-- **文档版本**：v1.0.0 (Stage 2 SDD Baseline)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 声明式上下文、外部契约/模块摘要双源漂移与模块导航扩展)
+- **编制日期**：2026-11-20
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-03`, `F-10`, `F-11`, `F-12`, `F-25`, `F-26`, `SC-05`, `SC-07`, `SC-08`, `SC-10`, `SC-11`, `Non-Goal 7`, [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **关联基线**：`F-03`, `F-10`, `F-11`, `F-12`, `F-25`, `F-26`, `F-30`, `F-31`, `SC-05`, `SC-07`, `SC-08`, `SC-10`, `SC-11`, `SC-17`, `SC-18`, `Non-Goal 7`, [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
 
 ---
 
@@ -335,3 +335,27 @@ testdata/golden/
 | **Verifier 首次拦截率 (`verifier_block_rate`)** | 每次 AI 生成完成执行 Verifier 时记录 | `blocked_or_error_runs / total_ai_runs`（拆分符号未验证、Mermaid 错误、凭据拦截三类明细） |
 | **必填槽位完备度 (`slot_coverage_rate`)** | 每次 Verifier 校验记录 | `completed_required_slots / total_required_slots` |
 | **单篇平均 Token 成本 (`avg_tokens_per_doc`)** | 关联 `archdoc_llm_usage_logs` 聚合 | `SUM(prompt_tokens + completion_tokens) / COUNT(DISTINCT document_id)`，并附带 `avg_cache_hit_ratio = SUM(cached_prompt_tokens) / SUM(prompt_tokens)` |
+
+---
+
+## 6. ADR-04 声明式汇总配置、双源漂移合并与层级导航发布扩展
+
+### 6.1 `meta.json` 范围感知声明式扩展（零脚本）
+
+在 `meta.json` 顶层新增 3 个可选字段（纳入 `pkg/doctype/schema.go` 已知键与白名单校验）：
+- `context_inputs`: `["code_ir", "module_context", "module_digests"]`（允许值白名单：`code_ir` | `module_context` | `module_digests`）；
+- `repo_ir_facets`: 可选 `FacetName[]`，整仓汇总启用 `module_digests` 时仅加载此子集（默认 `["tree", "build", "deps"]`）；
+- `module_digest_source`: `{ "doc_type": "<slug>", "slot_id": "<slot_id>" }`（例如 `system-architecture` 默认绑定 `{ "doc_type": "system-architecture", "slot_id": "overview_boundaries" }`）。
+
+### 6.2 外部契约漂移与模块摘要双源合并漂移
+
+1. **外部契约漂移（`scope = "repo"` 锚点）**：`pkg/drift.DetectCodeDrift` 对 `scope == "repo"` 的锚点直接以 `file_path` 作为仓库相对路径匹配 `ChangedFiles`，命中删除/重命名/符号消失记 `external_contract_removed`，修改记 `external_contract_modified`；优先级严格低于模块内原因（`file_removed_or_renamed > symbol_removed > symbol_modified > file_modified > external_contract_removed > external_contract_modified`）。
+2. **层级模块摘要漂移（`symbol_kind = "module_doc"` 锚点）**：
+   - 模块文档发布/撤回或模块索引变化时，`DriftOrchestrator` 重算同仓整仓文档（`subdirectory == ""`）的 `module_doc` 锚点指纹变化（`module_digest_changed`）与模块增删变化（`module_scope_changed`）；
+   - 与 Git Diff 产生的 `DriftTypeCode` 槽位**按槽位合并写入**，`EvaluateRepoCodeDrift` 与 `OnDocumentPublished`/`OnRepoModulesChanged` 互不覆盖。
+
+### 6.3 层级发布导航与 Frontmatter 扩展
+
+- **Frontmatter 追加通用键**：整仓文档写入 `scope_type: "repo"`；模块文档写入 `scope_type: "module"`、`module: "<subdir>"`、`parent_doc: "<relative_path>"`（根据 `sanitized_subdir` 段数 `N` 动态拼接 `N+1` 个 `../` + `<doc_type>.md`）。
+- **整仓文末自动追加 `## 模块导航`**：由 `pkg/publisher` 确定性渲染同仓全部已发布模块文档的相对链接（`./sub/<sanitized_subdir>/<doc_type>.md`）与短提交徽标。
+- **两级仓库 `README.md`**：仓库根目录 `README.md` 分为 `## 整仓文档` 与 `## 模块文档`（按模块分组）两级导航结构。

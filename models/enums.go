@@ -8,6 +8,7 @@ var (
 	ErrInvalidStateTransition = errors.New("非法的任务状态转移")
 	ErrOptimisticLockConflict = errors.New("文档修订版本已过期，请刷新后重试")
 	ErrDocTypeInUse           = errors.New("该文档类型已被已发布文档引用，禁止物理删除")
+	ErrMigrationConflict      = errors.New("目标模块范围已存在同名文档或存在运行中任务，迁移已取消")
 )
 
 // ModelTier 枚举
@@ -20,7 +21,7 @@ func IsValidModelTier(v string) bool {
 	return v == ModelTierFast || v == ModelTierFlagship
 }
 
-// FacetName 枚举（9 大 Canonical Code IR 分片）
+// FacetName 枚举（9 大 Canonical Code IR 分片 + 第 10 个派生分片 module_context）
 const (
 	FacetTree              = "tree"
 	FacetBuild             = "build"
@@ -31,12 +32,14 @@ const (
 	FacetHTTPRoutes        = "http_routes"
 	FacetDataModels        = "data_models"
 	FacetRuntimePrimitives = "runtime_primitives"
+	FacetModuleContext     = "module_context"
 )
 
 func IsValidFacetName(v string) bool {
 	switch v {
 	case FacetTree, FacetBuild, FacetDeps, FacetConfigKeys, FacetSymbols,
-		FacetIDLContracts, FacetHTTPRoutes, FacetDataModels, FacetRuntimePrimitives:
+		FacetIDLContracts, FacetHTTPRoutes, FacetDataModels, FacetRuntimePrimitives,
+		FacetModuleContext:
 		return true
 	default:
 		return false
@@ -87,10 +90,11 @@ const (
 	TaskKindGenerate           = "generate"
 	TaskKindRegenerate         = "regenerate"
 	TaskKindIncrementalRefresh = "incremental_refresh"
+	TaskKindBatch              = "batch"
 )
 
 func IsValidTaskKind(v string) bool {
-	return v == TaskKindGenerate || v == TaskKindRegenerate || v == TaskKindIncrementalRefresh
+	return v == TaskKindGenerate || v == TaskKindRegenerate || v == TaskKindIncrementalRefresh || v == TaskKindBatch
 }
 
 // TaskPriority 枚举
@@ -140,6 +144,14 @@ func CanTransitionTaskStatus(from, to string) bool {
 	default:
 		return false
 	}
+}
+
+// CanTransitionBatchTaskStatus 校验批次父任务（task_kind="batch"）状态转移（ADR-04 §7.2：允许 generating -> ready）。
+func CanTransitionBatchTaskStatus(from, to string) bool {
+	if CanTransitionTaskStatus(from, to) {
+		return true
+	}
+	return from == TaskStatusGenerating && to == TaskStatusReady
 }
 
 // SlotTaskStatus 枚举
@@ -225,6 +237,7 @@ const (
 	SymbolKindPyClass          = "py_class"
 	SymbolKindPyFunc           = "py_func"
 	SymbolKindRuntimePrimitive = "runtime_primitive"
+	SymbolKindModuleDoc        = "module_doc"
 )
 
 func IsValidSymbolKind(v string) bool {
@@ -232,9 +245,43 @@ func IsValidSymbolKind(v string) bool {
 	case SymbolKindFile, SymbolKindConfigKey, SymbolKindProtoRPC, SymbolKindHTTPRoute,
 		SymbolKindDataModel, SymbolKindCppClass, SymbolKindCppStruct, SymbolKindCppFunc,
 		SymbolKindJavaClass, SymbolKindJavaMethod, SymbolKindPyClass, SymbolKindPyFunc,
-		SymbolKindRuntimePrimitive:
+		SymbolKindRuntimePrimitive, SymbolKindModuleDoc:
 		return true
 	default:
 		return false
 	}
 }
+
+// ModuleStrategy 枚举（ADR-04 D-1 仓库模块发现策略）
+const (
+	ModuleStrategyArchElements = "arch_elements"
+	ModuleStrategyTopLevelDirs = "top_level_dirs"
+	ModuleStrategyMerged       = "merged"
+)
+
+func IsValidModuleStrategy(v string) bool {
+	return v == ModuleStrategyArchElements || v == ModuleStrategyTopLevelDirs || v == ModuleStrategyMerged
+}
+
+// ModuleSource 枚举（ADR-04 D-1 模块来源）
+const (
+	ModuleSourceArchElement = "arch_element"
+	ModuleSourceDiscovered  = "discovered"
+)
+
+// ModuleStatus 枚举（ADR-04 D-1 模块状态）
+const (
+	ModuleStatusActive  = "active"
+	ModuleStatusMissing = "missing"
+	ModuleStatusIgnored = "ignored"
+)
+
+func IsValidModuleStatus(v string) bool {
+	return v == ModuleStatusActive || v == ModuleStatusMissing || v == ModuleStatusIgnored
+}
+
+// AnchorScope 枚举（ADR-04 D-3 证据锚点作用域）
+const (
+	AnchorScopeModule = "module"
+	AnchorScopeRepo   = "repo"
+)
