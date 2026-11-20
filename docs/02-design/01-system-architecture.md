@@ -19,7 +19,7 @@
 | **【领域治理篇】** | [`03-doctype-drift-and-publishing.md`](./03-doctype-drift-and-publishing.md) | `DocType` 目录 SSOT 注册表与 5 类内置槽位规划、`slot_id` 锁定与孤立章节、`publish_dir` 原子落盘/撤回/导出、`F-25` 巡检与 `F-12` 双维漂移算法、`F-26` 评测与度量 |
 | **【应用与安全篇】** | [`04-workbench-and-security.md`](./04-workbench-and-security.md) | `./App` & `./menu` 联邦契约、四大工作台 React 组件分层树、手工直编 + SSE Chat 双轨修订协议、三层 RBAC 权限决策引擎与 `commonAudit` 审计清单 |
 | **【数据模型篇】** | [`05-database-schema.md`](./05-database-schema.md) | 共享主数据只读契约、完整 Mermaid ER 图、全量 16 张 `archdoc_*` GORM Struct 建模字典、迁移/加密与 `testdb` 物理隔离约束 |
-| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) / [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md) / [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md) | 微前端与表前缀隔离、C/C++ `tree-sitter` 解析与 Code IR 压缩分片存储、双键稳定证据锚点与 `publish_dir` 符号链接挂载契约 |
+| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) / [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md) / [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md) / [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)（提议） | 微前端与表前缀隔离、C/C++ `tree-sitter` 解析与 Code IR 压缩分片存储、双键稳定证据锚点与 `publish_dir` 符号链接挂载契约、Monorepo 一层模块发现与层级文档汇总 |
 
 ---
 

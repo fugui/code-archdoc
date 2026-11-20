@@ -36,7 +36,8 @@ docs/
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
 │   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型
-│   └── 03-evidence-anchor-and-publish-mount.md        # ADR-03：跨提交稳定证据锚点与 code-bench 符号链接挂载发布契约
+│   ├── 03-evidence-anchor-and-publish-mount.md        # ADR-03：跨提交稳定证据锚点与 code-bench 符号链接挂载发布契约
+│   └── 04-module-scope-discovery-and-hierarchical-docs.md # ADR-04（提议）：Monorepo 一层模块发现、整仓抽取按模块切片与层级文档汇总
 └── 06-ops/          # 交付与验证：双模联调、物理隔离数据库测试与生产环境单二进制部署手册
     └── 01-verification-and-deployment-guide.md # 联调验证、自动化回归测试与生产部署操作指南
 ```
