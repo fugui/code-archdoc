@@ -117,6 +117,10 @@ type PreparedChatRefine struct {
 	ModelTier      string
 	Endpoint       llm.EndpointConfig
 	PromptMessages []llm.Message
+	PromptNonce    string
+	RepoRoot       string
+	ScopeRoot      string
+	EnableTools    bool
 	OperatorID     uint
 }
 
@@ -401,14 +405,23 @@ func (s *ChatService) PrepareRefine(
 		return nil, err
 	}
 
-	promptMsgs, _ := llm.BuildChatRefineMessages(llm.ChatRefinePromptInput{
-		DocType:          dtBundle,
-		Slot:             slotSpec,
-		CurrentMarkdown:  snaps[targetIdx].Markdown,
-		IR:               irBundle,
-		EvidenceSnippets: evidenceSnippets,
-		History:          history,
-		UserPrompt:       promptText,
+	// 解析只读代码沙箱范围：若沙箱目录就绪或存在快照 Code IR，则为 Chat 精修开放受限只读源码工具
+	var repoRoot, scopeRoot string
+	hasFS := false
+	if s.snapSvc != nil {
+		repoRoot, scopeRoot, hasFS = s.snapSvc.ResolveSandboxScope(doc.RepoID, doc.Subdirectory)
+	}
+	enableTools := hasFS || irBundle != nil
+
+	promptMsgs, promptNonce := llm.BuildChatRefineMessages(llm.ChatRefinePromptInput{
+		DocType:           dtBundle,
+		Slot:              slotSpec,
+		CurrentMarkdown:   snaps[targetIdx].Markdown,
+		IR:                irBundle,
+		EvidenceSnippets:  evidenceSnippets,
+		History:           history,
+		UserPrompt:        promptText,
+		EnableSourceTools: enableTools,
 	})
 
 	return &PreparedChatRefine{
@@ -425,6 +438,10 @@ func (s *ChatService) PrepareRefine(
 		ModelTier:      resolvedTier,
 		Endpoint:       endpointCfg,
 		PromptMessages: promptMsgs,
+		PromptNonce:    promptNonce,
+		RepoRoot:       repoRoot,
+		ScopeRoot:      scopeRoot,
+		EnableTools:    enableTools,
 		OperatorID:     operatorID,
 	}, nil
 }
@@ -448,15 +465,62 @@ func (s *ChatService) ExecuteRefineStream(
 	}
 
 	start := time.Now()
-	resp, err := s.llmClient.ChatCompletionStream(ctx, prep.Endpoint, llm.ChatRequest{
-		Messages: prep.PromptMessages,
-		Stream:   true,
-	}, func(delta string) error {
+	var (
+		resp *llm.ChatResponse
+		err  error
+	)
+	onDelta := func(delta string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return emit("delta", map[string]any{"text": delta})
-	})
+	}
+	if prep.EnableTools {
+		releaseLease := s.snapSvc.AcquireRepoLease(prep.Doc.RepoID)
+		defer releaseLease()
+
+		toolkit := llm.NewSandboxSourceToolkit(llm.SandboxToolkitConfig{
+			ScopeRoot: prep.ScopeRoot,
+			RepoRoot:  prep.RepoRoot,
+			IR:        prep.IR,
+			Redactor:  s.redactor,
+		})
+		if toolkit.HasTools() {
+			maxRounds := prep.TargetSlot.MaxToolRounds
+			if maxRounds <= 0 {
+				maxRounds = 4
+			}
+			var loopRes *llm.ToolLoopResult
+			loopRes, err = llm.RunToolLoopStream(ctx, s.llmClient, prep.Endpoint, llm.ChatRequest{
+				Messages: prep.PromptMessages,
+				Stream:   true,
+			}, toolkit, llm.ToolLoopOptions{
+				Nonce:     prep.PromptNonce,
+				MaxRounds: maxRounds,
+			}, llm.ToolLoopCallbacks{
+				OnDelta: onDelta,
+				OnToolEvent: func(ev llm.ToolTraceEvent) error {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return emit("tool_call", ev)
+				},
+			})
+			if err == nil && loopRes != nil {
+				resp = loopRes.Response
+			}
+		} else {
+			resp, err = s.llmClient.ChatCompletionStream(ctx, prep.Endpoint, llm.ChatRequest{
+				Messages: prep.PromptMessages,
+				Stream:   true,
+			}, onDelta)
+		}
+	} else {
+		resp, err = s.llmClient.ChatCompletionStream(ctx, prep.Endpoint, llm.ChatRequest{
+			Messages: prep.PromptMessages,
+			Stream:   true,
+		}, onDelta)
+	}
 
 	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {

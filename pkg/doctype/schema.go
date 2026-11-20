@@ -61,14 +61,16 @@ func (s *ScopeProfileConfig) ToSandboxProfile() *sandbox.ScopeProfile {
 
 // SlotSpec 对应 meta.json 中的单个稳定章节槽位定义。
 type SlotSpec struct {
-	SlotID          string   `json:"slot_id"`
-	Title           string   `json:"title"`
-	Ownership       string   `json:"ownership"` // auto | hybrid | locked
-	Required        bool     `json:"required"`
-	IRFacets        []string `json:"ir_facets"`
-	TokenBudget     int      `json:"token_budget,omitempty"`
-	MinChars        int      `json:"min_chars,omitempty"`
-	InstructionHint string   `json:"instruction_hint,omitempty"`
+	SlotID            string   `json:"slot_id"`
+	Title             string   `json:"title"`
+	Ownership         string   `json:"ownership"` // auto | hybrid | locked
+	Required          bool     `json:"required"`
+	IRFacets          []string `json:"ir_facets"`
+	TokenBudget       int      `json:"token_budget,omitempty"`
+	MinChars          int      `json:"min_chars,omitempty"`
+	InstructionHint   string   `json:"instruction_hint,omitempty"`
+	EnableSourceTools bool     `json:"enable_source_tools,omitempty"`
+	MaxToolRounds     int      `json:"max_tool_rounds,omitempty"`
 }
 
 // VerifyPolicy 对应 meta.json 中的 Verifier 四重门禁策略配置。
@@ -294,6 +296,9 @@ func (m *Meta) Validate(expectedSlug string) error {
 		}
 		if sl.Ownership != "auto" && sl.Ownership != "hybrid" && sl.Ownership != "locked" {
 			return fmt.Errorf("%w: slot %q ownership 非法 (%q)", ErrInvalidMeta, sl.SlotID, sl.Ownership)
+		}
+		if sl.MaxToolRounds < 0 || sl.MaxToolRounds > 6 {
+			return fmt.Errorf("%w: slot %q max_tool_rounds 须在 0~6 之间 (%d)", ErrInvalidMeta, sl.SlotID, sl.MaxToolRounds)
 		}
 		for _, sf := range sl.IRFacets {
 			if !validFacets[sf] {

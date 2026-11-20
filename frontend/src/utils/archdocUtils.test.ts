@@ -229,6 +229,13 @@ describe('SSE Chat 局部精修帧解析器 (T-M5-05)', () => {
     assert.ok(meta && meta.event === 'meta');
     assert.equal(meta.data.message_id, 88);
 
+    const toolEv = parseChatSSEBlock(
+      'event: tool_call\ndata: {"round":1,"tool_name":"read_file_lines","summary":"read_file_lines(src/order.cpp:1-40)","is_error":false,"duration_ms":3}',
+    );
+    assert.ok(toolEv && toolEv.event === 'tool_call');
+    assert.equal(toolEv.data.tool_name, 'read_file_lines');
+    assert.equal(toolEv.data.round, 1);
+
     const delta = parseChatSSEBlock('event: delta\ndata: {"text":"补充重试逻辑"}');
     assert.ok(delta && delta.event === 'delta');
     assert.equal(delta.data.text, '补充重试逻辑');

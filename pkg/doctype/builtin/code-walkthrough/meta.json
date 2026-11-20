@@ -39,7 +39,9 @@
       "ir_facets": ["idl_contracts", "http_routes", "symbols", "deps"],
       "token_budget": 12000,
       "min_chars": 40,
-      "instruction_hint": "按入口函数 -> 服务方法 -> 底层原语/存储顺序逐跳导航，精确标注文件路径与全限定符号。"
+      "enable_source_tools": true,
+      "max_tool_rounds": 4,
+      "instruction_hint": "按入口函数 -> 服务方法 -> 底层原语/存储顺序逐跳导航，善用只读源码工具核实真实调用关系并精确标注文件路径与全限定符号。"
     },
     {
       "slot_id": "modification_recipes",

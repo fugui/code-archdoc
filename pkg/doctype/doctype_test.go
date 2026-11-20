@@ -47,6 +47,37 @@ func TestBuiltinSeedIdempotentAndNoOverwrite(t *testing.T) {
 		t.Fatalf("期望 5 类内置 DocType 共计 19 个稳定槽位，实际 %d", totalSlots)
 	}
 
+	// 验证核心流程与调用链槽位默认开启受限只读源码工具，其余槽位默认关闭
+	toolEnabled := make(map[string]int)
+	for _, b := range bundles1 {
+		for _, sl := range b.Meta.Slots {
+			if sl.EnableSourceTools {
+				toolEnabled[b.Slug+"/"+sl.SlotID] = sl.MaxToolRounds
+			}
+		}
+	}
+	expectedEnabled := []string{
+		"system-architecture/runtime_concurrency",
+		"system-architecture/core_request_flows",
+		"code-walkthrough/call_chain_guide",
+	}
+	if len(toolEnabled) != len(expectedEnabled) {
+		t.Fatalf("期望仅 %d 个核心流程槽位开启只读源码工具，实际 %v", len(expectedEnabled), toolEnabled)
+	}
+	for _, key := range expectedEnabled {
+		if toolEnabled[key] != 4 {
+			t.Fatalf("槽位 %s 期望 max_tool_rounds=4，实际 %d", key, toolEnabled[key])
+		}
+	}
+
+	// 验证超出安全上限的 max_tool_rounds 被 Meta.Validate 拦截
+	badMeta := bundles1[0].Meta
+	badMeta.Slots = append([]doctype.SlotSpec(nil), badMeta.Slots...)
+	badMeta.Slots[0].MaxToolRounds = 9
+	if err := badMeta.Validate(bundles1[0].Slug); err == nil {
+		t.Fatal("max_tool_rounds=9 超出上限 6，Meta.Validate 应返回错误")
+	}
+
 	// 2. 再次 Seed 幂等，不重复写入且哈希完全不变
 	seeded2, err := reg.SeedBuiltin()
 	if err != nil {

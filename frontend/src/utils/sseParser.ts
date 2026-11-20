@@ -25,6 +25,7 @@ export function parseChatSSEBlock(rawBlock: string): ChatRefineSSEEvent | null {
     const parsed = JSON.parse(dataLines.join('\n')) as unknown;
     switch (eventName) {
       case 'meta':
+      case 'tool_call':
       case 'delta':
       case 'diff_proposal':
       case 'verifier_preview':

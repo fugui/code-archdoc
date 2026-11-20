@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -82,6 +83,49 @@ func NewSnapshotService(
 		sandboxDir:   sandboxDir,
 		maxFileBytes: maxFileBytes,
 	}
+}
+
+// AcquireRepoLease 获取仓库级只读租约（空安全，防止工具读取源码期间目录被 LRU 回收）。
+func (s *SnapshotService) AcquireRepoLease(repoID uint) func() {
+	if s == nil || s.leaseMgr == nil {
+		return func() {}
+	}
+	return s.leaseMgr.AcquireRepo(repoID)
+}
+
+// ResolveSandboxScope 安全解析仓库及 Monorepo 子目录的物理只读根目录（经 SafeJoin 校验且确认目录存在）。
+func (s *SnapshotService) ResolveSandboxScope(repoID uint, normSubdir string) (repoRoot string, scopeRoot string, ok bool) {
+	if s == nil || strings.TrimSpace(s.sandboxDir) == "" || repoID == 0 {
+		return "", "", false
+	}
+	candidateRepo := filepath.Join(s.sandboxDir, fmt.Sprintf("repo_%d", repoID))
+	resolvedRepo, err := sandbox.SafeJoin(candidateRepo, ".")
+	if err != nil {
+		return "", "", false
+	}
+	st, err := os.Stat(resolvedRepo)
+	if err != nil || !st.IsDir() {
+		return "", "", false
+	}
+	if strings.TrimSpace(normSubdir) == "" {
+		return resolvedRepo, resolvedRepo, true
+	}
+	cleanSub, err := sandbox.NormalizeSubdir(normSubdir)
+	if err != nil {
+		return "", "", false
+	}
+	if cleanSub == "" {
+		return resolvedRepo, resolvedRepo, true
+	}
+	resolvedScope, err := sandbox.SafeJoin(resolvedRepo, cleanSub)
+	if err != nil {
+		return "", "", false
+	}
+	stScope, err := os.Stat(resolvedScope)
+	if err != nil || !stScope.IsDir() {
+		return "", "", false
+	}
+	return resolvedRepo, resolvedScope, true
 }
 
 // SnapshotKey 构造规范缓存键 (repo_id, subdir, ref_name, commit_sha, ir_schema_version)。

@@ -255,6 +255,26 @@ stateDiagram-v2
 - **取消语义**：每个运行中任务在调度器内存表注册 `context.CancelFunc`；收到取消请求后立即调用 `cancel()`，阻断尚未发出的 LLM 请求并中止正在进行的 HTTP 流，`git` 子进程组立即被 `SIGKILL` 清理。
 - **单槽位独立重试（`F-05`）**：若某文档仅第 `k` 个槽位因模型瞬时抖动失败，用户可对该 `slot_id` 发起单槽位重试——仅重跑该槽位 L2 生成并将结果合入草稿、重跑 Verifier，其余已完成槽位内容保持字节级不变。
 
+### 3.4 受限只读 Tool-Calling（核心流程槽位与 Chat 局部精修按需读源码）
+
+在保留「确定性 L1 Code IR + 单轮直出」作为批量自动化骨架的前提下，Go `pkg/llm` 原生支持标准 OpenAI Compatible Function Calling（非流式与 SSE 流式 `delta.tool_calls` 分片聚合），仅对以下两类高价值深度推理场景开放**纯只读、零 Shell、强沙箱隔离**的按需源码探索循环（`pkg/llm/source_tools.go` + `pkg/llm/tool_loop.go`）：
+
+1. **声明式槽位分级路由（零脚本）**：
+   - `DocType` 的 `meta.json` 槽位规格新增可选字段 `enable_source_tools`（默认 `false`）与 `max_tool_rounds`（默认 `4`，校验上限 `6`）。
+   - 默认仅对核心业务链路/并发/逐跳导读槽位开启：`system-architecture`（`runtime_concurrency`、`core_request_flows`）与 `code-walkthrough`（`call_chain_guide`）；其余清单、配置、契约、锁定槽位保持单轮 L1 Code IR 直出以最大化 KV Cache 命中与低成本。
+   - **Canvas Studio Chat 局部精修**（`services/chat_service.go`）：当文档对应仓库沙箱或快照 Code IR 就绪时默认开放受限只读工具，并在实际触发工具调用时推送 SSE `tool_call` 进度帧（未触发工具时事件序列严格保持 `meta -> delta+ -> diff_proposal -> verifier_preview -> done`）。
+2. **四个受限只读工具（纯 Go 进程内执行，零子进程）**：
+   - `get_symbol_impl`：基于 L1 Code IR（`Symbols` / `IDLContracts` / `HTTPRoutes`）直达符号坐标并读取脱敏实现体；
+   - `read_file_lines`：按行号区间读取沙箱内源码（单次 ≤ 200 行、≤ 12 KB）；
+   - `grep_in_sandbox`：纯字面量关键词检索（防 ReDoS，单次 ≤ 600 文件、≤ 50 条命中）；
+   - `list_dir`：列出沙箱内可见目录与文件（自动隐藏 `.git/`、Layer 1 黑名单、`.archdocignore` 与外部符号链接）。
+3. **五重安全与成本护栏**：
+   - **路径边界与降噪**：全部文件访问经 `sandbox.SafeJoin` + `EvalSymlinks` 校验，阻断目录穿越、外部符号链接、`.git/`、二进制文件及仓库 `.archdocignore` 排除目录；读取期间持有 `ActiveLeaseManager` 仓库只读租约。
+   - **三级凭据脱敏**：所有工具返回文本强制经过 `security.SecretRedactor.RedactText` 脱敏后再送回模型。
+   - **防提示词注入数据栅栏（`SC-13`）**：所有 `role="tool"` 返回内容统一使用本次请求 128-bit 随机 `nonce` 包裹在 `<untrusted_repo_data nonce="...">` 中，并对内部伪造栅栏标签执行转义。
+   - **轮次/体积/Token 强制收敛**：硬限制最大工具轮次（≤ 6）、单轮调用数（≤ 4）、累计调用数（≤ 12）、累计工具输出字节（≤ 36 KB）与单槽位 Token 上限；触达上限后移除 `tools` 并注入收敛指令强制输出最终 JSON，同时将多轮 Usage 精确累加至 `archdoc_llm_usage_logs`。
+   - **内网模型平滑降级**：若首轮遇到上游网关/模型返回 HTTP 400/422/501 不支持 `tools` 参数，自动降级为无工具单轮调用，保障业务零中断。
+
 ---
 
 ## 4. 证据锚定与 Verifier 四重确定性质量门禁（`F-07`、`SC-04`）

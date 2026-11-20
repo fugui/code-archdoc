@@ -40,7 +40,9 @@
       "ir_facets": ["runtime_primitives", "symbols"],
       "token_budget": 10000,
       "min_chars": 40,
-      "instruction_hint": "基于 runtime_primitives 与 symbols 详述线程、锁粒度、原子操作、共享内存/IPC、事件循环、定时器与信号处理机制。"
+      "enable_source_tools": true,
+      "max_tool_rounds": 4,
+      "instruction_hint": "基于 runtime_primitives 与 symbols 详述线程、锁粒度、原子操作、共享内存/IPC、事件循环、定时器与信号处理机制，必要时调用只读源码工具核实关键锁作用域与并发控制实现。"
     },
     {
       "slot_id": "core_request_flows",
@@ -50,7 +52,9 @@
       "ir_facets": ["idl_contracts", "http_routes", "symbols", "deps"],
       "token_budget": 12000,
       "min_chars": 40,
-      "instruction_hint": "从对外 RPC/HTTP 入口追踪至核心服务实现与存储/IPC，给出清晰的 Mermaid sequenceDiagram 时序图。"
+      "enable_source_tools": true,
+      "max_tool_rounds": 4,
+      "instruction_hint": "从对外 RPC/HTTP 入口追踪至核心服务实现与存储/IPC，善用只读源码工具按需查阅核心入口与下游调用函数体，给出准确的 Mermaid sequenceDiagram 时序图。"
     },
     {
       "slot_id": "fault_tolerance_deps",

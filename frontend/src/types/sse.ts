@@ -13,6 +13,16 @@ export type ChatRefineSSEEvent =
       };
     }
   | {
+      event: 'tool_call';
+      data: {
+        round: number;
+        tool_name: string;
+        summary: string;
+        is_error: boolean;
+        duration_ms: number;
+      };
+    }
+  | {
       event: 'delta';
       data: {
         text: string;

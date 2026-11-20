@@ -15,10 +15,39 @@ import (
 	"time"
 )
 
-// Message 表示 OpenAI Compatible 对话消息。
+// ToolCallFunction 表示 OpenAI Compatible 工具调用函数名与 JSON 参数串。
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolCall 表示模型发起的一次函数工具调用。
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // "function"
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolFunctionDefinition 表示提供给模型的只读函数工具 Schema。
+type ToolFunctionDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// ToolDefinition 表示 OpenAI Compatible tools 数组中的单个工具声明。
+type ToolDefinition struct {
+	Type     string                 `json:"type"` // "function"
+	Function ToolFunctionDefinition `json:"function"`
+}
+
+// Message 表示 OpenAI Compatible 对话消息（支持 system | user | assistant | tool）。
 type Message struct {
-	Role    string `json:"role"` // system | user | assistant
-	Content string `json:"content"`
+	Role       string     `json:"role"` // system | user | assistant | tool
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
 }
 
 // EndpointConfig 单次调用的目标模型端点与重试配置。
@@ -34,6 +63,8 @@ type EndpointConfig struct {
 // ChatRequest 构造一次 Chat Completions 请求。
 type ChatRequest struct {
 	Messages    []Message
+	Tools       []ToolDefinition
+	ToolChoice  any // nil | "auto" | "none" | map[string]any
 	MaxTokens   int
 	Temperature *float64
 	Stream      bool
@@ -50,8 +81,55 @@ type UsageMetrics struct {
 
 // ChatResponse 封装一次 Chat Completions 响应。
 type ChatResponse struct {
-	Content string
-	Usage   UsageMetrics
+	Content      string
+	ToolCalls    []ToolCall
+	FinishReason string
+	Usage        UsageMetrics
+}
+
+// HTTPStatusError 标识上游 LLM 网关返回非 2xx HTTP 状态码的结构化错误。
+type HTTPStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("LLM 上游返回 HTTP %d: %s", e.StatusCode, strings.TrimSpace(e.Body))
+}
+
+// IsToolUnsupportedError 判断上游报错是否因内网模型/网关不支持 OpenAI tools/function calling 参数导致。
+func IsToolUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	if httpErr.StatusCode != http.StatusBadRequest &&
+		httpErr.StatusCode != http.StatusUnprocessableEntity &&
+		httpErr.StatusCode != http.StatusNotImplemented {
+		return false
+	}
+	lower := strings.ToLower(httpErr.Body)
+	toolSignals := []string{
+		"tool_choice",
+		"tools",
+		"function call",
+		"function_call",
+		"tool call",
+		"auto-tool-choice",
+		"tool-call-parser",
+		"does not support tools",
+		"not support tools",
+		"unsupported parameter",
+	}
+	for _, sig := range toolSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // Client 纯 Go OpenAI Compatible HTTP/SSE 客户端（支持 429/5xx 指数退避重试与 ctx.Done 秒停）。
@@ -83,22 +161,34 @@ func NewClientWithOptions(httpClient *http.Client, baseBackoff time.Duration) *C
 }
 
 type openAIChatPayload struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []Message        `json:"messages"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice  any              `json:"tool_choice,omitempty"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
+}
+
+type openAIStreamToolCallDelta struct {
+	Index    int              `json:"index"`
+	ID       string           `json:"id,omitempty"`
+	Type     string           `json:"type,omitempty"`
+	Function ToolCallFunction `json:"function,omitempty"`
 }
 
 type openAIChatResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
+			Role      string     `json:"role"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		Delta struct {
-			Content string `json:"content"`
+			Content   string                      `json:"content"`
+			ToolCalls []openAIStreamToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage struct {
@@ -155,6 +245,8 @@ func (c *Client) executeWithRetry(ctx context.Context, cfg EndpointConfig, req C
 	payloadBytes, err := json.Marshal(openAIChatPayload{
 		Model:       strings.TrimSpace(cfg.ModelName),
 		Messages:    req.Messages,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      req.Stream,
@@ -242,7 +334,10 @@ func (c *Client) doOnce(
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusGatewayTimeout ||
 			resp.StatusCode == http.StatusInternalServerError
-		return nil, retryable, fmt.Errorf("LLM 上游返回 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
+		return nil, retryable, &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(errBody)),
+		}
 	}
 
 	if stream {
@@ -266,7 +361,9 @@ func (c *Client) doOnce(
 		cached = parsed.Usage.PromptCacheHitTokens
 	}
 	return &ChatResponse{
-		Content: parsed.Choices[0].Message.Content,
+		Content:      parsed.Choices[0].Message.Content,
+		ToolCalls:    normalizeToolCalls(parsed.Choices[0].Message.ToolCalls),
+		FinishReason: parsed.Choices[0].FinishReason,
 		Usage: UsageMetrics{
 			ModelName:          parsed.Model,
 			PromptTokens:       parsed.Usage.PromptTokens,
@@ -282,6 +379,8 @@ func parseSSEResponse(body io.Reader, defaultModel string, onDelta func(string) 
 
 	var full strings.Builder
 	usage := UsageMetrics{ModelName: defaultModel}
+	var finishReason string
+	var streamToolCalls []ToolCall
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -312,9 +411,40 @@ func parseSSEResponse(body io.Reader, defaultModel string, onDelta func(string) 
 			usage.CachedPromptTokens = cached
 		}
 		if len(chunk.Choices) > 0 {
-			delta := chunk.Choices[0].Delta.Content
+			ch0 := chunk.Choices[0]
+			if ch0.FinishReason != "" {
+				finishReason = ch0.FinishReason
+			}
+			// 聚合流式 delta.tool_calls（按 OpenAI index 分片拼接）
+			for _, tcDelta := range ch0.Delta.ToolCalls {
+				idx := tcDelta.Index
+				if idx < 0 {
+					idx = len(streamToolCalls)
+				}
+				for len(streamToolCalls) <= idx {
+					streamToolCalls = append(streamToolCalls, ToolCall{Type: "function"})
+				}
+				if tcDelta.ID != "" {
+					streamToolCalls[idx].ID = tcDelta.ID
+				}
+				if tcDelta.Type != "" {
+					streamToolCalls[idx].Type = tcDelta.Type
+				}
+				if tcDelta.Function.Name != "" {
+					streamToolCalls[idx].Function.Name += tcDelta.Function.Name
+				}
+				if tcDelta.Function.Arguments != "" {
+					streamToolCalls[idx].Function.Arguments += tcDelta.Function.Arguments
+				}
+			}
+			// 兼容部分兼容网关在单帧 message.tool_calls 中直接返回完整调用列表
+			if len(ch0.Message.ToolCalls) > 0 && len(streamToolCalls) == 0 {
+				streamToolCalls = append(streamToolCalls, ch0.Message.ToolCalls...)
+			}
+
+			delta := ch0.Delta.Content
 			if delta == "" {
-				delta = chunk.Choices[0].Message.Content
+				delta = ch0.Message.Content
 			}
 			if delta != "" {
 				full.WriteString(delta)
@@ -331,9 +461,48 @@ func parseSSEResponse(body io.Reader, defaultModel string, onDelta func(string) 
 	}
 
 	return &ChatResponse{
-		Content: full.String(),
-		Usage:   usage,
+		Content:      full.String(),
+		ToolCalls:    normalizeToolCalls(streamToolCalls),
+		FinishReason: finishReason,
+		Usage:        usage,
 	}, false, nil
+}
+
+func normalizeToolCalls(raw []ToolCall) []ToolCall {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(raw))
+	for i, tc := range raw {
+		name := strings.TrimSpace(tc.Function.Name)
+		if name == "" {
+			continue
+		}
+		id := strings.TrimSpace(tc.ID)
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i+1)
+		}
+		typ := strings.TrimSpace(tc.Type)
+		if typ == "" {
+			typ = "function"
+		}
+		args := strings.TrimSpace(tc.Function.Arguments)
+		if args == "" {
+			args = "{}"
+		}
+		out = append(out, ToolCall{
+			ID:   id,
+			Type: typ,
+			Function: ToolCallFunction{
+				Name:      name,
+				Arguments: args,
+			},
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func isTimeoutErr(err error) bool {

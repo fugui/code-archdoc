@@ -20,14 +20,15 @@ const chatRefineSystemSecurityPrompt = `你是企业级代码架构文档局部�
 
 // ChatRefinePromptInput 装配 SSE Chat 局部精修上下文所需的全部隔离数据块。
 type ChatRefinePromptInput struct {
-	DocType          *doctype.AssetBundle
-	Slot             doctype.SlotSpec
-	CurrentMarkdown  string
-	IR               *codeir.CodeIRBundle
-	EvidenceSnippets map[string]string // 关联 EvidenceAnchor 的脱敏源码片段 (file -> text)
-	History          []Message         // 可选：会话历史消息（已截断）
-	UserPrompt       string
-	Nonce            string
+	DocType           *doctype.AssetBundle
+	Slot              doctype.SlotSpec
+	CurrentMarkdown   string
+	IR                *codeir.CodeIRBundle
+	EvidenceSnippets  map[string]string // 关联 EvidenceAnchor 的脱敏源码片段 (file -> text)
+	History           []Message         // 可选：会话历史消息（已截断）
+	UserPrompt        string
+	Nonce             string
+	EnableSourceTools bool // 可选：是否向 Chat 精修开放受限只读源码工具
 }
 
 // BuildChatRefineMessages 装配带随机 Nonce 数据栅栏的 SSE Chat 局部精修消息数组（防提示词注入 SC-13）。
@@ -39,6 +40,10 @@ func BuildChatRefineMessages(in ChatRefinePromptInput) ([]Message, string) {
 
 	var sysBuilder strings.Builder
 	sysBuilder.WriteString(chatRefineSystemSecurityPrompt)
+	if in.EnableSourceTools {
+		sysBuilder.WriteString("\n")
+		sysBuilder.WriteString(sourceToolsGuidancePrompt)
+	}
 	if in.DocType != nil && strings.TrimSpace(in.DocType.RefinePromptMD) != "" {
 		sysBuilder.WriteString("\n\n--- 文档类型专属精修约束 (refine_prompt.md) ---\n")
 		sysBuilder.WriteString(strings.TrimSpace(in.DocType.RefinePromptMD))

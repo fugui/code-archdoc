@@ -38,6 +38,7 @@ interface StreamingState {
   slotId: string;
   baseRevisionNo: number;
   modelTier?: string;
+  toolSteps: string[];
   deltaText: string;
   diffProposal?: {
     proposalId: number;
@@ -169,6 +170,7 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
       sessionId: activeSessionId,
       slotId: selectedSlotId,
       baseRevisionNo: currentBaseRev,
+      toolSteps: [],
       deltaText: '',
     });
 
@@ -197,6 +199,19 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
                       sessionId: ev.data.session_id,
                       messageId: ev.data.message_id,
                       modelTier: ev.data.model_tier,
+                    }
+                  : prev,
+              );
+              break;
+            case 'tool_call':
+              setStreaming((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      toolSteps: [
+                        ...prev.toolSteps,
+                        `[R${ev.data.round}] ${ev.data.summary} (${ev.data.duration_ms}ms)`,
+                      ],
                     }
                   : prev,
               );
@@ -446,6 +461,11 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
                     <span className="code-badge code-badge--primary">{streaming.modelTier}</span>
                   )}
                 </div>
+                {streaming.toolSteps.length > 0 && (
+                  <div className="code-archdoc-chat-usage">
+                    只读源码查阅：{streaming.toolSteps.join(' -> ')}
+                  </div>
+                )}
                 <pre className="code-archdoc-chat-stream-pre">
                   {streaming.deltaText || '正在结合目标章节源码证据与 Code IR 推理...'}
                 </pre>

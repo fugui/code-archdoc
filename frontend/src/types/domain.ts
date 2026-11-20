@@ -248,6 +248,8 @@ export interface SlotDefinition {
   token_budget: number;
   min_chars: number;
   instruction_hint?: string;
+  enable_source_tools?: boolean;
+  max_tool_rounds?: number;
 }
 
 export interface DocTypeSummaryVO {

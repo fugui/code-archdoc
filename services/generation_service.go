@@ -843,15 +843,6 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 					}
 				}
 
-				msgs, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
-					DocType:       planCopy.asset,
-					Slot:          slotSpec,
-					Glossary:      glossary,
-					IR:            snapReady.IR,
-					PriorHybridMD: priorHybrid,
-					Nonce:         batchNonce,
-				})
-
 				maxOut := 0
 				if planCopy.asset.Meta.MaxOutputTokens > 0 {
 					perSlot := planCopy.asset.Meta.MaxOutputTokens / maxIntVal(len(planCopy.asset.Meta.Slots), 1)
@@ -860,9 +851,17 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 					}
 				}
 
-				resp, callErr := o.llmClient.ChatCompletion(ctx, epCfg, llm.ChatRequest{
-					Messages:  msgs,
-					MaxTokens: maxOut,
+				resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
+					RepoID:        repo.ID,
+					Subdirectory:  task.Subdirectory,
+					DocType:       planCopy.asset,
+					Slot:          slotSpec,
+					Glossary:      glossary,
+					IR:            snapReady.IR,
+					PriorHybridMD: priorHybrid,
+					Nonce:         batchNonce,
+					Endpoint:      epCfg,
+					MaxTokens:     maxOut,
 				})
 				finAt := time.Now()
 				slotRow.FinishedAt = &finAt
@@ -1161,15 +1160,17 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 				priorHybrid = prev.Markdown
 			}
 
-			msgs, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
+			resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
+				RepoID:        repo.ID,
+				Subdirectory:  snapReady.Loc.Subdir,
 				DocType:       asset,
 				Slot:          slotSpec,
 				Glossary:      glossary,
 				IR:            snapReady.IR,
 				PriorHybridMD: priorHybrid,
 				Nonce:         batchNonce,
+				Endpoint:      epCfg,
 			})
-			resp, callErr := o.llmClient.ChatCompletion(ctx, epCfg, llm.ChatRequest{Messages: msgs})
 			finAt := time.Now()
 			slotRow.FinishedAt = &finAt
 			if callErr != nil {
@@ -1458,13 +1459,15 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	glossary, _ := o.snapSvc.facetStore.ReadGlossary(ctx, loc)
 
 	o.llmSem <- struct{}{}
-	msgs, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
-		DocType:  asset,
-		Slot:     *targetSlot,
-		Glossary: glossary,
-		IR:       irBundle,
+	resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
+		RepoID:       task.RepoID,
+		Subdirectory: task.Subdirectory,
+		DocType:      asset,
+		Slot:         *targetSlot,
+		Glossary:     glossary,
+		IR:           irBundle,
+		Endpoint:     epCfg,
 	})
-	resp, callErr := o.llmClient.ChatCompletion(ctx, epCfg, llm.ChatRequest{Messages: msgs})
 	<-o.llmSem
 
 	finAt := time.Now()
@@ -1940,6 +1943,90 @@ func toGenSlotTaskVO(s *models.GenSlotTask) GenSlotTaskVO {
 		StartedAt:         s.StartedAt,
 		FinishedAt:        s.FinishedAt,
 	}
+}
+
+type slotExecInput struct {
+	RepoID        uint
+	Subdirectory  string
+	DocType       *doctype.AssetBundle
+	Slot          doctype.SlotSpec
+	Glossary      *codeir.GlossaryCache
+	IR            *codeir.CodeIRBundle
+	PriorHybridMD string
+	Nonce         string
+	Endpoint      llm.EndpointConfig
+	MaxTokens     int
+}
+
+// executeSlotLLM 统一执行单槽位 L2 推理：
+// - 普通清单/结构槽位：保持单轮确定性 L1 Code IR 直出（最大化 KV Cache 命中与低成本）；
+// - 声明 enable_source_tools=true 的核心流程/并发/调用链槽位：开启受限只读沙箱 Tool-Calling，按需核实函数实现与跨文件调用链，并保留降级兜底与活跃租约保护。
+func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExecInput) (*llm.ChatResponse, error) {
+	var toolkit *llm.SandboxSourceToolkit
+	useTools := false
+
+	if in.Slot.EnableSourceTools {
+		var repoRoot, scopeRoot string
+		if o.snapSvc != nil {
+			repoRoot, scopeRoot, _ = o.snapSvc.ResolveSandboxScope(in.RepoID, in.Subdirectory)
+		}
+		tk := llm.NewSandboxSourceToolkit(llm.SandboxToolkitConfig{
+			ScopeRoot: scopeRoot,
+			RepoRoot:  repoRoot,
+			IR:        in.IR,
+		})
+		if tk.HasTools() {
+			toolkit = tk
+			useTools = true
+		}
+	}
+
+	msgs, nonce := llm.BuildSlotMessages(llm.SlotPromptInput{
+		DocType:           in.DocType,
+		Slot:              in.Slot,
+		Glossary:          in.Glossary,
+		IR:                in.IR,
+		PriorHybridMD:     in.PriorHybridMD,
+		Nonce:             in.Nonce,
+		EnableSourceTools: useTools,
+	})
+
+	chatReq := llm.ChatRequest{
+		Messages:  msgs,
+		MaxTokens: in.MaxTokens,
+	}
+
+	if !useTools || toolkit == nil {
+		return o.llmClient.ChatCompletion(ctx, in.Endpoint, chatReq)
+	}
+
+	releaseLease := o.leaseMgr.AcquireRepo(in.RepoID)
+	defer releaseLease()
+
+	maxRounds := in.Slot.MaxToolRounds
+	if maxRounds <= 0 {
+		maxRounds = 4
+	}
+	perSlotTokenCap := 0
+	if in.Slot.TokenBudget > 0 {
+		// 为多轮受限工具探索预留合理上限（槽位基础预算 * 4，最低 32K），超出即强制收敛输出
+		perSlotTokenCap = maxIntVal(in.Slot.TokenBudget*4, 32000)
+	}
+
+	loopRes, err := llm.RunToolLoop(ctx, o.llmClient, in.Endpoint, chatReq, toolkit, llm.ToolLoopOptions{
+		Nonce:          nonce,
+		MaxRounds:      maxRounds,
+		MaxTotalTokens: perSlotTokenCap,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if loopRes.ToolCallsCount > 0 || loopRes.FallbackNoTools {
+		log.Printf("[%s] 槽位 %s/%s Tool-Calling 完成: rounds=%d tool_calls=%d fallback_no_tools=%v prompt_tokens=%d completion_tokens=%d",
+			config.ServiceName, in.DocType.Slug, in.Slot.SlotID, loopRes.Rounds, loopRes.ToolCallsCount, loopRes.FallbackNoTools,
+			loopRes.Response.Usage.PromptTokens, loopRes.Response.Usage.CompletionTokens)
+	}
+	return loopRes.Response, nil
 }
 
 func maxIntVal(a, b int) int {
