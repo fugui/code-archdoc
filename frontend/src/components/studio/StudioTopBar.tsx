@@ -19,6 +19,7 @@ import { shortSha } from '../../utils/urlQuery';
 export interface StudioTopBarProps {
   doc: DocumentDetailVO | null;
   repoId: number;
+  repoName?: string;
   subdirectory: string;
   drawerOpen: boolean;
   publishing: boolean;
@@ -53,6 +54,7 @@ function getPublishDisabledReason(doc: DocumentDetailVO | null): string | undefi
 export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   doc,
   repoId,
+  repoName,
   subdirectory,
   drawerOpen,
   publishing,
@@ -86,7 +88,7 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
 
         <div className="code-archdoc-studio-breadcrumb">
           <span className="code-archdoc-studio-repo-name">
-            {doc?.repo_name || `仓库 #${repoId}`}
+            {doc?.repo_name || repoName || `仓库 #${repoId}`}
           </span>
           {(doc?.subdirectory || subdirectory) && (
             <>

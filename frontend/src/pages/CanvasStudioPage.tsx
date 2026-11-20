@@ -12,7 +12,12 @@ import {
   updateDocumentSection,
   updateSectionOwnership,
 } from '../api/documents';
-import { listDocTypes } from '../api/repos';
+import {
+  getRepoScopes,
+  listDocTypes,
+  listRepoModules,
+  refreshRepoModules,
+} from '../api/repos';
 import GenerateTaskModal from '../components/GenerateTaskModal';
 import LeftDocTreePanel from '../components/studio/LeftDocTreePanel';
 import OrphanSectionsZone from '../components/studio/OrphanSectionsZone';
@@ -28,12 +33,14 @@ import type {
   DocumentNavItemVO,
   EvidenceAnchor,
   OrphanResolveAction,
+  RepoModuleVO,
   SectionOwnership,
 } from '../types';
 import { formatApiError } from '../utils/errorMessages';
 import {
   buildStudioPath,
   parseEvidenceDeepLinkParams,
+  shortSha,
   type EvidenceDeepLinkParams,
 } from '../utils/urlQuery';
 import './CanvasStudioPage.css';
@@ -75,14 +82,60 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const [evidenceRequest, setEvidenceRequest] = useState<EvidenceInspectRequest | null>(null);
   const [chatTargetSlotId, setChatTargetSlotId] = useState<string>('');
 
-  // 操作态
+  // 操作态与仓库模块范围上下文
   const [publishing, setPublishing] = useState<boolean>(false);
   const [unpublishing, setUnpublishing] = useState<boolean>(false);
   const [exporting, setExporting] = useState<boolean>(false);
   const [genModalOpen, setGenModalOpen] = useState<boolean>(false);
+  const [repoModules, setRepoModules] = useState<RepoModuleVO[]>([]);
+  const [loadingModules, setLoadingModules] = useState<boolean>(false);
+  const [refreshingModules, setRefreshingModules] = useState<boolean>(false);
+  const [repoMeta, setRepoMeta] = useState<{
+    repoName: string;
+    branch: string;
+    canWriteRepo: boolean;
+  } | null>(null);
 
   const effectiveRepoId = doc?.repo_id || paramRepoId;
   const effectiveSubdir = doc ? doc.subdirectory : urlSubdir;
+
+  // 拉取仓库模块索引与元信息（支持整仓 <-> 一级目录自由切换）
+  useEffect(() => {
+    if (!effectiveRepoId) {
+      setRepoModules([]);
+      setRepoMeta(null);
+      return;
+    }
+    let active = true;
+    setLoadingModules(true);
+    void Promise.allSettled([
+      listRepoModules(effectiveRepoId),
+      getRepoScopes(effectiveRepoId),
+    ])
+      .then(([modsRes, scopesRes]) => {
+        if (!active) return;
+        if (modsRes.status === 'fulfilled') {
+          setRepoModules(
+            (modsRes.value.modules || []).filter((m) => m.status !== 'ignored'),
+          );
+        }
+        if (scopesRes.status === 'fulfilled') {
+          const scopesData = scopesRes.value;
+          const rootScope = scopesData.scopes.find((s) => s.scope_type === 'repo');
+          setRepoMeta({
+            repoName: scopesData.repo_name,
+            branch: scopesData.branch || 'master',
+            canWriteRepo: Boolean(rootScope?.can_write),
+          });
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingModules(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [effectiveRepoId]);
 
   // 拉取启用中的 DocType（供重新生成弹窗使用）
   useEffect(() => {
@@ -122,6 +175,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const loadStudioData = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
+    setActiveSlotId('');
     try {
       // 场景 A：已指定 docId（包括 /studio/:repoId/docs/:docId 与 /docs/:docId/evidence 深链）
       if (paramDocId > 0) {
@@ -185,6 +239,38 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const handleBackToRepos = () => {
     navigate(isEmbedded ? '/archdoc/repos' : '/repos');
   };
+
+  const handleSelectSubdirectory = useCallback(
+    (targetSubdir: string) => {
+      if (!effectiveRepoId || targetSubdir === effectiveSubdir) return;
+      navigate(buildStudioPath(isEmbedded, effectiveRepoId, { subdirectory: targetSubdir }));
+    },
+    [effectiveRepoId, effectiveSubdir, isEmbedded, navigate],
+  );
+
+  const handleRefreshStudioModules = useCallback(async () => {
+    if (!effectiveRepoId) return;
+    setRefreshingModules(true);
+    try {
+      const res = await refreshRepoModules(effectiveRepoId);
+      setRepoModules((res.modules || []).filter((m) => m.status !== 'ignored'));
+      if (res.active_count > 0) {
+        showToast(
+          `已完成静态扫描（${shortSha(res.commit_sha)}），发现 ${res.active_count} 个一级目录模块`,
+          'success',
+        );
+      } else {
+        showToast(
+          `已完成静态扫描（${shortSha(res.commit_sha)}），未发现独立一级业务子目录`,
+          'info',
+        );
+      }
+    } catch (err: unknown) {
+      showToast(formatApiError(err, '扫描仓库一级目录失败').message, 'error');
+    } finally {
+      setRefreshingModules(false);
+    }
+  }, [effectiveRepoId, showToast]);
 
   const handleSelectDoc = (targetDocId: number) => {
     if (!effectiveRepoId) return;
@@ -375,6 +461,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
       <StudioTopBar
         doc={doc}
         repoId={effectiveRepoId}
+        repoName={doc?.repo_name || repoMeta?.repoName}
         subdirectory={effectiveSubdir}
         drawerOpen={drawerOpen}
         publishing={publishing}
@@ -410,6 +497,13 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
           sections={doc?.sections ?? []}
           activeSlotId={activeSlotId}
           canWrite={scopeCanWrite}
+          repoModules={repoModules}
+          activeSubdirectory={effectiveSubdir}
+          loadingModules={loadingModules}
+          refreshingModules={refreshingModules}
+          canManageModules={Boolean(repoMeta?.canWriteRepo)}
+          onSelectSubdirectory={handleSelectSubdirectory}
+          onRefreshModules={() => void handleRefreshStudioModules()}
           onSelectDoc={handleSelectDoc}
           onSelectSlot={handleSelectSlot}
           onTriggerGenerate={() => setGenModalOpen(true)}
@@ -521,9 +615,9 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
           effectiveRepoId > 0
             ? {
                 repoId: effectiveRepoId,
-                repoName: doc?.repo_name || `仓库 #${effectiveRepoId}`,
+                repoName: doc?.repo_name || repoMeta?.repoName || `仓库 #${effectiveRepoId}`,
                 subdirectory: effectiveSubdir,
-                branch: doc?.ref_name || 'master',
+                branch: doc?.ref_name || repoMeta?.branch || 'master',
                 canWrite: scopeCanWrite,
               }
             : null

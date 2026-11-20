@@ -23,7 +23,7 @@ export type RevisionSource =
   | 'chat_refine'
   | 'rollback';
 
-export type TaskKind = 'generate' | 'regenerate' | 'incremental_refresh' | 'batch_generate';
+export type TaskKind = 'generate' | 'regenerate' | 'incremental_refresh' | 'batch';
 export type TaskPriority = 'interactive' | 'batch';
 export type TaskStatus =
   | 'pending'
@@ -185,13 +185,8 @@ export interface DocStatusSummaryVO {
 }
 
 export type ScopeStatus = 'active' | 'missing' | 'orphan';
-export type ModuleDiscoveryStrategy =
-  | 'merged'
-  | 'arch_elements'
-  | 'build_manifests'
-  | 'first_level_dirs'
-  | 'disabled';
-export type ModuleSource = 'arch_element' | 'build_manifest' | 'first_level_dir' | 'manual';
+export type ModuleDiscoveryStrategy = 'merged' | 'top_level_dirs' | 'arch_elements';
+export type ModuleSource = 'arch_element' | 'discovered';
 export type ModuleStatus = 'active' | 'ignored' | 'missing';
 
 export interface RepoScopeCoverageVO {
@@ -205,6 +200,8 @@ export interface RepoScopeCoverageVO {
   module_source?: string;
   effective_files?: number;
   total_loc?: number;
+  active_module_count?: number;
+  modules_scanned?: boolean;
   arch_element_id: number | null;
   arch_element_name: string;
   branch: string;

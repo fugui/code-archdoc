@@ -37,11 +37,35 @@
   overflow-x: auto;
 }
 
+.code-archdoc-coverage-table-scroll .code-table th:last-child,
+.code-archdoc-coverage-table-scroll .code-table td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  border-left: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-coverage-table-scroll .code-table thead th:last-child {
+  z-index: 3;
+  background: var(--color-bg-elevated);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .code-archdoc-coverage-table-scroll .code-table tbody tr:hover td:last-child {
+    background: var(--color-bg-elevated);
+  }
+}
+
 .code-archdoc-coverage-identity {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  min-width: 220px;
+  min-width: 240px;
+}
+
+.code-archdoc-coverage-identity--subdir {
+  padding-left: 1.15rem;
 }
 
 .code-archdoc-coverage-repo-row {
@@ -49,6 +73,94 @@
   align-items: center;
   gap: 0.45rem;
   flex-wrap: wrap;
+}
+
+.code-archdoc-coverage-tree-icon {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.code-archdoc-coverage-parent-repo {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-coverage-checkbox {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.code-archdoc-coverage-discover-btn,
+.code-archdoc-coverage-module-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.14rem 0.5rem;
+  border-radius: var(--radius-xs, 4px);
+  font-size: 0.74rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-coverage-discover-btn {
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.code-archdoc-coverage-discover-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-coverage-discover-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.code-archdoc-coverage-module-pill {
+  border: 1px solid var(--color-purple-border);
+  background: var(--color-purple-subtle);
+  color: var(--color-purple);
+}
+
+.code-archdoc-coverage-module-pill:hover {
+  border-color: var(--color-purple);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-coverage-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-subtle);
+  font-size: 0.84rem;
+}
+
+.code-archdoc-coverage-selection-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-coverage-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .code-archdoc-coverage-repo-name {

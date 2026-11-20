@@ -662,3 +662,70 @@ func TestBatchGenerateRBACBudgetTwoStageAndCancel(t *testing.T) {
 		t.Fatalf("阶段二整仓子任务应在阶段一模块子任务之后创建: children=%+v", okDetail.ChildTasks)
 	}
 }
+
+// TestRepoCoverageActiveModuleCountAndScanned 验证覆盖矩阵整仓行的 modules_scanned 与 active_module_count 聚合契约。
+func TestRepoCoverageActiveModuleCountAndScanned(t *testing.T) {
+	env := setupM8TestEnv(t)
+
+	// 创建一个无任何架构元素的普通仓库
+	plainRepo := models.Repository{
+		DepartmentID: env.repo.DepartmentID,
+		Name:         "plain_single_repo",
+		URL:          "git@git.internal:trade/plain_single_repo.git",
+		OwnerID:      env.owner.ID,
+		Branch:       "master",
+		IsActive:     true,
+	}
+	if err := env.db.Create(&plainRepo).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	queryCoverage := func() map[uint]services.RepoScopeCoverageVO {
+		req := httptest.NewRequest(http.MethodGet, "/api/repos?scope_type=repo&page=1&pageSize=25", nil)
+		req.Header.Set("Authorization", "Bearer "+env.ownerTok)
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/repos 失败: %d %s", rec.Code, rec.Body.String())
+		}
+		var resp services.RepoCoverageListResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		out := make(map[uint]services.RepoScopeCoverageVO, len(resp.Items))
+		for _, item := range resp.Items {
+			out[item.RepoID] = item
+		}
+		return out
+	}
+
+	// 1. 刷新前：两仓 modules_scanned 均为 false；env.repo 含 1 个架构元素(order)，plainRepo 为 0
+	before := queryCoverage()
+	if before[env.repo.ID].ModulesScanned || before[env.repo.ID].ActiveModuleCount != 1 {
+		t.Fatalf("刷新前 env.repo 期望 modules_scanned=false, active_module_count=1，实际=%+v", before[env.repo.ID])
+	}
+	if before[plainRepo.ID].ModulesScanned || before[plainRepo.ID].ActiveModuleCount != 0 {
+		t.Fatalf("刷新前 plainRepo 期望 modules_scanned=false, active_module_count=0，实际=%+v", before[plainRepo.ID])
+	}
+
+	// 2. 刷新 env.repo（发现 common / gateway / order 3 个模块），并将 gateway 标为 ignored
+	refreshed, err := env.moduleSvc.RefreshModules(context.Background(), env.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range refreshed.Modules {
+		if m.Subdirectory == "gateway" {
+			if _, uErr := env.moduleSvc.UpdateModuleStatus(context.Background(), env.repo.ID, m.ID, models.ModuleStatusIgnored); uErr != nil {
+				t.Fatal(uErr)
+			}
+		}
+	}
+
+	after := queryCoverage()
+	if !after[env.repo.ID].ModulesScanned || after[env.repo.ID].ActiveModuleCount != 2 {
+		t.Fatalf("刷新并忽略 gateway 后 env.repo 期望 modules_scanned=true, active_module_count=2，实际=%+v", after[env.repo.ID])
+	}
+	if after[plainRepo.ID].ModulesScanned {
+		t.Fatalf("未刷新的 plainRepo 不应受影响，实际=%+v", after[plainRepo.ID])
+	}
+}

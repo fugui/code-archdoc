@@ -13,6 +13,12 @@ import {
 } from './urlQuery.ts';
 import { ArchdocApiError, formatApiError, formatTaskErrorCode } from './errorMessages.ts';
 import { isSafeLinkHref, parseMarkdownBlocks } from './markdown.ts';
+import {
+  MODULE_STRATEGY_OPTIONS,
+  formatModuleSourceLabel,
+  isBatchTaskKind,
+  normalizeModuleStrategy,
+} from './moduleUtils.ts';
 import { parseChatSSEBlock } from './sseParser.ts';
 
 describe('URL Search Params 分页与筛选序列化/反序列化 (Verification Checklist §3.2.1)', () => {
@@ -93,6 +99,7 @@ describe('深链 /docs/:docId/evidence 参数解析与非法行号兜底 (Verifi
       symbol: 'order::OrderService::Pay',
       lineStart: 142,
       lineEnd: 188,
+      scope: undefined,
     });
 
     assert.deepEqual(parseLineRange('42'), { lineStart: 42, lineEnd: 42 });
@@ -289,5 +296,31 @@ describe('双维漂移雷达 URL Search Params 分页与筛选同步 (T-M6-05)',
     assert.equal(invalid.pageSize, 25);
     assert.equal(invalid.departmentId, '');
     assert.equal(invalid.driftType, 'all');
+  });
+});
+
+describe('ADR-04 模块发现策略、来源标签与批量任务契约对齐', () => {
+  it('策略选项严格对齐后端枚举且非法别名安全兜底为 merged', () => {
+    assert.deepEqual(
+      MODULE_STRATEGY_OPTIONS.map((opt) => opt.value),
+      ['merged', 'top_level_dirs', 'arch_elements'],
+    );
+    assert.equal(normalizeModuleStrategy('merged'), 'merged');
+    assert.equal(normalizeModuleStrategy('top_level_dirs'), 'top_level_dirs');
+    assert.equal(normalizeModuleStrategy('arch_elements'), 'arch_elements');
+    assert.equal(normalizeModuleStrategy('first_level_dirs'), 'merged');
+    assert.equal(normalizeModuleStrategy('build_manifests'), 'merged');
+    assert.equal(normalizeModuleStrategy(undefined), 'merged');
+  });
+
+  it('来源标签正确映射 discovered / arch_element / orphan 并识别 batch 任务枚举', () => {
+    assert.equal(formatModuleSourceLabel('discovered'), '一级目录');
+    assert.equal(formatModuleSourceLabel('arch_element'), '架构元素');
+    assert.equal(formatModuleSourceLabel('orphan'), '孤立范围');
+    assert.equal(formatModuleSourceLabel('unknown'), '');
+
+    assert.equal(isBatchTaskKind('batch'), true);
+    assert.equal(isBatchTaskKind('batch_generate'), false);
+    assert.equal(isBatchTaskKind('generate'), false);
   });
 });

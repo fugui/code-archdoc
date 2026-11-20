@@ -1,5 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowRightLeft, Eye, EyeOff, FolderTree, Loader2, RefreshCw, Save } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ArrowRightLeft,
+  BookOpen,
+  Eye,
+  EyeOff,
+  FolderTree,
+  Layers3,
+  Loader2,
+  RefreshCw,
+  Save,
+  Sparkles,
+} from 'lucide-react';
 import { EmptyState, Modal, StatusTag, useConfirm, useToast, type StatusType } from '@code/common';
 import {
   listRepoModules,
@@ -10,6 +21,11 @@ import {
 } from '../api/repos';
 import type { ModuleDiscoveryStrategy, ModuleStatus, RepoModuleVO } from '../types';
 import { formatApiError } from '../utils/errorMessages';
+import {
+  MODULE_STRATEGY_OPTIONS,
+  formatModuleSourceLabel,
+  normalizeModuleStrategy,
+} from '../utils/moduleUtils';
 import { shortSha } from '../utils/urlQuery';
 
 export interface ModuleGovernanceTarget {
@@ -24,15 +40,10 @@ export interface ModuleGovernanceModalProps {
   target: ModuleGovernanceTarget | null;
   onClose: () => void;
   onChanged?: () => void;
+  onGenerateModule?: (subdir: string) => void;
+  onBatchGenerateModules?: (subdirs: string[]) => void;
+  onOpenStudio?: (repoId: number, subdir: string) => void;
 }
-
-const STRATEGY_OPTIONS: Array<{ value: ModuleDiscoveryStrategy; label: string }> = [
-  { value: 'merged', label: '混合发现（架构元素 + 构建清单 + 一级目录）' },
-  { value: 'arch_elements', label: '仅架构元素表 (architecture_elements)' },
-  { value: 'build_manifests', label: '仅构建清单 (CMake/Maven/Gradle/pyproject)' },
-  { value: 'first_level_dirs', label: '仅一级源码子目录' },
-  { value: 'disabled', label: '关闭自动发现（仅整仓）' },
-];
 
 function moduleStatusMeta(status: ModuleStatus): { text: string; tag: StatusType } {
   switch (status) {
@@ -45,26 +56,14 @@ function moduleStatusMeta(status: ModuleStatus): { text: string; tag: StatusType
   }
 }
 
-function moduleSourceLabel(source: string): string {
-  switch (source) {
-    case 'arch_element':
-      return '架构元素';
-    case 'build_manifest':
-      return '构建清单';
-    case 'first_level_dir':
-      return '一级目录';
-    case 'manual':
-      return '手动维护';
-    default:
-      return source || '自动发现';
-  }
-}
-
 export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
   open,
   target,
   onClose,
   onChanged,
+  onGenerateModule,
+  onBatchGenerateModules,
+  onOpenStudio,
 }) => {
   const { showToast } = useToast();
   const confirm = useConfirm();
@@ -79,30 +78,50 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
   const [minFiles, setMinFiles] = useState<number>(3);
   const [excludeGlobsText, setExcludeGlobsText] = useState<string>('');
   const [modules, setModules] = useState<RepoModuleVO[]>([]);
+  const [selectedSubdirs, setSelectedSubdirs] = useState<string[]>([]);
 
   const [fromSubdir, setFromSubdir] = useState<string>('');
   const [toSubdir, setToSubdir] = useState<string>('');
+
+  const activeModules = useMemo(
+    () => modules.filter((mod) => mod.status === 'active'),
+    [modules],
+  );
+  const showSelectionColumn = Boolean(target?.canWrite && onBatchGenerateModules);
+  const allActiveSelected =
+    activeModules.length > 0 &&
+    activeModules.every((mod) => selectedSubdirs.includes(mod.subdirectory));
+
+  const pruneSelection = useCallback((nextModules: RepoModuleVO[]) => {
+    const activeSet = new Set(
+      nextModules.filter((m) => m.status === 'active').map((m) => m.subdirectory),
+    );
+    setSelectedSubdirs((prev) => prev.filter((sub) => activeSet.has(sub)));
+  }, []);
 
   const loadModules = useCallback(async () => {
     if (!target) return;
     setLoading(true);
     try {
       const res = await listRepoModules(target.repoId);
-      setStrategy(res.policy.strategy);
+      setStrategy(normalizeModuleStrategy(res.policy.strategy));
       setMinFiles(res.policy.min_effective_files);
       setExcludeGlobsText((res.policy.exclude_globs || []).join(', '));
-      setModules(Array.isArray(res.modules) ? res.modules : []);
+      const nextModules = Array.isArray(res.modules) ? res.modules : [];
+      setModules(nextModules);
+      pruneSelection(nextModules);
     } catch (err: unknown) {
       showToast(formatApiError(err, '加载仓库模块索引失败').message, 'error');
     } finally {
       setLoading(false);
     }
-  }, [target, showToast]);
+  }, [target, showToast, pruneSelection]);
 
   useEffect(() => {
     if (!open || !target) return;
     setFromSubdir('');
     setToSubdir('');
+    setSelectedSubdirs([]);
     void loadModules();
   }, [open, target, loadModules]);
 
@@ -119,7 +138,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
         min_effective_files: Math.max(1, minFiles),
         exclude_globs: globs,
       });
-      setStrategy(updated.strategy);
+      setStrategy(normalizeModuleStrategy(updated.strategy));
       setMinFiles(updated.min_effective_files);
       setExcludeGlobsText((updated.exclude_globs || []).join(', '));
       showToast('模块发现策略已更新，点击「重新扫描模块」可立即生效', 'success');
@@ -136,7 +155,9 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
     setRefreshing(true);
     try {
       const res = await refreshRepoModules(target.repoId);
-      setModules(Array.isArray(res.modules) ? res.modules : []);
+      const nextModules = Array.isArray(res.modules) ? res.modules : [];
+      setModules(nextModules);
+      pruneSelection(nextModules);
       showToast(
         `已完成模块发现扫描（${shortSha(res.commit_sha)}），共发现 ${res.active_count} 个活跃子模块`,
         'success',
@@ -155,7 +176,11 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
     setTogglingId(mod.id);
     try {
       const updated = await updateRepoModuleStatus(target.repoId, mod.id, { status: nextStatus });
-      setModules((prev) => prev.map((m) => (m.id === mod.id ? updated : m)));
+      setModules((prev) => {
+        const next = prev.map((m) => (m.id === mod.id ? updated : m));
+        pruneSelection(next);
+        return next;
+      });
       showToast(
         nextStatus === 'ignored'
           ? `已忽略子模块 ${mod.subdirectory}`
@@ -167,6 +192,20 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
       showToast(formatApiError(err, '切换模块状态失败').message, 'error');
     } finally {
       setTogglingId(null);
+    }
+  };
+
+  const toggleSelectSubdir = (subdir: string) => {
+    setSelectedSubdirs((prev) =>
+      prev.includes(subdir) ? prev.filter((item) => item !== subdir) : [...prev, subdir],
+    );
+  };
+
+  const toggleSelectAllActive = () => {
+    if (allActiveSelected) {
+      setSelectedSubdirs([]);
+    } else {
+      setSelectedSubdirs(activeModules.map((m) => m.subdirectory));
     }
   };
 
@@ -272,7 +311,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
                 disabled={!target?.canWrite}
                 onChange={(e) => setStrategy(e.target.value as ModuleDiscoveryStrategy)}
               >
-                {STRATEGY_OPTIONS.map((opt) => (
+                {MODULE_STRATEGY_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
@@ -313,6 +352,29 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
             <div className="code-archdoc-module-section-title">
               <span>已发现模块清单 ({modules.length})</span>
             </div>
+            {showSelectionColumn && activeModules.length > 0 && onBatchGenerateModules && (
+              <div className="code-archdoc-module-section-actions">
+                {selectedSubdirs.length > 0 ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-small"
+                    onClick={() => onBatchGenerateModules(selectedSubdirs)}
+                  >
+                    <Layers3 size={13} />
+                    <span>批量生成所选 ({selectedSubdirs.length})</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-small"
+                    onClick={() => onBatchGenerateModules([])}
+                  >
+                    <Layers3 size={13} />
+                    <span>一键批量生成全部模块 ({activeModules.length})</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {loading ? (
@@ -324,13 +386,38 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
             <EmptyState
               compact
               title="尚未发现业务子模块"
-              description="当前仓库可作为单仓整体生成，或点击上方「重新扫描模块」基于构建清单与目录结构自动发现子模块。"
+              description="当前仓库可作为单仓整体生成，或点击扫描按钮基于一级目录与架构元素自动发现子模块。"
+              action={
+                target?.canWrite ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-small"
+                    disabled={refreshing}
+                    onClick={() => void handleRefreshModules()}
+                  >
+                    <RefreshCw size={13} className={refreshing ? 'code-archdoc-spin' : ''} />
+                    <span>{refreshing ? '扫描中...' : '立即扫描一级目录'}</span>
+                  </button>
+                ) : undefined
+              }
             />
           ) : (
             <div className="code-archdoc-slot-table-wrap">
               <table className="code-table">
                 <thead>
                   <tr>
+                    {showSelectionColumn && (
+                      <th>
+                        <input
+                          type="checkbox"
+                          className="code-archdoc-coverage-checkbox"
+                          checked={allActiveSelected}
+                          disabled={activeModules.length === 0}
+                          onChange={toggleSelectAllActive}
+                          aria-label="全选活跃模块"
+                        />
+                      </th>
+                    )}
                     <th>子目录路径</th>
                     <th>来源</th>
                     <th>状态</th>
@@ -342,8 +429,22 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
                 <tbody>
                   {modules.map((mod) => {
                     const sm = moduleStatusMeta(mod.status);
+                    const checked = selectedSubdirs.includes(mod.subdirectory);
+                    const isActive = mod.status === 'active';
                     return (
                       <tr key={mod.id}>
+                        {showSelectionColumn && (
+                          <td>
+                            <input
+                              type="checkbox"
+                              className="code-archdoc-coverage-checkbox"
+                              checked={checked}
+                              disabled={!isActive}
+                              onChange={() => toggleSelectSubdir(mod.subdirectory)}
+                              aria-label={`选择模块 ${mod.subdirectory}`}
+                            />
+                          </td>
+                        )}
                         <td>
                           <div className="code-archdoc-module-path-cell">
                             <code className="code-archdoc-mono">{mod.subdirectory}</code>
@@ -354,7 +455,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
                         </td>
                         <td>
                           <span className="code-badge code-badge--muted">
-                            {moduleSourceLabel(mod.source)}
+                            {formatModuleSourceLabel(mod.source) || '自动发现'}
                           </span>
                         </td>
                         <td>
@@ -369,30 +470,55 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
                           <code className="code-archdoc-mono">{shortSha(mod.last_seen_commit)}</code>
                         </td>
                         <td>
-                          {target?.canWrite ? (
-                            <div className="code-archdoc-coverage-actions">
+                          <div className="code-archdoc-coverage-actions">
+                            {isActive && target?.canWrite && onGenerateModule && (
                               <button
                                 type="button"
                                 className="btn btn-text btn-small"
-                                disabled={togglingId === mod.id}
-                                onClick={() => void handleToggleStatus(mod)}
+                                onClick={() => onGenerateModule(mod.subdirectory)}
+                                title={`为 ${mod.subdirectory} 触发 AI 设计文档生成`}
                               >
-                                {mod.status === 'ignored' ? <Eye size={13} /> : <EyeOff size={13} />}
-                                <span>{mod.status === 'ignored' ? '恢复' : '忽略'}</span>
+                                <Sparkles size={13} />
+                                <span>生成文档</span>
                               </button>
+                            )}
+                            {isActive && target && onOpenStudio && (
                               <button
                                 type="button"
                                 className="btn btn-text btn-small"
-                                onClick={() => setFromSubdir(mod.subdirectory)}
-                                title="填入下方迁移源路径"
+                                onClick={() => onOpenStudio(target.repoId, mod.subdirectory)}
+                                title={`在工作台打开 ${mod.subdirectory}`}
                               >
-                                <ArrowRightLeft size={13} />
-                                <span>迁移</span>
+                                <BookOpen size={13} />
+                                <span>工作台</span>
                               </button>
-                            </div>
-                          ) : (
-                            <span className="text-muted">-</span>
-                          )}
+                            )}
+                            {target?.canWrite && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn btn-text btn-small"
+                                  disabled={togglingId === mod.id}
+                                  onClick={() => void handleToggleStatus(mod)}
+                                >
+                                  {mod.status === 'ignored' ? <Eye size={13} /> : <EyeOff size={13} />}
+                                  <span>{mod.status === 'ignored' ? '恢复' : '忽略'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-text btn-small"
+                                  onClick={() => setFromSubdir(mod.subdirectory)}
+                                  title="填入下方迁移源路径"
+                                >
+                                  <ArrowRightLeft size={13} />
+                                  <span>迁移</span>
+                                </button>
+                              </>
+                            )}
+                            {!target?.canWrite && !(isActive && onOpenStudio) && (
+                              <span className="text-muted">-</span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

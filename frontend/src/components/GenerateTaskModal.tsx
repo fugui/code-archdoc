@@ -2,13 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ExternalLink,
+  FolderTree,
   Loader2,
   Play,
   RefreshCw,
   Square,
 } from 'lucide-react';
 import { Modal, StatusTag, useConfirm, useToast, type StatusType } from '@code/common';
-import { listRepoModules } from '../api/repos';
+import { listRepoModules, refreshRepoModules } from '../api/repos';
 import {
   cancelTask,
   getTaskDetail,
@@ -25,6 +26,7 @@ import type {
   TaskStatus,
 } from '../types';
 import { formatApiError, formatTaskErrorCode } from '../utils/errorMessages';
+import { isBatchTaskKind } from '../utils/moduleUtils';
 import { shortSha } from '../utils/urlQuery';
 
 export interface GenerateTaskScope {
@@ -43,8 +45,10 @@ export interface GenerateTaskModalProps {
   initialMode?: 'generate' | 'regenerate';
   initialTaskId?: number | null;
   batchMode?: boolean;
+  initialSelectedModules?: string[];
   onClose: () => void;
   onTaskCompleted?: () => void;
+  onModulesRefreshed?: () => void;
   onOpenStudio?: (repoId: number, docId?: number, subdirectory?: string) => void;
 }
 
@@ -107,8 +111,10 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   initialMode = 'generate',
   initialTaskId = null,
   batchMode = false,
+  initialSelectedModules,
   onClose,
   onTaskCompleted,
+  onModulesRefreshed,
   onOpenStudio,
 }) => {
   const { showToast } = useToast();
@@ -127,25 +133,36 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   // 批量模式状态（F-31）
   const [repoModules, setRepoModules] = useState<RepoModuleVO[]>([]);
   const [loadingModules, setLoadingModules] = useState<boolean>(false);
+  const [scanningModules, setScanningModules] = useState<boolean>(false);
   const [allModules, setAllModules] = useState<boolean>(true);
   const [selectedModules, setSelectedModules] = useState<string[]>([]);
   const [includeRepoScope, setIncludeRepoScope] = useState<boolean>(true);
 
   const notifiedReadyRef = useRef<number | null>(null);
 
-  // 批量模式打开时加载活跃子模块清单
+  // 批量模式打开时加载活跃子模块清单（支持预选特定目录）
   useEffect(() => {
     if (!open || !batchMode || !scope || initialTaskId) return;
     let active = true;
+    const presetList = initialSelectedModules ? [...initialSelectedModules] : [];
+    const hasPreset = presetList.length > 0;
     setLoadingModules(true);
-    setAllModules(true);
+    setAllModules(!hasPreset);
     setIncludeRepoScope(true);
+    setSelectedModules(hasPreset ? presetList : []);
     void listRepoModules(scope.repoId)
       .then((res) => {
         if (!active) return;
         const actives = (res.modules || []).filter((m) => m.status === 'active');
         setRepoModules(actives);
-        setSelectedModules(actives.map((m) => m.subdirectory));
+        if (hasPreset) {
+          const activeSet = new Set(actives.map((m) => m.subdirectory));
+          setSelectedModules(
+            activeSet.size > 0 ? presetList.filter((sub) => activeSet.has(sub)) : presetList,
+          );
+        } else {
+          setSelectedModules(actives.map((m) => m.subdirectory));
+        }
       })
       .catch(() => {
         if (active) setRepoModules([]);
@@ -156,7 +173,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     return () => {
       active = false;
     };
-  }, [open, batchMode, scope, initialTaskId]);
+  }, [open, batchMode, scope, initialTaskId, initialSelectedModules]);
 
   // 打开弹窗时初始化选中状态或加载既有任务
   useEffect(() => {
@@ -222,6 +239,34 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     setSelectedModules((prev) =>
       prev.includes(subdir) ? prev.filter((item) => item !== subdir) : [...prev, subdir],
     );
+  };
+
+  const handleScanModulesInBatch = async () => {
+    if (!scope) return;
+    setScanningModules(true);
+    try {
+      const res = await refreshRepoModules(scope.repoId);
+      const actives = (res.modules || []).filter((m) => m.status === 'active');
+      setRepoModules(actives);
+      setSelectedModules(actives.map((m) => m.subdirectory));
+      if (actives.length > 0) {
+        setAllModules(false);
+        showToast(
+          `已完成静态扫描（${shortSha(res.commit_sha)}），发现 ${actives.length} 个一级目录模块，可自由勾选生成`,
+          'success',
+        );
+      } else {
+        showToast(
+          `已完成静态扫描（${shortSha(res.commit_sha)}），未发现独立一级业务子目录，可直接勾选整仓总览生成`,
+          'info',
+        );
+      }
+      onModulesRefreshed?.();
+    } catch (err: unknown) {
+      showToast(formatApiError(err, '扫描仓库一级目录失败').message, 'error');
+    } finally {
+      setScanningModules(false);
+    }
   };
 
   const handleSubmitGenerate = async () => {
@@ -329,7 +374,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       onClose={onClose}
       title={
         taskDetail
-          ? `${taskDetail.task_kind === 'batch_generate' ? '批量任务监控' : '生成任务监控'} · #${taskDetail.id}`
+          ? `${isBatchTaskKind(taskDetail.task_kind) ? '批量任务监控' : '生成任务监控'} · #${taskDetail.id}`
           : batchMode
             ? '批量生成多模块 + 整仓分层文档'
             : '触发代码设计文档反推'
@@ -441,29 +486,90 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                 </div>
                 {loadingModules ? (
                   <div className="text-secondary">正在读取活跃模块清单...</div>
-                ) : !allModules && repoModules.length > 0 ? (
-                  <div className="code-archdoc-batch-module-chips">
-                    {repoModules.map((mod) => {
-                      const checked = selectedModules.includes(mod.subdirectory);
-                      return (
-                        <label
-                          key={mod.id}
-                          className={`code-archdoc-batch-chip ${
-                            checked ? 'code-archdoc-batch-chip--checked' : ''
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleModuleSubdir(mod.subdirectory)}
-                          />
-                          <code className="code-archdoc-mono">{mod.subdirectory}</code>
-                          <span className="text-muted">({mod.effective_files} 文件)</span>
-                        </label>
-                      );
-                    })}
+                ) : repoModules.length === 0 ? (
+                  <div className="code-archdoc-batch-empty">
+                    <div className="code-archdoc-batch-empty-text">
+                      <span>尚未扫描出该仓库的一级目录模块。</span>
+                      <span className="text-muted">
+                        保持勾选「全部活跃子模块」提交时后端将自动扫描；也可先立即扫描预览并自由勾选目录。
+                      </span>
+                    </div>
+                    {scope?.canWrite && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-small"
+                        disabled={scanningModules}
+                        onClick={() => void handleScanModulesInBatch()}
+                      >
+                        {scanningModules ? (
+                          <Loader2 size={13} className="code-archdoc-spin" />
+                        ) : (
+                          <FolderTree size={13} />
+                        )}
+                        <span>{scanningModules ? '扫描中...' : '立即扫描一级目录'}</span>
+                      </button>
+                    )}
                   </div>
-                ) : null}
+                ) : allModules ? (
+                  <div className="code-archdoc-batch-preview-list">
+                    <span className="text-muted">即将包含：</span>
+                    {repoModules.map((mod) => (
+                      <span key={mod.id} className="code-badge code-badge--muted">
+                        {mod.subdirectory}
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      className="btn btn-text btn-small"
+                      onClick={() => {
+                        setAllModules(false);
+                        setSelectedModules(repoModules.map((m) => m.subdirectory));
+                      }}
+                    >
+                      按目录自选
+                    </button>
+                  </div>
+                ) : (
+                  <div className="code-archdoc-batch-select-wrap">
+                    <div className="code-archdoc-batch-select-actions">
+                      <button
+                        type="button"
+                        className="btn btn-text btn-small"
+                        onClick={() => setSelectedModules(repoModules.map((m) => m.subdirectory))}
+                      >
+                        全选 ({repoModules.length})
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-text btn-small"
+                        onClick={() => setSelectedModules([])}
+                      >
+                        清空
+                      </button>
+                    </div>
+                    <div className="code-archdoc-batch-module-chips">
+                      {repoModules.map((mod) => {
+                        const checked = selectedModules.includes(mod.subdirectory);
+                        return (
+                          <label
+                            key={mod.id}
+                            className={`code-archdoc-batch-chip ${
+                              checked ? 'code-archdoc-batch-chip--checked' : ''
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleModuleSubdir(mod.subdirectory)}
+                            />
+                            <code className="code-archdoc-mono">{mod.subdirectory}</code>
+                            <span className="text-muted">({mod.effective_files} 文件)</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

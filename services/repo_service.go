@@ -32,26 +32,28 @@ type DocStatusSummaryVO struct {
 }
 
 type RepoScopeCoverageVO struct {
-	RepoID          uint                          `json:"repo_id"`
-	RepoName        string                        `json:"repo_name"`
-	DepartmentID    uint                          `json:"department_id"`
-	DepartmentName  string                        `json:"department_name"`
-	Subdirectory    string                        `json:"subdirectory"`
-	ScopeType       string                        `json:"scope_type"`   // "repo" | "subdir"
-	ScopeStatus     string                        `json:"scope_status"` // "active" | "missing" | "orphan"
-	ModuleSource    string                        `json:"module_source,omitempty"`
-	EffectiveFiles  int                           `json:"effective_files"`
-	TotalLOC        int                           `json:"total_loc"`
-	ArchElementID   *uint                         `json:"arch_element_id"`
-	ArchElementName string                        `json:"arch_element_name"`
-	Branch          string                        `json:"branch"`
-	OwnerID         uint                          `json:"owner_id"`
-	OwnerName       string                        `json:"owner_name"`
-	CanWrite        bool                          `json:"can_write"`
-	LatestCommitSHA string                        `json:"latest_commit_sha"`
-	RemoteHeadSHA   string                        `json:"remote_head_sha"`
-	ActiveTaskID    *uint                         `json:"active_task_id"`
-	DocStatuses     map[string]DocStatusSummaryVO `json:"doc_statuses"`
+	RepoID            uint                          `json:"repo_id"`
+	RepoName          string                        `json:"repo_name"`
+	DepartmentID      uint                          `json:"department_id"`
+	DepartmentName    string                        `json:"department_name"`
+	Subdirectory      string                        `json:"subdirectory"`
+	ScopeType         string                        `json:"scope_type"`   // "repo" | "subdir"
+	ScopeStatus       string                        `json:"scope_status"` // "active" | "missing" | "orphan"
+	ModuleSource      string                        `json:"module_source,omitempty"`
+	EffectiveFiles    int                           `json:"effective_files"`
+	TotalLOC          int                           `json:"total_loc"`
+	ActiveModuleCount int                           `json:"active_module_count"`
+	ModulesScanned    bool                          `json:"modules_scanned"`
+	ArchElementID     *uint                         `json:"arch_element_id"`
+	ArchElementName   string                        `json:"arch_element_name"`
+	Branch            string                        `json:"branch"`
+	OwnerID           uint                          `json:"owner_id"`
+	OwnerName         string                        `json:"owner_name"`
+	CanWrite          bool                          `json:"can_write"`
+	LatestCommitSHA   string                        `json:"latest_commit_sha"`
+	RemoteHeadSHA     string                        `json:"remote_head_sha"`
+	ActiveTaskID      *uint                         `json:"active_task_id"`
+	DocStatuses       map[string]DocStatusSummaryVO `json:"doc_statuses"`
 }
 
 type RepoCoverageSummaryVO struct {
@@ -446,24 +448,10 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 		repoLevelWrite := IsRepoLevelWriter(user, repo)
 
-		// 1. 整仓范围行 (subdirectory == "")
-		repoSnap := latestSnapByScope[scopeKey{repoID: repo.ID, subdir: ""}]
-		repoRow := buildSingleScopeRow(
-			repo, branch, "", "repo", nil, "",
-			repo.OwnerID, repoOwnerName, repoLevelWrite,
-			docsByScope[scopeKey{repoID: repo.ID, subdir: ""}],
-			revMap, codeDriftByDoc, specDriftByDoc,
-			latestCommitByScope[scopeKey{repoID: repo.ID, subdir: ""}],
-			remoteHeadByRepo[repo.ID],
-			activeTaskByScope[scopeKey{repoID: repo.ID, subdir: ""}],
-		)
-		repoRow.ScopeStatus = models.ModuleStatusActive
-		repoRow.EffectiveFiles = repoSnap.EffectiveFiles
-		repoRow.TotalLOC = repoSnap.TotalLOC
-		rows = append(rows, repoRow)
-
-		// 2. 构建该仓库下架构元素索引与当前用户子目录写权限集合
 		repoElems := elemsByRepo[repo.ID]
+		repoMods := modulesByRepo[repo.ID]
+
+		// 构建该仓库下架构元素索引与当前用户子目录写权限集合（供整仓行模块计数与子目录行共用）
 		elemBySub := make(map[string]models.ArchitectureElement, len(repoElems))
 		userOwnedSubdirs := make(map[string]bool)
 		for _, el := range repoElems {
@@ -479,6 +467,34 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 			}
 		}
 
+		// 1. 整仓范围行 (subdirectory == "")
+		repoSnap := latestSnapByScope[scopeKey{repoID: repo.ID, subdir: ""}]
+		repoRow := buildSingleScopeRow(
+			repo, branch, "", "repo", nil, "",
+			repo.OwnerID, repoOwnerName, repoLevelWrite,
+			docsByScope[scopeKey{repoID: repo.ID, subdir: ""}],
+			revMap, codeDriftByDoc, specDriftByDoc,
+			latestCommitByScope[scopeKey{repoID: repo.ID, subdir: ""}],
+			remoteHeadByRepo[repo.ID],
+			activeTaskByScope[scopeKey{repoID: repo.ID, subdir: ""}],
+		)
+		repoRow.ScopeStatus = models.ModuleStatusActive
+		repoRow.EffectiveFiles = repoSnap.EffectiveFiles
+		repoRow.TotalLOC = repoSnap.TotalLOC
+		if len(repoMods) > 0 {
+			repoRow.ModulesScanned = true
+			for _, mod := range repoMods {
+				if mod.Status == models.ModuleStatusActive && mod.Subdirectory != "" {
+					repoRow.ActiveModuleCount++
+				}
+			}
+		} else {
+			repoRow.ModulesScanned = repoSnap.ID > 0
+			repoRow.ActiveModuleCount = len(elemBySub)
+		}
+		rows = append(rows, repoRow)
+
+		// 2. 合并生成子目录行元数据解析函数
 		resolveSubdirMeta := func(normSub string) (*uint, string, uint, string) {
 			scopeOwnerID := repo.OwnerID
 			scopeOwnerName := repoOwnerName
@@ -507,7 +523,6 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 
 		seenSubdirs := make(map[string]bool)
 		ignoredSubdirs := make(map[string]bool)
-		repoMods := modulesByRepo[repo.ID]
 
 		if len(repoMods) > 0 {
 			// 已刷新模块索引的仓库：展示 active / missing 模块（ignored 隐藏，若仍有文档则下面以 orphan 兜底）

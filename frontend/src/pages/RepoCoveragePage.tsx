@@ -6,13 +6,16 @@ import {
   Archive,
   BookOpen,
   CheckCircle2,
+  CornerDownRight,
   FolderGit2,
   FolderTree,
   Layers,
   Layers3,
+  Loader2,
   RefreshCw,
   RotateCcw,
   Sparkles,
+  X,
 } from 'lucide-react';
 import {
   EmptyState,
@@ -24,7 +27,7 @@ import {
   type StatusType,
 } from '@code/common';
 import { exportDocumentsZip } from '../api/documents';
-import { listDepartments, listDocTypes, listRepos } from '../api/repos';
+import { listDepartments, listDocTypes, listRepos, refreshRepoModules } from '../api/repos';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
 import ModuleGovernanceModal, {
   type ModuleGovernanceTarget,
@@ -40,6 +43,7 @@ import type {
   RepoStatusFilter,
 } from '../types';
 import { formatApiError } from '../utils/errorMessages';
+import { formatModuleSourceLabel } from '../utils/moduleUtils';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildStudioPath,
@@ -55,26 +59,12 @@ interface ModalLaunchState {
   initialDocTypeSlugs?: string[];
   initialTaskId?: number | null;
   batchMode?: boolean;
+  initialSelectedModules?: string[];
 }
 
 interface ModuleModalState {
   open: boolean;
   target: ModuleGovernanceTarget | null;
-}
-
-function moduleSourceShortLabel(source?: string): string {
-  switch (source) {
-    case 'arch_element':
-      return '架构元素';
-    case 'build_manifest':
-      return '构建清单';
-    case 'first_level_dir':
-      return '自动发现';
-    case 'manual':
-      return '手动';
-    default:
-      return '';
-  }
 }
 
 function docStatusTag(ds: DocStatusSummaryVO): { status: StatusType; label: string } {
@@ -114,6 +104,10 @@ export const RepoCoveragePage: React.FC = () => {
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [exportingKey, setExportingKey] = useState<string | null>(null);
+  const [discoveringRepoId, setDiscoveringRepoId] = useState<number | null>(null);
+  const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
+  const [selectedRepoName, setSelectedRepoName] = useState<string>('');
+  const [selectedSubdirs, setSelectedSubdirs] = useState<string[]>([]);
 
   const [taskModal, setTaskModal] = useState<ModalLaunchState>({
     open: false,
@@ -169,7 +163,28 @@ export const RepoCoveragePage: React.FC = () => {
         status: filterState.status,
         scopeType: filterState.scopeType,
       });
-      setRows(Array.isArray(res.items) ? res.items : []);
+      const nextRows = Array.isArray(res.items) ? res.items : [];
+      setRows(nextRows);
+      setSelectedSubdirs((prev) => {
+        if (prev.length === 0) return prev;
+        const validSet = new Set(
+          nextRows
+            .filter(
+              (r) =>
+                r.repo_id === selectedRepoId &&
+                r.scope_type === 'subdir' &&
+                r.can_write &&
+                r.scope_status !== 'missing',
+            )
+            .map((r) => r.subdirectory),
+        );
+        const filtered = prev.filter((sub) => validSet.has(sub));
+        if (filtered.length === 0) {
+          setSelectedRepoId(null);
+          setSelectedRepoName('');
+        }
+        return filtered;
+      });
       setTotal(typeof res.total === 'number' ? res.total : 0);
       if (res.summary) {
         setSummary(res.summary);
@@ -187,6 +202,7 @@ export const RepoCoveragePage: React.FC = () => {
     filterState.docType,
     filterState.status,
     filterState.scopeType,
+    selectedRepoId,
     showToast,
   ]);
 
@@ -233,6 +249,7 @@ export const RepoCoveragePage: React.FC = () => {
       initialDocTypeSlugs?: string[];
       initialTaskId?: number | null;
       batchMode?: boolean;
+      initialSelectedModules?: string[];
     },
   ) => {
     setTaskModal({
@@ -247,6 +264,7 @@ export const RepoCoveragePage: React.FC = () => {
       initialDocTypeSlugs: options?.initialDocTypeSlugs,
       initialTaskId: options?.initialTaskId ?? null,
       batchMode: Boolean(options?.batchMode),
+      initialSelectedModules: options?.initialSelectedModules,
     });
   };
 
@@ -259,6 +277,66 @@ export const RepoCoveragePage: React.FC = () => {
         branch: row.branch || 'master',
         canWrite: row.can_write,
       },
+    });
+  };
+
+  const handleDiscoverRepoModules = async (row: RepoScopeCoverageVO) => {
+    setDiscoveringRepoId(row.repo_id);
+    try {
+      const res = await refreshRepoModules(row.repo_id);
+      if (res.active_count > 0) {
+        showToast(
+          `已完成仓库 ${row.repo_name} 一级目录扫描（${shortSha(res.commit_sha)}），发现 ${res.active_count} 个子模块`,
+          'success',
+        );
+      } else {
+        showToast(
+          `已完成仓库 ${row.repo_name} 扫描（${shortSha(res.commit_sha)}），未发现独立一级业务子目录（可在模块治理调整策略或阈值）`,
+          'info',
+        );
+      }
+      await fetchCoverage();
+    } catch (err: unknown) {
+      showToast(formatApiError(err, '扫描仓库一级目录失败').message, 'error');
+    } finally {
+      setDiscoveringRepoId(null);
+    }
+  };
+
+  const toggleSubdirRowSelection = (row: RepoScopeCoverageVO) => {
+    if (selectedRepoId !== row.repo_id) {
+      setSelectedRepoId(row.repo_id);
+      setSelectedRepoName(row.repo_name);
+      setSelectedSubdirs([row.subdirectory]);
+      return;
+    }
+    setSelectedSubdirs((prev) => {
+      const next = prev.includes(row.subdirectory)
+        ? prev.filter((item) => item !== row.subdirectory)
+        : [...prev, row.subdirectory];
+      if (next.length === 0) {
+        setSelectedRepoId(null);
+        setSelectedRepoName('');
+      }
+      return next;
+    });
+  };
+
+  const clearSubdirSelection = () => {
+    setSelectedRepoId(null);
+    setSelectedRepoName('');
+    setSelectedSubdirs([]);
+  };
+
+  const handleBatchGenerateSelectedRows = () => {
+    if (!selectedRepoId || selectedSubdirs.length === 0) return;
+    const anchorRow =
+      rows.find((r) => r.repo_id === selectedRepoId && r.scope_type === 'repo') ??
+      rows.find((r) => r.repo_id === selectedRepoId);
+    if (!anchorRow) return;
+    openGenerateModal(anchorRow, {
+      batchMode: true,
+      initialSelectedModules: selectedSubdirs,
     });
   };
 
@@ -432,6 +510,37 @@ export const RepoCoveragePage: React.FC = () => {
         </div>
       </div>
 
+      {/* 同仓多选一级目录批量生成操作条 */}
+      {selectedRepoId !== null && selectedSubdirs.length > 0 && (
+        <div className="code-archdoc-coverage-selection-bar">
+          <div className="code-archdoc-coverage-selection-info">
+            <Layers3 size={15} />
+            <span>
+              已选择仓库 <strong>{selectedRepoName}</strong> 下的{' '}
+              <strong>{selectedSubdirs.length}</strong> 个子目录
+            </span>
+          </div>
+          <div className="code-archdoc-coverage-selection-actions">
+            <button
+              type="button"
+              className="btn btn-primary btn-small"
+              onClick={handleBatchGenerateSelectedRows}
+            >
+              <Layers3 size={13} />
+              <span>批量生成所选模块</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-small"
+              onClick={clearSubdirSelection}
+            >
+              <X size={13} />
+              <span>清空选择</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 仓库与子目录文档覆盖矩阵表格 */}
       <div className="code-card code-archdoc-coverage-table-card">
         <div className="code-archdoc-coverage-table-scroll">
@@ -483,32 +592,118 @@ export const RepoCoveragePage: React.FC = () => {
                     (d) => d.status === 'approved',
                   ).length;
                   const firstDoc = Object.values(row.doc_statuses)[0];
+                  const isSubdirRow = row.scope_type === 'subdir';
+                  const canSelectSubdir =
+                    isSubdirRow && row.can_write && row.scope_status !== 'missing';
+                  const isRowChecked =
+                    canSelectSubdir &&
+                    selectedRepoId === row.repo_id &&
+                    selectedSubdirs.includes(row.subdirectory);
+                  const isDiscovering = discoveringRepoId === row.repo_id;
+                  const activeModuleCount = row.active_module_count ?? 0;
+                  const sourceLabel = formatModuleSourceLabel(
+                    row.scope_status === 'orphan' ? 'orphan' : row.module_source,
+                  );
 
                   return (
                     <tr key={rowKey}>
                       <td>
-                        <div className="code-archdoc-coverage-identity">
+                        <div
+                          className={`code-archdoc-coverage-identity ${
+                            isSubdirRow ? 'code-archdoc-coverage-identity--subdir' : ''
+                          }`}
+                        >
                           <div className="code-archdoc-coverage-repo-row">
-                            <span className="code-archdoc-coverage-repo-name">{row.repo_name}</span>
-                            {row.scope_type === 'subdir' ? (
-                              <span className="code-badge code-badge--purple">{row.subdirectory}</span>
+                            {canSelectSubdir && (
+                              <input
+                                type="checkbox"
+                                className="code-archdoc-coverage-checkbox"
+                                checked={isRowChecked}
+                                onChange={() => toggleSubdirRowSelection(row)}
+                                aria-label={`选择 ${row.repo_name} 子目录 ${row.subdirectory}`}
+                              />
+                            )}
+                            {isSubdirRow ? (
+                              <>
+                                <CornerDownRight
+                                  size={14}
+                                  className="code-archdoc-coverage-tree-icon"
+                                />
+                                <span className="code-badge code-badge--purple">
+                                  {row.subdirectory}
+                                </span>
+                                <span className="code-archdoc-coverage-parent-repo">
+                                  {row.repo_name}
+                                </span>
+                              </>
                             ) : (
-                              <span className="code-badge code-badge--muted">整仓</span>
+                              <>
+                                <span className="code-archdoc-coverage-repo-name">
+                                  {row.repo_name}
+                                </span>
+                                <span className="code-badge code-badge--muted">整仓</span>
+                                {!row.modules_scanned && activeModuleCount === 0 ? (
+                                  row.can_write ? (
+                                    <button
+                                      type="button"
+                                      className="code-archdoc-coverage-discover-btn"
+                                      disabled={isDiscovering}
+                                      onClick={() => void handleDiscoverRepoModules(row)}
+                                      title="执行零 LLM 静态扫描，自动发现仓库一级业务目录"
+                                    >
+                                      {isDiscovering ? (
+                                        <Loader2 size={12} className="code-archdoc-spin" />
+                                      ) : (
+                                        <FolderTree size={12} />
+                                      )}
+                                      <span>{isDiscovering ? '扫描中...' : '发现一级目录'}</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="code-archdoc-coverage-module-pill"
+                                      onClick={() => openModuleGovernanceModal(row)}
+                                      title="查看仓库模块发现索引"
+                                    >
+                                      <FolderTree size={12} />
+                                      <span>查看模块</span>
+                                    </button>
+                                  )
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="code-archdoc-coverage-module-pill"
+                                    onClick={() => openModuleGovernanceModal(row)}
+                                    title="点击打开模块发现与子目录治理弹窗"
+                                  >
+                                    <FolderTree size={12} />
+                                    <span>
+                                      {activeModuleCount > 0
+                                        ? `${activeModuleCount} 个子模块`
+                                        : '单仓 · 模块治理'}
+                                    </span>
+                                  </button>
+                                )}
+                              </>
                             )}
                             {row.scope_status === 'missing' && (
-                              <span className="code-badge code-badge--warning" title="该子目录在最近提交中已缺失，可在模块治理中迁移文档">
+                              <span
+                                className="code-badge code-badge--warning"
+                                title="该子目录在最近提交中已缺失，可在模块治理中迁移文档"
+                              >
                                 目录已缺失
                               </span>
                             )}
                             {row.scope_status === 'orphan' && (
-                              <span className="code-badge code-badge--warning" title="历史遗留子目录文档范围（未在当前模块索引中），建议在模块治理中迁移">
+                              <span
+                                className="code-badge code-badge--warning"
+                                title="历史遗留子目录文档范围（未在当前模块索引中），建议在模块治理中迁移"
+                              >
                                 孤立范围
                               </span>
                             )}
-                            {row.module_source && moduleSourceShortLabel(row.module_source) && (
-                              <span className="code-badge code-badge--muted">
-                                {moduleSourceShortLabel(row.module_source)}
-                              </span>
+                            {isSubdirRow && sourceLabel && (
+                              <span className="code-badge code-badge--muted">{sourceLabel}</span>
                             )}
                             {row.active_task_id && (
                               <button
@@ -688,8 +883,10 @@ export const RepoCoveragePage: React.FC = () => {
         initialDocTypeSlugs={taskModal.initialDocTypeSlugs}
         initialTaskId={taskModal.initialTaskId}
         batchMode={taskModal.batchMode}
+        initialSelectedModules={taskModal.initialSelectedModules}
         onClose={() => setTaskModal((prev) => ({ ...prev, open: false }))}
         onTaskCompleted={() => void fetchCoverage()}
+        onModulesRefreshed={() => void fetchCoverage()}
         onOpenStudio={openStudio}
       />
 
@@ -699,6 +896,43 @@ export const RepoCoveragePage: React.FC = () => {
         target={moduleModal.target}
         onClose={() => setModuleModal((prev) => ({ ...prev, open: false }))}
         onChanged={() => void fetchCoverage()}
+        onGenerateModule={(subdir) => {
+          const target = moduleModal.target;
+          if (!target) return;
+          setModuleModal((prev) => ({ ...prev, open: false }));
+          setTaskModal({
+            open: true,
+            scope: {
+              repoId: target.repoId,
+              repoName: target.repoName,
+              subdirectory: subdir,
+              branch: target.branch,
+              canWrite: target.canWrite,
+            },
+            batchMode: false,
+          });
+        }}
+        onBatchGenerateModules={(subdirs) => {
+          const target = moduleModal.target;
+          if (!target) return;
+          setModuleModal((prev) => ({ ...prev, open: false }));
+          setTaskModal({
+            open: true,
+            scope: {
+              repoId: target.repoId,
+              repoName: target.repoName,
+              subdirectory: '',
+              branch: target.branch,
+              canWrite: target.canWrite,
+            },
+            batchMode: true,
+            initialSelectedModules: subdirs,
+          });
+        }}
+        onOpenStudio={(repoId, subdir) => {
+          setModuleModal((prev) => ({ ...prev, open: false }));
+          openStudio(repoId, undefined, subdir);
+        }}
       />
     </div>
   );

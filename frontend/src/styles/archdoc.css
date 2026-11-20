@@ -541,6 +541,47 @@ body {
   flex-wrap: wrap;
 }
 
+.code-archdoc-batch-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--color-border-primary);
+  background: var(--color-bg-surface);
+  font-size: 0.8rem;
+}
+
+.code-archdoc-batch-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 220px;
+}
+
+.code-archdoc-batch-preview-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.code-archdoc-batch-select-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.code-archdoc-batch-select-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .code-archdoc-module-modal {
   display: flex;
   flex-direction: column;
