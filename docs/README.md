@@ -38,8 +38,9 @@ docs/
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型
 │   ├── 03-evidence-anchor-and-publish-mount.md        # ADR-03：跨提交稳定证据锚点与 code-bench 符号链接挂载发布契约
 │   └── 04-module-scope-discovery-and-hierarchical-docs.md # ADR-04（提议）：Monorepo 一层模块发现、整仓抽取按模块切片与层级文档汇总
-└── 06-ops/          # 交付与验证：双模联调、物理隔离数据库测试与生产环境单二进制部署手册
-    └── 01-verification-and-deployment-guide.md # 联调验证、自动化回归测试与生产部署操作指南
+└── 06-ops/          # 交付、运维与使用指南：双模联调、隔离测试、生产部署与模板配置手册
+    ├── 01-verification-and-deployment-guide.md  # 联调验证、自动化回归测试与生产部署操作指南
+    └── 02-code-ir-facets-subscription-guide.md  # Code IR 分片订阅 (ir_facets) 原理解析与配置使用指南
 ```
 
 ---
