@@ -1,4 +1,4 @@
-import type { RepoScopeFilter, RepoStatusFilter } from '../types';
+import type { DriftFilterType, RepoScopeFilter, RepoStatusFilter } from '../types';
 
 export const ALLOWED_PAGE_SIZES = [15, 25, 50, 100] as const;
 export const DEFAULT_ARCHDOC_PAGE_SIZE = 25;
@@ -13,6 +13,15 @@ export interface RepoFilterState {
   scopeType: RepoScopeFilter;
 }
 
+export interface DriftFilterState {
+  page: number;
+  pageSize: number;
+  search: string;
+  departmentId: string;
+  driftType: DriftFilterType;
+  docType: string;
+}
+
 export interface EvidenceDeepLinkParams {
   commit?: string;
   file?: string;
@@ -23,6 +32,7 @@ export interface EvidenceDeepLinkParams {
 
 const VALID_STATUS_SET = new Set<string>(['all', 'approved', 'draft', 'drifted', 'missing']);
 const VALID_SCOPE_SET = new Set<string>(['all', 'repo', 'subdir']);
+const VALID_DRIFT_TYPE_SET = new Set<string>(['all', 'code', 'spec', 'both']);
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 /**
@@ -113,6 +123,67 @@ export function serializeRepoFilterParams(
   }
   if (nextState.scopeType && nextState.scopeType !== 'all') {
     out.set('scope_type', nextState.scopeType);
+  }
+  return out;
+}
+
+/**
+ * 从 URLSearchParams 反序列化双维漂移雷达页分页与筛选参数。
+ */
+export function parseDriftFilterParams(params: URLSearchParams): DriftFilterState {
+  const page = normalizePage(params.get('page'));
+  const pageSize = normalizePageSize(params.get('pageSize') ?? params.get('page_size'));
+  const search = (params.get('search') ?? '').trim();
+
+  const rawDept = (params.get('department_id') ?? '').trim();
+  const departmentId = /^\d+$/.test(rawDept) && Number.parseInt(rawDept, 10) > 0 ? rawDept : '';
+
+  const docType = (params.get('doc_type') ?? '').trim();
+
+  const rawType = (params.get('drift_type') ?? '').trim().toLowerCase();
+  const driftType: DriftFilterType = VALID_DRIFT_TYPE_SET.has(rawType)
+    ? (rawType as DriftFilterType)
+    : 'all';
+
+  return {
+    page,
+    pageSize,
+    search,
+    departmentId,
+    driftType,
+    docType,
+  };
+}
+
+/**
+ * 将双维漂移雷达页分页与筛选参数序列化回 URLSearchParams（支持浏览器前进/后退同步）。
+ */
+export function serializeDriftFilterParams(
+  patch: Partial<DriftFilterState>,
+  prev?: URLSearchParams,
+): URLSearchParams {
+  const current = parseDriftFilterParams(prev ?? new URLSearchParams());
+  const nextState: DriftFilterState = {
+    ...current,
+    ...patch,
+    page: normalizePage(patch.page !== undefined ? patch.page : current.page),
+    pageSize: normalizePageSize(patch.pageSize !== undefined ? patch.pageSize : current.pageSize),
+  };
+
+  const out = new URLSearchParams();
+  out.set('page', String(nextState.page));
+  out.set('pageSize', String(nextState.pageSize));
+  if (nextState.search.trim()) {
+    out.set('search', nextState.search.trim());
+  }
+  if (nextState.departmentId.trim()) {
+    out.set('department_id', nextState.departmentId.trim());
+  }
+  if (nextState.driftType && nextState.driftType !== 'all') {
+    out.set('drift_type', nextState.driftType);
+  }
+  if (nextState.docType.trim()) {
+    out.set('doc_type', nextState.docType.trim());
   }
   return out;
 }

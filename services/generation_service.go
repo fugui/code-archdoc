@@ -62,27 +62,29 @@ type GenSlotTaskVO struct {
 
 // GenTaskDetailVO 对应 POST /api/tasks/generate (202) 与 GET /api/tasks/:task_id (200) 响应。
 type GenTaskDetailVO struct {
-	ID              uint                 `json:"id"`
-	RepoID          uint                 `json:"repo_id"`
-	RepoName        string               `json:"repo_name,omitempty"`
-	Subdirectory    string               `json:"subdirectory"`
-	RefName         string               `json:"ref_name"`
-	SnapshotID      *uint                `json:"snapshot_id,omitempty"`
-	CommitSHA       string               `json:"commit_sha,omitempty"`
-	TaskKind        string               `json:"task_kind"`
-	Priority        string               `json:"priority"`
-	DocTypes        []string             `json:"doc_types"`
-	Status          string               `json:"status"`
-	ProgressPercent int                  `json:"progress_percent"`
-	EstimatedTokens int                  `json:"estimated_tokens"`
-	ErrorCode       string               `json:"error_code,omitempty"`
-	ErrorMessage    string               `json:"error_message,omitempty"`
-	BudgetAdvice    *models.BudgetAdvice `json:"budget_advice,omitempty"`
-	SlotTasks       []GenSlotTaskVO      `json:"slot_tasks,omitempty"`
-	TriggeredBy     uint                 `json:"triggered_by"`
-	StartedAt       *time.Time           `json:"started_at"`
-	FinishedAt      *time.Time           `json:"finished_at"`
-	CreatedAt       time.Time            `json:"created_at"`
+	ID               uint                 `json:"id"`
+	RepoID           uint                 `json:"repo_id"`
+	RepoName         string               `json:"repo_name,omitempty"`
+	Subdirectory     string               `json:"subdirectory"`
+	RefName          string               `json:"ref_name"`
+	SnapshotID       *uint                `json:"snapshot_id,omitempty"`
+	CommitSHA        string               `json:"commit_sha,omitempty"`
+	TaskKind         string               `json:"task_kind"`
+	Priority         string               `json:"priority"`
+	DocTypes         []string             `json:"doc_types"`
+	TargetDocumentID *uint                `json:"target_document_id,omitempty"`
+	TargetSlots      []string             `json:"target_slots,omitempty"`
+	Status           string               `json:"status"`
+	ProgressPercent  int                  `json:"progress_percent"`
+	EstimatedTokens  int                  `json:"estimated_tokens"`
+	ErrorCode        string               `json:"error_code,omitempty"`
+	ErrorMessage     string               `json:"error_message,omitempty"`
+	BudgetAdvice     *models.BudgetAdvice `json:"budget_advice,omitempty"`
+	SlotTasks        []GenSlotTaskVO      `json:"slot_tasks,omitempty"`
+	TriggeredBy      uint                 `json:"triggered_by"`
+	StartedAt        *time.Time           `json:"started_at"`
+	FinishedAt       *time.Time           `json:"finished_at"`
+	CreatedAt        time.Time            `json:"created_at"`
 }
 
 // TaskListResponse 对应 GET /api/tasks 分页响应。
@@ -111,11 +113,57 @@ type GenerationOrchestrator struct {
 	keyCipher   *security.Cipher
 	llmClient   *llm.Client
 	verifier    *verifier.Verifier
+	leaseMgr    *ActiveLeaseManager
+	scheduler   *TaskScheduler
 
 	llmSem      chan struct{}
 	cancelMu    sync.Mutex
 	cancelFuncs map[uint]context.CancelFunc
 	wg          sync.WaitGroup
+}
+
+// WithGovernance 注入活跃租约管理器与双优先级调度器（F-27）。
+func (o *GenerationOrchestrator) WithGovernance(leaseMgr *ActiveLeaseManager, scheduler *TaskScheduler) *GenerationOrchestrator {
+	o.leaseMgr = leaseMgr
+	o.scheduler = scheduler
+	return o
+}
+
+func (o *GenerationOrchestrator) acquireLLMSlot(ctx context.Context) (func(), error) {
+	if o.scheduler != nil {
+		return o.scheduler.AcquireLLMSlot(ctx)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case o.llmSem <- struct{}{}:
+	}
+	if ctx.Err() != nil {
+		<-o.llmSem
+		return nil, ctx.Err()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() { <-o.llmSem })
+	}, nil
+}
+
+func (o *GenerationOrchestrator) dispatchJob(job ScheduledJob) error {
+	wrapped := job.Run
+	o.wg.Add(1)
+	job.Run = func(runCtx context.Context) {
+		defer o.wg.Done()
+		wrapped(runCtx)
+	}
+	if o.scheduler != nil {
+		if err := o.scheduler.Enqueue(job); err != nil {
+			o.wg.Done()
+			return err
+		}
+		return nil
+	}
+	go job.Run(job.Ctx)
+	return nil
 }
 
 func NewGenerationOrchestrator(
@@ -237,12 +285,105 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 	taskCtx, cancel := context.WithCancel(context.Background())
 	o.registerCancel(task.ID, cancel)
 
-	o.wg.Add(1)
-	go func() {
-		defer o.wg.Done()
-		defer o.unregisterCancel(task.ID)
-		o.executeGenerateTask(taskCtx, task.ID, repo, dedupSlugs, operatorID)
-	}()
+	if err := o.dispatchJob(ScheduledJob{
+		ID:       fmt.Sprintf("gen-task-%d", task.ID),
+		UserID:   operatorID,
+		Priority: task.Priority,
+		Ctx:      taskCtx,
+		Run: func(runCtx context.Context) {
+			defer o.unregisterCancel(task.ID)
+			o.executeGenerateTask(runCtx, task.ID, repo, dedupSlugs, operatorID)
+		},
+	}); err != nil {
+		o.unregisterCancel(task.ID)
+		cancel()
+		o.markTaskFailed(ctx, task.ID, models.TaskStatusPending, "QUEUE_FULL", err.Error(), nil, 0)
+		return nil, err
+	}
+
+	vo := toGenTaskDetailVO(task, repo.Name, "", nil)
+	return &vo, nil
+}
+
+// IncrementalRefreshTaskInput 定义单篇文档章节级增量刷新任务入参（F-12 / SC-11）。
+type IncrementalRefreshTaskInput struct {
+	Document           *models.Document
+	TargetSlots        []string        // 仅含受影响且非 locked 的槽位
+	DriftedLockedSlots map[string]bool // 受漂移影响但被锁定的槽位（保留原字节并标 needs_drift_review=true）
+	NeedSyncCode       bool
+	Priority           string
+}
+
+// SubmitIncrementalRefreshTask 发起单篇文档的章节级增量刷新任务（返回 202 视图）：
+// 仅对 TargetSlots \ LockedSlots 调用 LLM，未受影响章节与 locked 章节 content_sha256 严格字节级不变。
+func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
+	ctx context.Context,
+	in IncrementalRefreshTaskInput,
+	operatorID uint,
+) (*GenTaskDetailVO, error) {
+	if in.Document == nil || in.Document.ID == 0 {
+		return nil, fmt.Errorf("%w: 文档不能为空", ErrInvalidTaskParam)
+	}
+	if len(in.TargetSlots) == 0 {
+		return nil, fmt.Errorf("%w: 无可刷新的非锁定受影响槽位", ErrInvalidTaskParam)
+	}
+	repo, err := o.masterRepo.GetRepository(ctx, in.Document.RepoID)
+	if err != nil {
+		return nil, err
+	}
+
+	priority := in.Priority
+	if !models.IsValidTaskPriority(priority) {
+		priority = models.TaskPriorityInteractive
+	}
+
+	docTypesJSON, _ := json.Marshal([]string{in.Document.DocTypeSlug})
+	targetSlotsJSON, _ := json.Marshal(in.TargetSlots)
+	docID := in.Document.ID
+	task := &models.GenTask{
+		RepoID:           repo.ID,
+		Subdirectory:     in.Document.Subdirectory,
+		RefName:          in.Document.RefName,
+		TaskKind:         models.TaskKindIncrementalRefresh,
+		Priority:         priority,
+		DocTypesJSON:     datatypes.JSON(docTypesJSON),
+		TargetDocumentID: &docID,
+		TargetSlotsJSON:  datatypes.JSON(targetSlotsJSON),
+		Status:           models.TaskStatusPending,
+		ProgressPercent:  0,
+		TriggeredBy:      operatorID,
+	}
+	if err := o.taskRepo.CreateTask(ctx, task); err != nil {
+		return nil, fmt.Errorf("创建增量刷新任务失败: %w", err)
+	}
+
+	taskCtx, cancel := context.WithCancel(context.Background())
+	o.registerCancel(task.ID, cancel)
+
+	docCopy := *in.Document
+	targetSlotsCopy := append([]string(nil), in.TargetSlots...)
+	lockedDriftCopy := make(map[string]bool, len(in.DriftedLockedSlots))
+	for k, v := range in.DriftedLockedSlots {
+		if v {
+			lockedDriftCopy[k] = true
+		}
+	}
+
+	if err := o.dispatchJob(ScheduledJob{
+		ID:       fmt.Sprintf("inc-refresh-%d", task.ID),
+		UserID:   operatorID,
+		Priority: priority,
+		Ctx:      taskCtx,
+		Run: func(runCtx context.Context) {
+			defer o.unregisterCancel(task.ID)
+			o.executeIncrementalRefreshTask(runCtx, task.ID, repo, &docCopy, targetSlotsCopy, lockedDriftCopy, in.NeedSyncCode, operatorID)
+		},
+	}); err != nil {
+		o.unregisterCancel(task.ID)
+		cancel()
+		o.markTaskFailed(ctx, task.ID, models.TaskStatusPending, "QUEUE_FULL", err.Error(), nil, 0)
+		return nil, err
+	}
 
 	vo := toGenTaskDetailVO(task, repo.Name, "", nil)
 	return &vo, nil
@@ -408,7 +549,10 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		return
 	}
 
-	// 2. Git 同步 + L1 Code IR 抽取（Singleflight 去重 + 缓存命中复用）
+	// 2. Git 同步 + L1 Code IR 抽取（Singleflight 去重 + 缓存命中复用），期间持 repo/snapshot 租约
+	releaseRepoLease := o.leaseMgr.AcquireRepo(repo.ID)
+	defer releaseRepoLease()
+
 	snapReady, err := o.snapSvc.EnsureSnapshot(ctx, repo, task.Subdirectory, task.RefName)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -420,6 +564,8 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 	}
 
 	snapID := snapReady.Snapshot.ID
+	releaseSnapLease := o.leaseMgr.AcquireSnapshot(snapID)
+	defer releaseSnapLease()
 	_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{
 		"snapshot_id":      snapID,
 		"progress_percent": 20,
@@ -603,19 +749,9 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 				continue
 			}
 
-			// 按单信号量槽位受控并发（若上下文已取消则不再发出任何新的 LLM 请求）
-			select {
-			case <-ctx.Done():
-				cancelTime := time.Now()
-				st.Status = models.SlotTaskCanceled
-				st.FinishedAt = &cancelTime
-				_ = o.taskRepo.UpdateSlotTask(dbCtx, st)
-				continue
-			case o.llmSem <- struct{}{}:
-			}
-
-			if ctx.Err() != nil {
-				<-o.llmSem
+			// 按全局信号量槽位受控并发（若上下文已取消则不再发出任何新的 LLM 请求）
+			releaseLLMSlot, semErr := o.acquireLLMSlot(ctx)
+			if semErr != nil {
 				cancelTime := time.Now()
 				st.Status = models.SlotTaskCanceled
 				st.FinishedAt = &cancelTime
@@ -629,7 +765,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 			slotWG.Add(1)
 			go func() {
 				defer slotWG.Done()
-				defer func() { <-o.llmSem }()
+				defer releaseLLMSlot()
 
 				if ctx.Err() != nil {
 					tNow := time.Now()
@@ -753,6 +889,407 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 	}
 
 	// 12. verifying -> ready
+	finNow := time.Now()
+	_ = o.taskRepo.TransitionTaskStatus(dbCtx, taskID, models.TaskStatusVerifying, models.TaskStatusReady, map[string]any{
+		"progress_percent": 100,
+		"finished_at":      finNow,
+	})
+}
+
+// executeIncrementalRefreshTask 执行单篇文档章节级增量刷新：
+// 仅对 targetSlots \ lockedSlots 发起 L2 LLM 调用；未受影响章节与 locked 章节 content_sha256 严格字节级不变；
+// 受漂移影响的 locked 章节强制保留原内容并标记 needs_drift_review=true（SC-11）。
+func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
+	ctx context.Context,
+	taskID uint,
+	repo *commonModels.Repository,
+	doc *models.Document,
+	targetSlots []string,
+	driftedLockedSlots map[string]bool,
+	needSyncCode bool,
+	operatorID uint,
+) {
+	dbCtx := context.Background()
+	now := time.Now()
+
+	if err := o.taskRepo.TransitionTaskStatus(dbCtx, taskID, models.TaskStatusPending, models.TaskStatusExtracting, map[string]any{
+		"started_at":       now,
+		"progress_percent": 10,
+	}); err != nil {
+		return
+	}
+	if ctx.Err() != nil {
+		o.markTaskCanceled(dbCtx, taskID, models.TaskStatusExtracting)
+		return
+	}
+
+	releaseRepoLease := o.leaseMgr.AcquireRepo(repo.ID)
+	defer releaseRepoLease()
+
+	// 加载当前最新文档修订及章节元数据（叠加 SectionEvidence 实时 ownership）
+	latestDoc, err := o.docRepo.GetByID(dbCtx, doc.ID)
+	if err != nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "DOC_NOT_FOUND", err.Error(), nil, 0)
+		return
+	}
+	if latestDoc.CurrentRevisionNo <= 0 {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "DOC_NO_REVISION", "目标文档尚无基础修订", nil, 0)
+		return
+	}
+	prevRev, prevEvs, err := o.docRepo.GetRevisionWithSections(dbCtx, latestDoc.ID, latestDoc.CurrentRevisionNo)
+	if err != nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "REV_NOT_FOUND", err.Error(), nil, 0)
+		return
+	}
+
+	priorOrdered := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
+	priorBySlot := make(map[string]models.DocumentSectionSnapshot, len(priorOrdered))
+	for _, sn := range priorOrdered {
+		priorBySlot[sn.SlotID] = sn
+	}
+	priorEvBySlot := make(map[string][]models.EvidenceAnchor, len(prevEvs))
+	for _, ev := range prevEvs {
+		var anchors []models.EvidenceAnchor
+		_ = json.Unmarshal(ev.EvidencesJSON, &anchors)
+		priorEvBySlot[ev.SlotID] = anchors
+	}
+
+	// 准备 Code IR 快照：存在 Code Drift 或旧快照不可用时同步最新快照，否则复用旧快照
+	var snapReady *SnapshotReady
+	if !needSyncCode && prevRev.SnapshotID > 0 {
+		if snap, loc, irBundle, loadErr := o.snapSvc.LoadIRBundleBySnapshotID(dbCtx, prevRev.SnapshotID); loadErr == nil && snap != nil && irBundle != nil {
+			snapReady = &SnapshotReady{Snapshot: snap, Loc: loc, IR: irBundle, Reused: true}
+		}
+	}
+	if snapReady == nil {
+		sr, syncErr := o.snapSvc.EnsureSnapshot(ctx, repo, latestDoc.Subdirectory, latestDoc.RefName)
+		if syncErr != nil {
+			if ctx.Err() != nil {
+				o.markTaskCanceled(dbCtx, taskID, models.TaskStatusExtracting)
+				return
+			}
+			o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "EXTRACT_FAILED", syncErr.Error(), nil, 0)
+			return
+		}
+		snapReady = sr
+	}
+
+	snapID := snapReady.Snapshot.ID
+	releaseSnapLease := o.leaseMgr.AcquireSnapshot(snapID)
+	defer releaseSnapLease()
+
+	_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{
+		"snapshot_id":      snapID,
+		"progress_percent": 20,
+	})
+
+	dtModel, dtRev, dtErr := o.docTypeRepo.GetBySlug(dbCtx, latestDoc.DocTypeSlug)
+	if dtErr != nil || dtModel == nil || dtRev == nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "DOC_TYPE_NOT_FOUND", "加载文档类型修订失败", nil, 0)
+		return
+	}
+	asset, loadErr := o.loadDocTypeAssetFromRevision(dtRev, latestDoc.DocTypeSlug)
+	if loadErr != nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "DOC_TYPE_INVALID", loadErr.Error(), nil, 0)
+		return
+	}
+
+	// 防御性再次剔除 locked 槽位，确保 locked 章节绝对零 LLM 调用且字节级不变
+	targetSet := make(map[string]bool, len(targetSlots))
+	for _, sid := range targetSlots {
+		if prev, ok := priorBySlot[sid]; ok && prev.Ownership == models.OwnershipLocked {
+			driftedLockedSlots[sid] = true
+			continue
+		}
+		targetSet[sid] = true
+	}
+
+	endpoints, _, _, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, []*doctype.AssetBundle{asset})
+	if cfgErr != nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "LLM_CONFIG_INVALID", cfgErr.Error(), nil, 0)
+		return
+	}
+
+	if err := o.taskRepo.TransitionTaskStatus(dbCtx, taskID, models.TaskStatusExtracting, models.TaskStatusGenerating, map[string]any{
+		"snapshot_id":      snapID,
+		"progress_percent": 30,
+	}); err != nil {
+		return
+	}
+
+	// 增量刷新优先复用已有术语表缓存（不额外发起 Glossary LLM 调用，精确收敛单槽位调用次数）
+	var glossary *codeir.GlossaryCache
+	if cachedGlossary, gErr := o.snapSvc.facetStore.ReadGlossary(dbCtx, snapReady.Loc); gErr == nil && cachedGlossary != nil {
+		glossary = cachedGlossary
+	}
+
+	// 仅对目标非锁定槽位创建活跃子任务并调用 LLM
+	var slotTasks []models.GenSlotTask
+	docIDVal := latestDoc.ID
+	for _, sl := range asset.Meta.Slots {
+		if !targetSet[sl.SlotID] {
+			continue
+		}
+		slotTasks = append(slotTasks, models.GenSlotTask{
+			TaskID:            taskID,
+			DocTypeSlug:       asset.Slug,
+			DocTypeRevisionID: dtRev.ID,
+			SlotID:            sl.SlotID,
+			DocumentID:        &docIDVal,
+			Status:            models.SlotTaskPending,
+			ModelTier:         asset.Meta.ModelTier,
+		})
+	}
+	if len(slotTasks) == 0 {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusGenerating, "NO_REFRESHABLE_SLOTS", "未命中任何可刷新的非锁定槽位", nil, 0)
+		return
+	}
+	if err := o.taskRepo.CreateSlotTasks(dbCtx, slotTasks); err != nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusGenerating, "CREATE_SLOTS_FAILED", err.Error(), nil, 0)
+		return
+	}
+
+	slotTaskByID := make(map[string]*models.GenSlotTask, len(slotTasks))
+	for i := range slotTasks {
+		slotTaskByID[slotTasks[i].SlotID] = &slotTasks[i]
+	}
+
+	epCfg := endpoints[asset.Meta.ModelTier]
+	batchNonce := llm.GenerateNonce()
+
+	var (
+		slotWG         sync.WaitGroup
+		mu             sync.Mutex
+		completedSlots int
+		failedSlots    int
+	)
+	activeSlots := len(slotTasks)
+
+	for _, sl := range asset.Meta.Slots {
+		st, needRun := slotTaskByID[sl.SlotID]
+		if !needRun {
+			continue
+		}
+
+		releaseSlot, semErr := o.acquireLLMSlot(ctx)
+		if semErr != nil {
+			cancelTime := time.Now()
+			st.Status = models.SlotTaskCanceled
+			st.FinishedAt = &cancelTime
+			_ = o.taskRepo.UpdateSlotTask(dbCtx, st)
+			continue
+		}
+
+		slotSpec := sl
+		slotRow := st
+		slotWG.Add(1)
+		go func() {
+			defer slotWG.Done()
+			defer releaseSlot()
+
+			if ctx.Err() != nil {
+				tNow := time.Now()
+				slotRow.Status = models.SlotTaskCanceled
+				slotRow.FinishedAt = &tNow
+				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+				return
+			}
+
+			startAt := time.Now()
+			slotRow.Status = models.SlotTaskRunning
+			slotRow.AttemptCount++
+			slotRow.StartedAt = &startAt
+			_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+
+			priorHybrid := ""
+			if prev, ok := priorBySlot[slotSpec.SlotID]; ok && (prev.Ownership == models.OwnershipHybrid || prev.ManuallyEdited) {
+				priorHybrid = prev.Markdown
+			}
+
+			msgs, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
+				DocType:       asset,
+				Slot:          slotSpec,
+				Glossary:      glossary,
+				IR:            snapReady.IR,
+				PriorHybridMD: priorHybrid,
+				Nonce:         batchNonce,
+			})
+			resp, callErr := o.llmClient.ChatCompletion(ctx, epCfg, llm.ChatRequest{Messages: msgs})
+			finAt := time.Now()
+			slotRow.FinishedAt = &finAt
+			if callErr != nil {
+				if ctx.Err() != nil {
+					slotRow.Status = models.SlotTaskCanceled
+					slotRow.ErrorMessage = "任务已取消"
+					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
+				} else {
+					slotRow.Status = models.SlotTaskFailed
+					slotRow.ErrorMessage = callErr.Error()
+					mu.Lock()
+					failedSlots++
+					mu.Unlock()
+					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+				}
+				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+				return
+			}
+
+			md, anchors := llm.ParseSlotLLMOutput(resp.Content)
+			anchorsJSON, _ := json.Marshal(anchors)
+			slotRow.Status = models.SlotTaskCompleted
+			slotRow.OutputMarkdown = md
+			slotRow.CitedAnchorsJSON = datatypes.JSON(anchorsJSON)
+			slotRow.ErrorMessage = ""
+			_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+
+			o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", asset.Meta.ModelTier, &resp.Usage, "success", "", operatorID)
+
+			mu.Lock()
+			completedSlots++
+			done := completedSlots + failedSlots
+			pct := 30 + int(float64(done)/float64(maxIntVal(activeSlots, 1))*50)
+			mu.Unlock()
+			_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{"progress_percent": pct})
+		}()
+	}
+	slotWG.Wait()
+
+	if ctx.Err() != nil {
+		o.markTaskCanceled(dbCtx, taskID, models.TaskStatusGenerating)
+		return
+	}
+	if completedSlots == 0 && failedSlots == activeSlots {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusGenerating, "ALL_SLOTS_FAILED", "全部待刷新槽位生成失败", nil, 0)
+		return
+	}
+
+	if err := o.taskRepo.TransitionTaskStatus(dbCtx, taskID, models.TaskStatusGenerating, models.TaskStatusVerifying, map[string]any{
+		"progress_percent": 85,
+	}); err != nil {
+		return
+	}
+
+	// 按新模板槽位顺序组装章节：
+	// - 目标非锁定槽位且生成成功 -> 采用新生成 Markdown
+	// - 未受影响槽位 & locked 槽位 -> 原样保留 Markdown 与 ContentSHA256（字节级不变）；受漂移影响的 locked 槽位标 needs_drift_review=true
+	// - 被模板移除但旧版为 locked/manually_edited 的槽位 -> 转孤立章节保护挂载
+	newSlotSet := make(map[string]bool, len(asset.Meta.Slots))
+	mergedSections := make([]models.DocumentSectionSnapshot, 0, len(asset.Meta.Slots)+2)
+	mergedInputs := make([]verifier.SectionInput, 0, len(asset.Meta.Slots)+2)
+	orderIdx := 1
+
+	for _, sl := range asset.Meta.Slots {
+		newSlotSet[sl.SlotID] = true
+		prev, existed := priorBySlot[sl.SlotID]
+
+		if st, refreshed := slotTaskByID[sl.SlotID]; refreshed && st.Status == models.SlotTaskCompleted {
+			var cited []verifier.CitedAnchorCandidate
+			_ = json.Unmarshal(st.CitedAnchorsJSON, &cited)
+			ownership := sl.Ownership
+			if existed && prev.Ownership != "" {
+				ownership = prev.Ownership
+			}
+			mergedSections = append(mergedSections, models.DocumentSectionSnapshot{
+				SlotID:           sl.SlotID,
+				SectionOrder:     orderIdx,
+				Title:            sl.Title,
+				Ownership:        ownership,
+				IsOrphan:         false,
+				ManuallyEdited:   false,
+				NeedsDriftReview: false,
+				Markdown:         st.OutputMarkdown,
+				ContentSHA256:    sha256Hex(st.OutputMarkdown),
+			})
+			mergedInputs = append(mergedInputs, verifier.SectionInput{
+				SlotID:       sl.SlotID,
+				Title:        sl.Title,
+				Markdown:     st.OutputMarkdown,
+				CitedAnchors: cited,
+			})
+			orderIdx++
+			continue
+		}
+
+		// 未受影响槽位或 locked 槽位：严格字节级保留原 Markdown 与 ContentSHA256
+		if existed {
+			needsReview := prev.NeedsDriftReview
+			if driftedLockedSlots[sl.SlotID] {
+				needsReview = true
+			}
+			sha := prev.ContentSHA256
+			if sha == "" {
+				sha = sha256Hex(prev.Markdown)
+			}
+			mergedSections = append(mergedSections, models.DocumentSectionSnapshot{
+				SlotID:           prev.SlotID,
+				SectionOrder:     orderIdx,
+				Title:            prev.Title,
+				Ownership:        prev.Ownership,
+				IsOrphan:         prev.IsOrphan,
+				ManuallyEdited:   prev.ManuallyEdited,
+				NeedsDriftReview: needsReview,
+				Markdown:         prev.Markdown,
+				ContentSHA256:    sha,
+			})
+			var priorCited []verifier.CitedAnchorCandidate
+			for _, a := range priorEvBySlot[prev.SlotID] {
+				priorCited = append(priorCited, verifier.CitedAnchorCandidate{
+					FilePath:   a.FilePath,
+					SymbolKind: a.SymbolKind,
+					FQSymbol:   a.FQSymbol,
+				})
+			}
+			mergedInputs = append(mergedInputs, verifier.SectionInput{
+				SlotID:       prev.SlotID,
+				Title:        prev.Title,
+				Markdown:     prev.Markdown,
+				CitedAnchors: priorCited,
+			})
+			orderIdx++
+		}
+	}
+
+	// 孤立章节保护：原文档中不在新模板且为 locked / manually_edited / 已是 orphan 的章节挂载文末
+	for _, prev := range priorOrdered {
+		if newSlotSet[prev.SlotID] {
+			continue
+		}
+		if prev.Ownership != models.OwnershipLocked && !prev.ManuallyEdited && !prev.IsOrphan {
+			continue
+		}
+		sha := prev.ContentSHA256
+		if sha == "" {
+			sha = sha256Hex(prev.Markdown)
+		}
+		mergedSections = append(mergedSections, models.DocumentSectionSnapshot{
+			SlotID:           prev.SlotID,
+			SectionOrder:     orderIdx,
+			Title:            prev.Title,
+			Ownership:        prev.Ownership,
+			IsOrphan:         true,
+			ManuallyEdited:   prev.ManuallyEdited,
+			NeedsDriftReview: true,
+			Markdown:         prev.Markdown,
+			ContentSHA256:    sha,
+		})
+		mergedInputs = append(mergedInputs, verifier.SectionInput{
+			SlotID:   prev.SlotID,
+			Title:    prev.Title,
+			Markdown: prev.Markdown,
+		})
+		orderIdx++
+	}
+
+	summary := fmt.Sprintf("章节级增量刷新（更新 %d 个受影响槽位）", completedSlots)
+	if _, err := o.verifyAndAppendRevision(
+		dbCtx, latestDoc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, dtRev.ID,
+		asset, snapReady.IR, mergedSections, mergedInputs,
+		models.RevSourceIncrementalRefresh, &taskID, summary, operatorID,
+	); err != nil {
+		o.markTaskFailed(dbCtx, taskID, models.TaskStatusVerifying, "VERIFY_PERSIST_FAILED", err.Error(), nil, 0)
+		return
+	}
+
 	finNow := time.Now()
 	_ = o.taskRepo.TransitionTaskStatus(dbCtx, taskID, models.TaskStatusVerifying, models.TaskStatusReady, map[string]any{
 		"progress_percent": 100,
@@ -1302,28 +1839,35 @@ func toGenTaskDetailVO(t *models.GenTask, repoName, commitSHA string, slots []mo
 		}
 	}
 
+	var targetSlots []string
+	if len(t.TargetSlotsJSON) > 2 {
+		_ = json.Unmarshal(t.TargetSlotsJSON, &targetSlots)
+	}
+
 	return GenTaskDetailVO{
-		ID:              t.ID,
-		RepoID:          t.RepoID,
-		RepoName:        repoName,
-		Subdirectory:    t.Subdirectory,
-		RefName:         t.RefName,
-		SnapshotID:      t.SnapshotID,
-		CommitSHA:       commitSHA,
-		TaskKind:        t.TaskKind,
-		Priority:        t.Priority,
-		DocTypes:        docTypes,
-		Status:          t.Status,
-		ProgressPercent: t.ProgressPercent,
-		EstimatedTokens: t.EstimatedTokens,
-		ErrorCode:       t.ErrorCode,
-		ErrorMessage:    t.ErrorMessage,
-		BudgetAdvice:    advicePtr,
-		SlotTasks:       slotVOs,
-		TriggeredBy:     t.TriggeredBy,
-		StartedAt:       t.StartedAt,
-		FinishedAt:      t.FinishedAt,
-		CreatedAt:       t.CreatedAt,
+		ID:               t.ID,
+		RepoID:           t.RepoID,
+		RepoName:         repoName,
+		Subdirectory:     t.Subdirectory,
+		RefName:          t.RefName,
+		SnapshotID:       t.SnapshotID,
+		CommitSHA:        commitSHA,
+		TaskKind:         t.TaskKind,
+		Priority:         t.Priority,
+		DocTypes:         docTypes,
+		TargetDocumentID: t.TargetDocumentID,
+		TargetSlots:      targetSlots,
+		Status:           t.Status,
+		ProgressPercent:  t.ProgressPercent,
+		EstimatedTokens:  t.EstimatedTokens,
+		ErrorCode:        t.ErrorCode,
+		ErrorMessage:     t.ErrorMessage,
+		BudgetAdvice:     advicePtr,
+		SlotTasks:        slotVOs,
+		TriggeredBy:      t.TriggeredBy,
+		StartedAt:        t.StartedAt,
+		FinishedAt:       t.FinishedAt,
+		CreatedAt:        t.CreatedAt,
 	}
 }
 

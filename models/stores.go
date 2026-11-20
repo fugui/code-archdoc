@@ -106,6 +106,12 @@ type UsageSummaryRecord struct {
 	CallCount          int64
 }
 
+type SectionVerifierMetricRow struct {
+	SlotID              string
+	Title               string
+	VerifierSummaryJSON []byte
+}
+
 // ─── 1. SharedMasterStore ───
 
 type SharedMasterStore struct {
@@ -518,6 +524,67 @@ func (s *SnapshotStore) MarkFacetEvicted(ctx context.Context, facetID uint, evic
 		Update("evicted_at", evictedAt).Error
 }
 
+func (s *SnapshotStore) CountFacetStats(ctx context.Context) (activeCount int64, evictedCount int64, activeBytes int64, err error) {
+	if err = s.db.WithContext(ctx).Model(&CodeIRFacet{}).Where("evicted_at IS NULL").Count(&activeCount).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	if err = s.db.WithContext(ctx).Model(&CodeIRFacet{}).Where("evicted_at IS NOT NULL").Count(&evictedCount).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	type sumRow struct {
+		Total int64
+	}
+	var sr sumRow
+	if err = s.db.WithContext(ctx).Model(&CodeIRFacet{}).
+		Select("COALESCE(SUM(compressed_bytes), 0) AS total").
+		Where("evicted_at IS NULL").
+		Scan(&sr).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	return activeCount, evictedCount, sr.Total, nil
+}
+
+func (s *SnapshotStore) ListPublishedSnapshotIDs(ctx context.Context) (map[uint]bool, error) {
+	docTable := Document{}.TableName()
+	revTable := DocumentRevision{}.TableName()
+	var ids []uint
+	if err := s.db.WithContext(ctx).
+		Table(docTable+" d").
+		Select("DISTINCT r.snapshot_id").
+		Joins("JOIN "+revTable+" r ON r.id = d.published_revision_id").
+		Where("d.status = ? AND d.published_revision_id IS NOT NULL", DocStatusApproved).
+		Pluck("r.snapshot_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	res := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			res[id] = true
+		}
+	}
+	return res, nil
+}
+
+func (s *SnapshotStore) ListLatestAccessByRepo(ctx context.Context) (map[uint]time.Time, error) {
+	type row struct {
+		RepoID     uint
+		LastAccess time.Time
+	}
+	var rows []row
+	if err := s.db.WithContext(ctx).
+		Model(&RepoSnapshot{}).
+		Select("repo_id, MAX(last_accessed_at) AS last_access").
+		Group("repo_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]time.Time, len(rows))
+	for _, r := range rows {
+		out[r.RepoID] = r.LastAccess
+	}
+	return out, nil
+}
+
 // ─── 4. TaskStore ───
 
 type TaskStore struct {
@@ -769,6 +836,17 @@ func (s *DocumentStore) ListApprovedDocuments(ctx context.Context) ([]Document, 
 	var docs []Document
 	if err := s.db.WithContext(ctx).
 		Where("status = ?", DocStatusApproved).
+		Order("id ASC").
+		Find(&docs).Error; err != nil {
+		return nil, err
+	}
+	return docs, nil
+}
+
+func (s *DocumentStore) ListApprovedDocumentsByRepo(ctx context.Context, repoID uint) ([]Document, error) {
+	var docs []Document
+	if err := s.db.WithContext(ctx).
+		Where("repo_id = ? AND status = ?", repoID, DocStatusApproved).
 		Order("id ASC").
 		Find(&docs).Error; err != nil {
 		return nil, err
@@ -1130,6 +1208,213 @@ func (s *DriftStore) UpsertDocumentDrift(ctx context.Context, drift *DocumentDri
 	}).Create(drift).Error
 }
 
+func (s *DriftStore) ClearDocumentDrifts(ctx context.Context, docID uint) error {
+	return s.db.WithContext(ctx).Model(&DocumentDrift{}).
+		Where("document_id = ?", docID).
+		Updates(map[string]any{
+			"has_drift":           false,
+			"affected_slot_count": 0,
+			"affected_slots_json": "[]",
+			"updated_at":          time.Now(),
+		}).Error
+}
+
+func (s *DriftStore) GetRemoteHead(ctx context.Context, repoID uint, refName string) (*RepoRemoteHead, error) {
+	var head RepoRemoteHead
+	err := s.db.WithContext(ctx).
+		Where("repo_id = ? AND ref_name = ?", repoID, refName).
+		First(&head).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &head, nil
+}
+
+func (s *DriftStore) ListAllRemoteHeads(ctx context.Context) ([]RepoRemoteHead, error) {
+	var heads []RepoRemoteHead
+	if err := s.db.WithContext(ctx).Order("repo_id ASC, id ASC").Find(&heads).Error; err != nil {
+		return nil, err
+	}
+	return heads, nil
+}
+
+// ListPollableRepos 仅查询包含至少 1 篇已发布 (approved) 文档的活跃代码仓（F-25 巡检收敛红线）。
+func (s *DriftStore) ListPollableRepos(ctx context.Context) ([]PollableRepoRecord, error) {
+	docTable := Document{}.TableName()
+	var rows []PollableRepoRecord
+	err := s.db.WithContext(ctx).
+		Table("repositories r").
+		Select("DISTINCT r.id AS repo_id, r.url AS repo_url, COALESCE(NULLIF(r.branch, ''), 'master') AS branch").
+		Joins("JOIN "+docTable+" d ON d.repo_id = r.id AND d.status = ?", DocStatusApproved).
+		Where("r.is_active = ?", true).
+		Order("r.id ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// GetDriftSummary 聚合已发布文档的双维漂移 KPI、受监控活跃仓库数与最近巡检时间（GET /api/drift/summary）。
+func (s *DriftStore) GetDriftSummary(ctx context.Context) (*DriftSummaryRecord, error) {
+	pollable, err := s.ListPollableRepos(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	monitoredIDs := make([]uint, 0, len(pollable))
+	for _, p := range pollable {
+		monitoredIDs = append(monitoredIDs, p.RepoID)
+	}
+
+	summary := &DriftSummaryRecord{
+		MonitoredRepos: int64(len(monitoredIDs)),
+	}
+
+	if len(monitoredIDs) > 0 {
+		heads, hErr := s.ListRemoteHeadsByRepos(ctx, monitoredIDs)
+		if hErr != nil {
+			return nil, hErr
+		}
+		unhealthyRepoSet := make(map[uint]bool)
+		for _, h := range heads {
+			if h.ConsecutiveFailures > 0 {
+				unhealthyRepoSet[h.RepoID] = true
+			}
+			if h.LastPolledAt != nil {
+				if summary.LastPollAt == nil || h.LastPolledAt.After(*summary.LastPollAt) {
+					t := *h.LastPolledAt
+					summary.LastPollAt = &t
+				}
+			}
+		}
+		summary.UnhealthyRepos = int64(len(unhealthyRepoSet))
+	}
+
+	// 仅统计已发布文档的有效漂移
+	docTable := Document{}.TableName()
+	driftTable := DocumentDrift{}.TableName()
+	type driftFlagRow struct {
+		DocumentID uint
+		DriftType  string
+	}
+	var rows []driftFlagRow
+	if err := s.db.WithContext(ctx).
+		Table(driftTable+" dr").
+		Select("dr.document_id, dr.drift_type").
+		Joins("JOIN "+docTable+" d ON d.id = dr.document_id").
+		Where("d.status = ? AND dr.has_drift = ?", DocStatusApproved, true).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	codeDocs := make(map[uint]bool)
+	specDocs := make(map[uint]bool)
+	allDocs := make(map[uint]bool)
+	for _, r := range rows {
+		allDocs[r.DocumentID] = true
+		switch r.DriftType {
+		case DriftTypeCode:
+			codeDocs[r.DocumentID] = true
+		case DriftTypeSpec:
+			specDocs[r.DocumentID] = true
+		}
+	}
+	bothCount := int64(0)
+	for docID := range codeDocs {
+		if specDocs[docID] {
+			bothCount++
+		}
+	}
+	summary.TotalDriftedDocs = int64(len(allDocs))
+	summary.CodeDriftDocs = int64(len(codeDocs))
+	summary.SpecDriftDocs = int64(len(specDocs))
+	summary.BothDriftDocs = bothCount
+	return summary, nil
+}
+
+// ListDriftedDocuments 按筛选条件分页查询存在 Code/Spec 漂移的已发布文档（GET /api/drift/documents）。
+func (s *DriftStore) ListDriftedDocuments(ctx context.Context, filter DriftQueryFilter) ([]DriftAggregateRecord, int64, error) {
+	docTable := Document{}.TableName()
+	driftTable := DocumentDrift{}.TableName()
+
+	base := s.db.WithContext(ctx).
+		Table(docTable+" d").
+		Joins("JOIN repositories r ON r.id = d.repo_id").
+		Where("d.status = ? AND r.is_active = ?", DocStatusApproved, true)
+
+	if filter.DepartmentID != nil && *filter.DepartmentID > 0 {
+		base = base.Where("r.department_id = ?", *filter.DepartmentID)
+	}
+	if filter.DocTypeSlug != "" {
+		base = base.Where("d.doc_type_slug = ?", filter.DocTypeSlug)
+	}
+	if filter.Search != "" {
+		like := "%" + filter.Search + "%"
+		base = base.Where("(LOWER(r.name) LIKE LOWER(?) OR LOWER(d.subdirectory) LIKE LOWER(?) OR LOWER(d.title) LIKE LOWER(?))", like, like, like)
+	}
+
+	switch filter.DriftType {
+	case DriftTypeCode:
+		base = base.Where("EXISTS (SELECT 1 FROM "+driftTable+" dr WHERE dr.document_id = d.id AND dr.drift_type = ? AND dr.has_drift = ?)", DriftTypeCode, true)
+	case DriftTypeSpec:
+		base = base.Where("EXISTS (SELECT 1 FROM "+driftTable+" dr WHERE dr.document_id = d.id AND dr.drift_type = ? AND dr.has_drift = ?)", DriftTypeSpec, true)
+	case "both":
+		base = base.Where("EXISTS (SELECT 1 FROM "+driftTable+" dr1 WHERE dr1.document_id = d.id AND dr1.drift_type = ? AND dr1.has_drift = ?) AND EXISTS (SELECT 1 FROM "+driftTable+" dr2 WHERE dr2.document_id = d.id AND dr2.drift_type = ? AND dr2.has_drift = ?)", DriftTypeCode, true, DriftTypeSpec, true)
+	default:
+		base = base.Where("EXISTS (SELECT 1 FROM "+driftTable+" dr WHERE dr.document_id = d.id AND dr.has_drift = ?)", true)
+	}
+
+	var total int64
+	if err := base.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []DriftAggregateRecord{}, 0, nil
+	}
+
+	var docs []Document
+	query := base.Select("d.*").Order("d.updated_at DESC, d.id ASC")
+	if filter.Limit > 0 {
+		query = query.Offset(filter.Offset).Limit(filter.Limit)
+	}
+	if err := query.Find(&docs).Error; err != nil {
+		return nil, 0, err
+	}
+
+	docIDs := make([]uint, 0, len(docs))
+	for _, d := range docs {
+		docIDs = append(docIDs, d.ID)
+	}
+	drifts, err := s.ListDriftsByDocIDs(ctx, docIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	codeMap := make(map[uint]*DocumentDrift, len(docs))
+	specMap := make(map[uint]*DocumentDrift, len(docs))
+	for i := range drifts {
+		dr := drifts[i]
+		if dr.DriftType == DriftTypeCode {
+			codeMap[dr.DocumentID] = &dr
+		} else if dr.DriftType == DriftTypeSpec {
+			specMap[dr.DocumentID] = &dr
+		}
+	}
+
+	out := make([]DriftAggregateRecord, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, DriftAggregateRecord{
+			Document:  d,
+			CodeDrift: codeMap[d.ID],
+			SpecDrift: specMap[d.ID],
+		})
+	}
+	return out, total, nil
+}
+
 // ─── 8. GovernanceStore ───
 
 type GovernanceStore struct {
@@ -1187,4 +1472,80 @@ func (s *GovernanceStore) RecordLLMUsage(ctx context.Context, logItem *LLMUsageL
 
 func (s *GovernanceStore) RecordQualityMetric(ctx context.Context, metric *QualityMetric) error {
 	return s.db.WithContext(ctx).Create(metric).Error
+}
+
+func (s *GovernanceStore) ListQualityMetrics(ctx context.Context, filter MetricsFilter) ([]QualityMetric, error) {
+	q := s.db.WithContext(ctx).Model(&QualityMetric{})
+	if filter.Days > 0 {
+		since := time.Now().AddDate(0, 0, -filter.Days)
+		q = q.Where("created_at >= ?", since)
+	}
+	if filter.DocTypeSlug != "" {
+		q = q.Where("doc_type_slug = ?", filter.DocTypeSlug)
+	}
+	if filter.DocTypeRevisionID != nil && *filter.DocTypeRevisionID > 0 {
+		q = q.Where("doc_type_revision_id = ?", *filter.DocTypeRevisionID)
+	}
+	var list []QualityMetric
+	if err := q.Order("created_at ASC, id ASC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *GovernanceStore) ListLLMUsageLogs(ctx context.Context, filter MetricsFilter) ([]LLMUsageLog, error) {
+	q := s.db.WithContext(ctx).Model(&LLMUsageLog{})
+	if filter.Days > 0 {
+		since := time.Now().AddDate(0, 0, -filter.Days)
+		q = q.Where("created_at >= ?", since)
+	}
+	if filter.DocTypeSlug != "" {
+		q = q.Where("doc_type_slug = ?", filter.DocTypeSlug)
+	}
+	if filter.DocTypeRevisionID != nil && *filter.DocTypeRevisionID > 0 {
+		q = q.Where("doc_type_revision_id = ?", *filter.DocTypeRevisionID)
+	}
+	var list []LLMUsageLog
+	if err := q.Order("created_at ASC, id ASC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *GovernanceStore) SummarizeLLMUsageSince(ctx context.Context, since time.Time) ([]UsageSummaryRecord, error) {
+	var rows []UsageSummaryRecord
+	err := s.db.WithContext(ctx).
+		Model(&LLMUsageLog{}).
+		Select("model_tier, doc_type_slug, COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens, COALESCE(SUM(cached_prompt_tokens), 0) AS cached_prompt_tokens, COUNT(*) AS call_count").
+		Where("created_at >= ?", since).
+		Group("model_tier, doc_type_slug").
+		Order("total_tokens DESC, model_tier ASC, doc_type_slug ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *GovernanceStore) ListSectionVerifierSummaries(ctx context.Context, docTypeSlug string, docTypeRevID *uint, since time.Time) ([]SectionVerifierMetricRow, error) {
+	docTable := Document{}.TableName()
+	revTable := DocumentRevision{}.TableName()
+	secTable := SectionEvidence{}.TableName()
+
+	q := s.db.WithContext(ctx).
+		Table(secTable+" se").
+		Select("se.slot_id, se.title, se.verifier_summary_json").
+		Joins("JOIN "+revTable+" r ON r.id = se.revision_id").
+		Joins("JOIN "+docTable+" d ON d.id = se.document_id").
+		Where("d.doc_type_slug = ? AND r.created_at >= ?", docTypeSlug, since)
+
+	if docTypeRevID != nil && *docTypeRevID > 0 {
+		q = q.Where("r.doc_type_revision_id = ?", *docTypeRevID)
+	}
+
+	var rows []SectionVerifierMetricRow
+	if err := q.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }

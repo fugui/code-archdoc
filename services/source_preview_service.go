@@ -51,6 +51,13 @@ type SourcePreviewService struct {
 	gitSyncer  GitSyncer
 	aggregator *codeir.Aggregator
 	sandboxDir string
+	leaseMgr   *ActiveLeaseManager
+}
+
+// WithLeaseManager 注入活跃租约管理器，在源码预览读取期间防止沙箱目录被并发回收（F-27）。
+func (s *SourcePreviewService) WithLeaseManager(leaseMgr *ActiveLeaseManager) *SourcePreviewService {
+	s.leaseMgr = leaseMgr
+	return s
 }
 
 func NewSourcePreviewService(
@@ -117,6 +124,9 @@ func (s *SourcePreviewService) GetSourcePreview(ctx context.Context, req SourceP
 	}
 
 	repo, _ := s.masterRepo.GetRepository(ctx, doc.RepoID)
+
+	releaseRepoLease := s.leaseMgr.AcquireRepo(doc.RepoID)
+	defer releaseRepoLease()
 
 	// 定位本地沙箱目录；若已被 LRU 回收缺失，则按仓库配置自动重新拉取
 	repoDir := filepath.Join(s.sandboxDir, fmt.Sprintf("repo_%d", doc.RepoID))

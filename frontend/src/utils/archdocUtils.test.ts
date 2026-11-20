@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildStudioPath,
+  parseDriftFilterParams,
   parseEvidenceDeepLinkParams,
   parseEvidenceHref,
   parseLineRange,
   parseRepoFilterParams,
+  serializeDriftFilterParams,
   serializeRepoFilterParams,
 } from './urlQuery.ts';
 import { ArchdocApiError, formatApiError, formatTaskErrorCode } from './errorMessages.ts';
@@ -240,5 +242,45 @@ describe('SSE Chat 局部精修帧解析器 (T-M5-05)', () => {
     assert.equal(parseChatSSEBlock(': keepalive comment'), null);
     assert.equal(parseChatSSEBlock('event: unknown\ndata: {}'), null);
     assert.equal(parseChatSSEBlock('event: delta\ndata: not-json'), null);
+  });
+});
+
+describe('双维漂移雷达 URL Search Params 分页与筛选同步 (T-M6-05)', () => {
+  it('默认回退 page=1、pageSize=25、driftType=all 并支持完整 round-trip 序列化', () => {
+    const empty = parseDriftFilterParams(new URLSearchParams());
+    assert.deepEqual(empty, {
+      page: 1,
+      pageSize: DEFAULT_ARCHDOC_PAGE_SIZE,
+      search: '',
+      departmentId: '',
+      driftType: 'all',
+      docType: '',
+    });
+
+    const params = serializeDriftFilterParams({
+      page: 2,
+      pageSize: 50,
+      search: 'order',
+      departmentId: '12',
+      driftType: 'both',
+      docType: 'system-architecture',
+    });
+    const parsed = parseDriftFilterParams(params);
+    assert.deepEqual(parsed, {
+      page: 2,
+      pageSize: 50,
+      search: 'order',
+      departmentId: '12',
+      driftType: 'both',
+      docType: 'system-architecture',
+    });
+
+    const invalid = parseDriftFilterParams(
+      new URLSearchParams('page=-1&pageSize=33&department_id=abc&drift_type=invalid'),
+    );
+    assert.equal(invalid.page, 1);
+    assert.equal(invalid.pageSize, 25);
+    assert.equal(invalid.departmentId, '');
+    assert.equal(invalid.driftType, 'all');
   });
 });

@@ -1,0 +1,265 @@
+/* ==========================================================================
+   DriftRadarPage 样式（Flat BEM .code-archdoc-drift-*，全量 --color-* Token）
+   ========================================================================== */
+
+.code-archdoc-drift-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.code-archdoc-drift-kpi {
+  padding: 1.05rem 1.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.code-archdoc-drift-kpi-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.code-archdoc-drift-kpi-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.code-archdoc-drift-kpi-label {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-drift-kpi-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+}
+
+.code-archdoc-drift-kpi-sub {
+  font-size: 0.73rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-drift-filter {
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.code-archdoc-drift-search {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+.code-archdoc-drift-select {
+  min-width: 155px;
+}
+
+.code-archdoc-drift-table-card {
+  overflow: hidden;
+}
+
+.code-archdoc-drift-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.code-archdoc-drift-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.code-archdoc-drift-table th {
+  padding: 0.8rem 0.95rem;
+  text-align: left;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-primary);
+  white-space: nowrap;
+}
+
+.code-archdoc-drift-table td {
+  padding: 0.85rem 0.95rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.code-archdoc-drift-row:hover {
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-drift-expand-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-drift-expand-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-hover);
+}
+
+.code-archdoc-drift-repo-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.code-archdoc-drift-repo-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-drift-subdir {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-family-mono);
+}
+
+.code-archdoc-drift-diff-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-drift-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-drift-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.code-archdoc-drift-detail-row td {
+  background: var(--color-bg-muted);
+  padding: 1rem 1.25rem;
+}
+
+.code-archdoc-drift-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+
+.code-archdoc-drift-dim-card {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.code-archdoc-drift-dim-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-drift-dim-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.code-archdoc-drift-slot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.code-archdoc-drift-slot-item {
+  padding: 0.65rem 0.8rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.code-archdoc-drift-slot-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-drift-slot-title {
+  font-weight: 600;
+  font-size: 0.83rem;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-drift-slot-tags {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-drift-symbols {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-drift-pagination {
+  padding: 0.9rem 1.1rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+@media (max-width: 1080px) {
+  .code-archdoc-drift-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .code-archdoc-drift-kpis {
+    grid-template-columns: 1fr;
+  }
+}

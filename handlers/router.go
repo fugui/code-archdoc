@@ -20,6 +20,10 @@ type AppHandlers struct {
 	previewSvc *services.SourcePreviewService
 	publishSvc *services.PublishService
 	chatSvc    *services.ChatService
+	driftSvc   *services.DriftOrchestrator
+	pollerSvc  *services.RemoteHeadPoller
+	metricsSvc *services.QualityMetricsService
+	reaperSvc  *services.ResourceReaper
 }
 
 // NewAppHandlers 构造处理器聚合对象。
@@ -54,6 +58,20 @@ func (h *AppHandlers) WithDocumentServices(
 // WithChatService 注入 SSE Chat 局部协同精修服务（M5）。
 func (h *AppHandlers) WithChatService(chatSvc *services.ChatService) *AppHandlers {
 	h.chatSvc = chatSvc
+	return h
+}
+
+// WithGovernanceServices 注入 M6 双维漂移编排、远端变更巡检、在线质量度量与磁盘配额治理服务。
+func (h *AppHandlers) WithGovernanceServices(
+	driftSvc *services.DriftOrchestrator,
+	pollerSvc *services.RemoteHeadPoller,
+	metricsSvc *services.QualityMetricsService,
+	reaperSvc *services.ResourceReaper,
+) *AppHandlers {
+	h.driftSvc = driftSvc
+	h.pollerSvc = pollerSvc
+	h.metricsSvc = metricsSvc
+	h.reaperSvc = reaperSvc
 	return h
 }
 
@@ -136,6 +154,22 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.POST("/exports/zip", h.ExportZip)
 		}
 
+		// 域 7：远端巡检与章节级双维漂移雷达、增量刷新 (F-12 / F-25 W2)
+		if h.driftSvc != nil {
+			protected.GET("/drift/summary", h.GetDriftSummary)
+			protected.GET("/drift/documents", h.ListDriftedDocuments)
+			if h.revSvc != nil {
+				protected.POST("/documents/:id/incremental-refresh", h.TriggerIncrementalRefresh)
+			}
+		}
+
+		// 域 8：在线生成质量度量与修订纵向对比 (F-26 W2)
+		if h.metricsSvc != nil {
+			protected.GET("/metrics/overview", h.GetMetricsOverview)
+			protected.GET("/metrics/revisions-compare", h.CompareMetricsRevisions)
+			protected.GET("/metrics/slot-heatmap", h.GetMetricsSlotHeatmap)
+		}
+
 		// 3. 模块管理员专属路由 (RequireAdmin - 仅 super_admin 或 archdoc_admin 可访问)
 		admin := protected.Group("/admin")
 		admin.Use(commonAuth.RequireAdmin(config.AdminRole))
@@ -150,10 +184,19 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 				admin.DELETE("/doc-types/:slug", h.DeleteDocType)
 			}
 
-			// 域 9：OpenAI Compatible 分层 LLM 配置管理与探活 (F-14)
+			// 域 7：管理员手动触发全量远端变更巡检 (F-25 W2)
+			if h.pollerSvc != nil {
+				admin.POST("/drift/poll", h.TriggerAdminDriftPoll)
+			}
+
+			// 域 9：OpenAI Compatible 分层 LLM 配置管理与探活 (F-14) + 磁盘配额治理 (F-27 W2)
 			admin.GET("/llm-configs", h.ListLLMConfigs)
 			admin.PUT("/llm-configs/:tier", h.UpdateLLMConfig)
 			admin.POST("/llm-configs/:tier/probe", h.ProbeLLMConfig)
+			if h.reaperSvc != nil {
+				admin.GET("/storage/stats", h.GetAdminStorageStats)
+				admin.POST("/storage/reap", h.TriggerAdminStorageReap)
+			}
 		}
 	}
 }

@@ -42,6 +42,9 @@ type SnapshotRepo interface {
 	TouchFacetAccess(ctx context.Context, facetIDs []uint, accessedAt time.Time) error
 	ListEvictableFacets(ctx context.Context, excludeSnapshotIDs []uint, limit int) ([]models.CodeIRFacet, error)
 	MarkFacetEvicted(ctx context.Context, facetID uint, evictedAt time.Time) error
+	CountFacetStats(ctx context.Context) (activeCount int64, evictedCount int64, activeBytes int64, err error)
+	ListPublishedSnapshotIDs(ctx context.Context) (map[uint]bool, error)
+	ListLatestAccessByRepo(ctx context.Context) (map[uint]time.Time, error)
 }
 
 // TaskRepo 管理 archdoc_gen_tasks 与 archdoc_gen_slot_tasks
@@ -66,6 +69,7 @@ type DocumentRepo interface {
 	ListByRepos(ctx context.Context, repoIDs []uint) ([]models.Document, error)
 	ListRevisionsByIDs(ctx context.Context, revIDs []uint) (map[uint]models.DocumentRevision, error)
 	ListApprovedDocuments(ctx context.Context) ([]models.Document, error)
+	ListApprovedDocumentsByRepo(ctx context.Context, repoID uint) ([]models.Document, error)
 	ListByIDs(ctx context.Context, docIDs []uint, approvedOnly bool) ([]models.Document, error)
 	GetRevisionWithSections(ctx context.Context, docID uint, revisionNo int) (*models.DocumentRevision, []models.SectionEvidence, error)
 	GetRevisionByIDWithSections(ctx context.Context, docID, revID uint) (*models.DocumentRevision, []models.SectionEvidence, error)
@@ -93,9 +97,15 @@ type ChatRepo interface {
 // DriftRepo 管理 archdoc_repo_remote_heads 与 archdoc_document_drifts
 type DriftRepo interface {
 	ListRemoteHeadsByRepos(ctx context.Context, repoIDs []uint) ([]models.RepoRemoteHead, error)
+	ListAllRemoteHeads(ctx context.Context) ([]models.RepoRemoteHead, error)
+	GetRemoteHead(ctx context.Context, repoID uint, refName string) (*models.RepoRemoteHead, error)
 	ListDriftsByDocIDs(ctx context.Context, docIDs []uint) ([]models.DocumentDrift, error)
 	UpsertRemoteHead(ctx context.Context, head *models.RepoRemoteHead) error
 	UpsertDocumentDrift(ctx context.Context, drift *models.DocumentDrift) error
+	ClearDocumentDrifts(ctx context.Context, docID uint) error
+	ListPollableRepos(ctx context.Context) ([]models.PollableRepoRecord, error)
+	GetDriftSummary(ctx context.Context) (*models.DriftSummaryRecord, error)
+	ListDriftedDocuments(ctx context.Context, filter models.DriftQueryFilter) ([]models.DriftAggregateRecord, int64, error)
 }
 
 // GovernanceRepo 管理 archdoc_llm_configs / archdoc_llm_usage_logs / archdoc_quality_metrics
@@ -106,4 +116,8 @@ type GovernanceRepo interface {
 	UpdateLLMProbeResult(ctx context.Context, tier, status string, latencyMs int64, probedAt time.Time) error
 	RecordLLMUsage(ctx context.Context, log *models.LLMUsageLog) error
 	RecordQualityMetric(ctx context.Context, metric *models.QualityMetric) error
+	ListQualityMetrics(ctx context.Context, filter models.MetricsFilter) ([]models.QualityMetric, error)
+	ListLLMUsageLogs(ctx context.Context, filter models.MetricsFilter) ([]models.LLMUsageLog, error)
+	SummarizeLLMUsageSince(ctx context.Context, since time.Time) ([]models.UsageSummaryRecord, error)
+	ListSectionVerifierSummaries(ctx context.Context, docTypeSlug string, docTypeRevID *uint, since time.Time) ([]models.SectionVerifierMetricRow, error)
 }

@@ -55,6 +55,6 @@
 
 ## 4. 自动化验收标准与执行命令 (Acceptance Criteria)
 
-- [ ] **AC-M6-01**：`TEST_DB_DSN=... make test` 与 `make lint-arch` 全绿，`SC-07`(W2)、`SC-08`(Spec Drift)、`SC-11`、`F-25`/`F-26`/`F-27` 全部测试通过。
-- [ ] **AC-M6-02**：`make lint && make build` 零报错通过，`DriftRadarPage` 与 `QualityMetricsPage` 满足 URL 分页（默认 25 条/页）、原生 SVG 双主题与零 `any` 规范。
-- [ ] **AC-M6-03**：优雅停机（`OnShutdown`）测试确认后台 `RemoteHeadPoller`、`ResourceReaper` 与 `TaskScheduler` 协程全部在 `ctx` 取消后干净退出，无 goroutine 泄漏。
+- [x] **AC-M6-01**：`TEST_DB_DSN=... make test` 与 `make lint-arch` 全绿，`SC-07`(W2)、`SC-08`(Spec Drift)、`SC-11`、`F-25`/`F-26`/`F-27` 全部测试通过。
+- [x] **AC-M6-02**：`make lint && make build` 零报错通过，`DriftRadarPage` 与 `QualityMetricsPage` 满足 URL 分页（默认 25 条/页）、原生 SVG 双主题与零 `any` 规范。
+- [x] **AC-M6-03**：优雅停机（`OnShutdown`）测试确认后台 `RemoteHeadPoller`、`ResourceReaper` 与 `TaskScheduler` 协程全部在 `ctx` 取消后干净退出，无 goroutine 泄漏。

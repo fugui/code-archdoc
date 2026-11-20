@@ -5,6 +5,7 @@ import (
 	"embed"
 	"flag"
 	"log"
+	"time"
 
 	"code-archdoc/config"
 	"code-archdoc/handlers"
@@ -104,6 +105,18 @@ func main() {
 	}
 	log.Printf("[%s] DocType 注册表已同步: synced=%d, new_revisions=%d", config.ServiceName, syncRes.SyncedCount, syncRes.NewRevisions)
 
+	// 7. 装配 M6 活跃租约、双优先级调度器、磁盘 LRU 回收器、双维漂移编排、远端巡检与在线质量度量
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	leaseMgr := services.NewActiveLeaseManager()
+	taskScheduler := services.NewTaskScheduler(services.SchedulerConfig{
+		MaxConcurrency:      config.AppConfig.Scheduler.MaxLLMConcurrency,
+		MaxUserConcurrency:  config.AppConfig.Scheduler.MaxUserConcurrency,
+		InteractiveQueueCap: config.AppConfig.Scheduler.InteractiveQueueCap,
+		BatchQueueCap:       config.AppConfig.Scheduler.BatchQueueCap,
+		HighBurstRatio:      4,
+	})
+	taskScheduler.Start(bgCtx)
+
 	snapSvc := services.NewSnapshotService(
 		snapStore,
 		facetStore,
@@ -111,7 +124,7 @@ func main() {
 		services.DefaultGitSyncer{},
 		config.AppConfig.Storage.SandboxDir(),
 		config.AppConfig.Storage.MaxFileBytes,
-	)
+	).WithLeaseManager(leaseMgr)
 	genSvc := services.NewGenerationOrchestrator(
 		masterStore,
 		docTypeStore,
@@ -123,21 +136,67 @@ func main() {
 		keyCipher,
 		llmClient,
 		config.AppConfig.Scheduler.MaxLLMConcurrency,
-	)
+	).WithGovernance(leaseMgr, taskScheduler)
 	publishSink, err := publisher.NewLocalFSPublishSink(config.AppConfig.Storage.EffectivePublishDir())
 	if err != nil {
 		log.Fatalf("[%s] 初始化发布目录 publish_dir 失败: %v", config.ServiceName, err)
 	}
 	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc)
-	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, irAggregator, config.AppConfig.Storage.SandboxDir())
-	publishSvc := services.NewPublishService(docStore, docTypeStore, masterStore, govStore, publishSink)
+	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, irAggregator, config.AppConfig.Storage.SandboxDir()).
+		WithLeaseManager(leaseMgr)
+	driftSvc := services.NewDriftOrchestrator(
+		masterStore,
+		docStore,
+		docTypeStore,
+		docTypeSvc,
+		driftStore,
+		rbacSvc,
+		genSvc,
+		irAggregator,
+		leaseMgr,
+		config.AppConfig.Storage.SandboxDir(),
+		config.AppConfig.Drift.PollIntervalMinutes,
+	)
+	publishSvc := services.NewPublishService(docStore, docTypeStore, masterStore, govStore, publishSink).
+		WithDriftOrchestrator(driftSvc)
 	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, keyCipher, llmClient)
+	metricsSvc := services.NewQualityMetricsService(govStore, docTypeStore)
+
+	reaperSvc := services.NewResourceReaper(services.ReaperConfig{
+		SandboxDir:      config.AppConfig.Storage.SandboxDir(),
+		IRCacheDir:      config.AppConfig.Storage.IRCacheDir(),
+		PublishDir:      config.AppConfig.Storage.EffectivePublishDir(),
+		SandboxMaxBytes: config.AppConfig.Storage.SandboxMaxMB * 1024 * 1024,
+		IRCacheMaxBytes: config.AppConfig.Storage.IRCacheMaxMB * 1024 * 1024,
+		ReapInterval:    time.Duration(config.AppConfig.Storage.ReapIntervalMins) * time.Minute,
+	}, snapStore, govStore, leaseMgr, taskScheduler)
+	reaperSvc.Start(bgCtx)
+
+	pollerSvc := services.NewRemoteHeadPoller(services.PollerConfig{
+		Enabled:      config.AppConfig.Drift.PollEnabled,
+		PollInterval: time.Duration(config.AppConfig.Drift.PollIntervalMinutes) * time.Minute,
+		Concurrency:  config.AppConfig.Drift.PollConcurrency,
+		RepoTimeout:  20 * time.Second,
+	}, driftStore, services.DefaultRemoteHeadFetcher{},
+		func(pCtx context.Context, repo models.PollableRepoRecord, sha, branch string) {
+			if evalErr := driftSvc.EvaluateRepoCodeDrift(pCtx, repo, sha, branch); evalErr != nil && pCtx.Err() == nil {
+				log.Printf("[%s] 计算仓库 #%d Code Drift 异常: %v", config.ServiceName, repo.RepoID, evalErr)
+			}
+		},
+		func(pCtx context.Context) {
+			if specErr := driftSvc.RecomputeAllSpecDrifts(pCtx); specErr != nil && pCtx.Err() == nil {
+				log.Printf("[%s] 周期重算 Spec Drift 异常: %v", config.ServiceName, specErr)
+			}
+		},
+	)
+	pollerSvc.Start(bgCtx)
 
 	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, genSvc).
 		WithDocumentServices(revSvc, previewSvc, publishSvc).
-		WithChatService(chatSvc)
+		WithChatService(chatSvc).
+		WithGovernanceServices(driftSvc, pollerSvc, metricsSvc, reaperSvc)
 
-	// 7. 基于 code-common/backend/server 启动服务（自动处理 /<ModuleKey> 网关前缀剥离与前端静态产物内嵌托管）
+	// 8. 基于 code-common/backend/server 启动服务（自动处理 /<ModuleKey> 网关前缀剥离与前端静态产物内嵌托管）
 	// TODO(security): 若独立直接暴露于公网环境，请在网关层配置严格 CORS 白名单与全局 API 速率限制
 	err = commonServer.Run(commonServer.Options{
 		ServiceName:       config.ServiceName,
@@ -156,6 +215,13 @@ func main() {
 			commonAudit.Middleware(config.ModuleKey),
 		},
 		OnShutdown: func(ctx context.Context) {
+			// AC-M6-03：优雅停机，确保后台巡检、LRU 回收与双优先级调度器全部在 ctx 取消后干净退出
+			bgCancel()
+			pollerSvc.Stop()
+			reaperSvc.Stop()
+			taskScheduler.Stop()
+			genSvc.WaitAll()
+			docTypeSvc.WaitSpecDriftJobs()
 			if closeErr := commonAudit.Close(ctx); closeErr != nil {
 				log.Printf("[%s] 关闭审计引擎出现异常: %v", config.ServiceName, closeErr)
 			}

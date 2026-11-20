@@ -1,4 +1,5 @@
 import type {
+  DriftFilterType,
   FacetName,
   ModelTier,
   RepoScopeFilter,
@@ -153,6 +154,36 @@ export interface ChatRefinePayload {
 
 export interface AcceptChatProposalPayload {
   base_revision_no: number;
+}
+
+export interface DriftListQuery {
+  page: number;
+  pageSize: number;
+  search?: string;
+  departmentId?: string;
+  driftType?: DriftFilterType;
+  docType?: string;
+}
+
+export interface IncrementalRefreshPayload {
+  slot_ids?: string[];
+}
+
+export interface MetricsOverviewQuery {
+  days?: number;
+  docType?: string;
+  docTypeRevisionId?: number;
+}
+
+export interface RevisionsCompareQuery {
+  docType: string;
+  days?: number;
+}
+
+export interface SlotHeatmapQuery {
+  docType: string;
+  docTypeRevisionId?: number;
+  days?: number;
 }
 
 export interface ItemsResponse<T> {

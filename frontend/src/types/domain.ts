@@ -396,6 +396,8 @@ export interface GenTaskDetailVO {
   task_kind: TaskKind;
   priority: TaskPriority;
   doc_types: string[];
+  target_document_id?: number | null;
+  target_slots?: string[];
   status: TaskStatus;
   progress_percent: number;
   estimated_tokens: number;
@@ -559,4 +561,137 @@ export interface LLMProbeResultVO {
   latency_ms: number;
   model_echo: string;
   error_message: string;
+}
+
+// ─── M6: 双维漂移雷达 (F-12 / F-25) ───
+
+export type DriftFilterType = 'all' | 'code' | 'spec' | 'both';
+
+export interface DriftSummaryVO {
+  total_drifted_docs: number;
+  code_drift_docs: number;
+  spec_drift_docs: number;
+  both_drift_docs: number;
+  monitored_repos: number;
+  unhealthy_repos: number;
+  last_poll_at: string | null;
+  poll_interval_minutes: number;
+}
+
+export interface DriftDocumentVO {
+  document_id: number;
+  repo_id: number;
+  repo_name: string;
+  subdirectory: string;
+  doc_type_slug: string;
+  doc_type_name: string;
+  can_write: boolean;
+  published_commit_sha: string;
+  remote_head_sha: string;
+  bound_doc_type_revision_no: number;
+  latest_doc_type_revision_no: number;
+  code_drift: DriftDimensionVO | null;
+  spec_drift: DriftDimensionVO | null;
+}
+
+export interface TriggerDriftPollResponseVO {
+  triggered: boolean;
+  monitored_repos: number;
+  message: string;
+}
+
+// ─── M6: 在线质量度量看板 (F-26 W2) ───
+
+export interface MetricsOverviewVO {
+  window_days: number;
+  avg_edit_diff_ratio: number;
+  chat_accept_rate: number;
+  verifier_first_pass_rate: number;
+  verifier_block_rate: number;
+  avg_slot_coverage_rate: number;
+  avg_tokens_per_doc: number;
+  avg_cache_hit_ratio: number;
+  sample_doc_count: number;
+}
+
+export interface RevisionMetricPointVO {
+  doc_type_revision_id: number;
+  revision_no: number;
+  created_at: string;
+  avg_edit_diff_ratio: number;
+  chat_accept_rate: number;
+  verifier_block_rate: number;
+  avg_slot_coverage_rate: number;
+  avg_tokens_per_doc: number;
+  avg_cache_hit_ratio: number;
+  sample_count: number;
+}
+
+export interface RevisionsCompareVO {
+  doc_type_slug: string;
+  revisions: RevisionMetricPointVO[];
+}
+
+export interface SlotHeatmapItemVO {
+  slot_id: string;
+  title: string;
+  avg_edit_diff_ratio: number;
+  verifier_warning_rate: number;
+  sample_count: number;
+}
+
+export interface SlotHeatmapVO {
+  doc_type_slug: string;
+  slots: SlotHeatmapItemVO[];
+}
+
+// ─── M6: 存储配额、调度队列与近 30 天成本观测 (F-27 W2) ───
+
+export interface SandboxStorageStatVO {
+  used_mb: number;
+  max_mb: number;
+  repo_count: number;
+  active_leases: number;
+}
+
+export interface IRCacheStorageStatVO {
+  used_mb: number;
+  max_mb: number;
+  facet_count: number;
+  evicted_count: number;
+}
+
+export interface PublishStorageStatVO {
+  used_mb: number;
+  published_files: number;
+}
+
+export interface SchedulerStatsVO {
+  interactive_queue_len: number;
+  batch_queue_len: number;
+  running_llm_calls: number;
+  max_concurrency: number;
+}
+
+export interface UsageSummaryVO {
+  model_tier: string;
+  doc_type_slug: string;
+  total_tokens: number;
+  cached_prompt_tokens: number;
+  call_count: number;
+}
+
+export interface StorageStatsVO {
+  sandbox: SandboxStorageStatVO;
+  ir_cache: IRCacheStorageStatVO;
+  publish_dir: PublishStorageStatVO;
+  scheduler: SchedulerStatsVO;
+  usage_last_30d: UsageSummaryVO[];
+}
+
+export interface ReapResultVO {
+  reaped_sandboxes: number;
+  reaped_ir_facets: number;
+  freed_bytes: number;
+  skipped_active_leases: number;
 }

@@ -47,6 +47,8 @@ func (h *AppHandlers) TriggerGenerateTask(c *gin.Context) {
 			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, err.Error(), nil)
 		case errors.Is(err, models.ErrNotFound):
 			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标代码仓库不存在", nil)
+		case errors.Is(err, services.ErrQueueFull):
+			WriteError(c, http.StatusTooManyRequests, ErrCodeQueueFull, err.Error(), nil)
 		default:
 			log.Printf("[%s] 提交生成任务失败: %v", config.ServiceName, err)
 			WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "提交生成任务失败", nil)

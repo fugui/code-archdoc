@@ -71,8 +71,15 @@ type PublishService struct {
 	masterRepo  SharedMasterRepo
 	govRepo     GovernanceRepo
 	sink        publisher.PublishSink
+	driftSvc    *DriftOrchestrator
 
 	publishMu sync.Mutex
+}
+
+// WithDriftOrchestrator 注入漂移编排器，使发布/撤回操作即时联动刷新漂移状态。
+func (s *PublishService) WithDriftOrchestrator(driftSvc *DriftOrchestrator) *PublishService {
+	s.driftSvc = driftSvc
+	return s
 }
 
 func NewPublishService(
@@ -184,6 +191,11 @@ func (s *PublishService) PublishDocument(
 	// 计算首版 AI 草稿 -> 定稿章节级 edit_diff_ratio 并落库 archdoc_quality_metrics（F-26）
 	s.recordPublishedQualityMetric(ctx, doc, rev)
 
+	// 联动刷新该文档漂移状态（若最新 commit / DocTypeRevision 已对齐则自动清除漂移）
+	if s.driftSvc != nil {
+		s.driftSvc.OnDocumentPublished(ctx, doc.ID)
+	}
+
 	return &PublishResultVO{
 		DocumentID:            doc.ID,
 		Status:                models.DocStatusApproved,
@@ -219,6 +231,10 @@ func (s *PublishService) UnpublishDocument(ctx context.Context, docID uint) (*Un
 
 	if err := s.docRepo.MarkUnpublished(ctx, doc.ID); err != nil {
 		return nil, err
+	}
+
+	if s.driftSvc != nil {
+		s.driftSvc.OnDocumentUnpublished(ctx, doc.ID)
 	}
 
 	return &UnpublishResultVO{

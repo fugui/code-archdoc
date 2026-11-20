@@ -163,10 +163,120 @@
   word-break: break-all;
 }
 
+/* ── W2: 存储配额、双优先级调度与 Token 成本观测面板 (F-27) ── */
+.code-archdoc-llm-gov-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.code-archdoc-llm-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-llm-quota-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.code-archdoc-llm-quota-item {
+  padding: 0.8rem 0.95rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.code-archdoc-llm-quota-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.code-archdoc-llm-quota-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-llm-quota-num {
+  font-family: var(--font-family-mono);
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-llm-quota-track {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+}
+
+.code-archdoc-llm-quota-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+}
+
+.code-archdoc-llm-quota-fill--warn {
+  background: var(--color-warning);
+}
+
+.code-archdoc-llm-quota-fill--danger {
+  background: var(--color-danger);
+}
+
+.code-archdoc-llm-quota-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-llm-usage-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.code-archdoc-llm-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.code-archdoc-llm-usage-table th {
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-primary);
+  white-space: nowrap;
+}
+
+.code-archdoc-llm-usage-table td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
 @media (max-width: 960px) {
   .code-archdoc-llm-tabs,
   .code-archdoc-llm-layout,
-  .code-archdoc-llm-row {
+  .code-archdoc-llm-row,
+  .code-archdoc-llm-gov-grid {
     grid-template-columns: 1fr;
   }
 }

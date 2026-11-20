@@ -2,19 +2,28 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Cpu,
   Eye,
   EyeOff,
+  HardDrive,
   Loader2,
   Save,
   ShieldCheck,
+  Trash2,
   Zap,
 } from 'lucide-react';
 import { EmptyState, StatusTag, useToast, type StatusType } from '@code/common';
-import { listLLMConfigs, probeLLMConfig, updateLLMConfig } from '../api/admin';
+import {
+  getAdminStorageStats,
+  listLLMConfigs,
+  probeLLMConfig,
+  triggerAdminStorageReap,
+  updateLLMConfig,
+} from '../api/admin';
 import { useModuleUser } from '../context/ModuleUserContext';
-import type { LLMConfigVO, LLMProbeResultVO, ModelTier } from '../types';
+import type { LLMConfigVO, LLMProbeResultVO, ModelTier, StorageStatsVO } from '../types';
 import { formatApiError } from '../utils/errorMessages';
 import { formatDateTime } from '../utils/urlQuery';
 import './AdminLLMConfigPage.css';
@@ -76,6 +85,8 @@ export const AdminLLMConfigPage: React.FC = () => {
   const [saving, setSaving] = useState<boolean>(false);
   const [probing, setProbing] = useState<boolean>(false);
   const [probeResult, setProbeResult] = useState<LLMProbeResultVO | null>(null);
+  const [storageStats, setStorageStats] = useState<StorageStatsVO | null>(null);
+  const [reaping, setReaping] = useState<boolean>(false);
 
   const syncFormFromConfig = useCallback((cfg: LLMConfigVO | undefined) => {
     if (!cfg) {
@@ -103,12 +114,18 @@ export const AdminLLMConfigPage: React.FC = () => {
 
     setLoading(true);
     try {
-      const items = await listLLMConfigs();
+      const [items, stats] = await Promise.all([
+        listLLMConfigs(),
+        getAdminStorageStats().catch(() => null),
+      ]);
       const byTier: Partial<Record<ModelTier, LLMConfigVO>> = {};
       for (const item of items) {
         byTier[item.tier] = item;
       }
       setConfigs(byTier);
+      if (stats) {
+        setStorageStats(stats);
+      }
       syncFormFromConfig(byTier[activeTier]);
     } catch (err: unknown) {
       showToast(formatApiError(err, '加载 LLM 配置失败').message, 'error');
@@ -182,6 +199,26 @@ export const AdminLLMConfigPage: React.FC = () => {
       showToast(formatApiError(err, '执行连通性探活失败').message, 'error');
     } finally {
       setProbing(false);
+    }
+  };
+
+  const handleManualReap = async () => {
+    setReaping(true);
+    try {
+      const res = await triggerAdminStorageReap();
+      const freedMB = (res.freed_bytes / (1024 * 1024)).toFixed(1);
+      showToast(
+        `已完成 LRU 配额回收：回收沙箱 ${res.reaped_sandboxes} 个、IR 分片 ${res.reaped_ir_facets} 个，释放 ${freedMB} MB（保护活跃租约 ${res.skipped_active_leases} 个）`,
+        'success',
+      );
+      const latestStats = await getAdminStorageStats().catch(() => null);
+      if (latestStats) {
+        setStorageStats(latestStats);
+      }
+    } catch (err: unknown) {
+      showToast(formatApiError(err, '执行存储空间 LRU 回收失败').message, 'error');
+    } finally {
+      setReaping(false);
     }
   };
 
@@ -530,6 +567,176 @@ export const AdminLLMConfigPage: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* W2: 沙箱存储配额、双优先级调度队列与近 30 天 Token 成本卡片 (F-27) */}
+      {!loading && storageStats && (
+        <div className="code-archdoc-llm-gov-grid">
+          <div className="code-card code-archdoc-llm-panel">
+            <div className="code-archdoc-llm-panel-head">
+              <h2 className="code-archdoc-llm-panel-title">
+                <HardDrive size={17} />
+                <span>受控存储配额与双优先级调度治理 (F-27)</span>
+              </h2>
+              <button
+                type="button"
+                className="btn btn-secondary btn-small"
+                disabled={reaping}
+                onClick={() => void handleManualReap()}
+              >
+                {reaping ? (
+                  <Loader2 size={14} className="code-archdoc-spin" />
+                ) : (
+                  <Trash2 size={14} />
+                )}
+                <span>{reaping ? '回收中...' : '执行 LRU 回收'}</span>
+              </button>
+            </div>
+
+            <div className="code-archdoc-llm-quota-list">
+              {(() => {
+                const sbPct =
+                  storageStats.sandbox.max_mb > 0
+                    ? Math.min(100, Math.round((storageStats.sandbox.used_mb / storageStats.sandbox.max_mb) * 100))
+                    : 0;
+                const irPct =
+                  storageStats.ir_cache.max_mb > 0
+                    ? Math.min(100, Math.round((storageStats.ir_cache.used_mb / storageStats.ir_cache.max_mb) * 100))
+                    : 0;
+                return (
+                  <>
+                    <div className="code-archdoc-llm-quota-item">
+                      <div className="code-archdoc-llm-quota-top">
+                        <span className="code-archdoc-llm-quota-name">Git 只读沙箱 (sandbox_dir)</span>
+                        <span className="code-archdoc-llm-quota-num">
+                          {storageStats.sandbox.used_mb} MB / {storageStats.sandbox.max_mb} MB ({sbPct}%)
+                        </span>
+                      </div>
+                      <div className="code-archdoc-llm-quota-track">
+                        <div
+                          className={`code-archdoc-llm-quota-fill ${
+                            sbPct >= 90
+                              ? 'code-archdoc-llm-quota-fill--danger'
+                              : sbPct >= 75
+                                ? 'code-archdoc-llm-quota-fill--warn'
+                                : ''
+                          }`}
+                          style={{ width: `${Math.max(sbPct, 2)}%` }}
+                        />
+                      </div>
+                      <div className="code-archdoc-llm-quota-meta">
+                        <span>本地缓存仓库：{storageStats.sandbox.repo_count} 个</span>
+                        <span>活跃租约保护：{storageStats.sandbox.active_leases} 个</span>
+                      </div>
+                    </div>
+
+                    <div className="code-archdoc-llm-quota-item">
+                      <div className="code-archdoc-llm-quota-top">
+                        <span className="code-archdoc-llm-quota-name">Code IR 压缩分片缓存 (ir_cache)</span>
+                        <span className="code-archdoc-llm-quota-num">
+                          {storageStats.ir_cache.used_mb} MB / {storageStats.ir_cache.max_mb} MB ({irPct}%)
+                        </span>
+                      </div>
+                      <div className="code-archdoc-llm-quota-track">
+                        <div
+                          className={`code-archdoc-llm-quota-fill ${
+                            irPct >= 90
+                              ? 'code-archdoc-llm-quota-fill--danger'
+                              : irPct >= 75
+                                ? 'code-archdoc-llm-quota-fill--warn'
+                                : ''
+                          }`}
+                          style={{ width: `${Math.max(irPct, 2)}%` }}
+                        />
+                      </div>
+                      <div className="code-archdoc-llm-quota-meta">
+                        <span>活跃分片：{storageStats.ir_cache.facet_count} 个</span>
+                        <span>已 LRU 回收：{storageStats.ir_cache.evicted_count} 个</span>
+                        <span>
+                          已发布落盘 (publish_dir)：{storageStats.publish_dir.published_files} 篇 ({storageStats.publish_dir.used_mb} MB)
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div className="code-archdoc-probe-kv">
+              <div className="code-archdoc-probe-cell">
+                <span className="code-archdoc-probe-label">高优交互队列 (HighQ)</span>
+                <span className="code-archdoc-probe-val">
+                  {storageStats.scheduler.interactive_queue_len} 排队中
+                </span>
+              </div>
+              <div className="code-archdoc-probe-cell">
+                <span className="code-archdoc-probe-label">低优批量队列 (LowQ)</span>
+                <span className="code-archdoc-probe-val">
+                  {storageStats.scheduler.batch_queue_len} 排队中（4:1 防饥饿）
+                </span>
+              </div>
+              <div className="code-archdoc-probe-cell">
+                <span className="code-archdoc-probe-label">运行中 LLM 并发调用</span>
+                <span className="code-archdoc-probe-val">
+                  {storageStats.scheduler.running_llm_calls} / {storageStats.scheduler.max_concurrency}
+                </span>
+              </div>
+              <div className="code-archdoc-probe-cell">
+                <span className="code-archdoc-probe-label">LRU 水位策略</span>
+                <span className="code-archdoc-probe-val">90% 触发 → 75% 停止</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="code-card code-archdoc-llm-panel">
+            <h2 className="code-archdoc-llm-panel-title">
+              <BarChart3 size={17} />
+              <span>最近 30 天 Token 消耗与 KV Cache 成本卡片</span>
+            </h2>
+
+            {storageStats.usage_last_30d.length === 0 ? (
+              <EmptyState
+                title="最近 30 天暂无模型调用记录"
+                description="触发文档生成、增量刷新或 Chat 精修后，调用级 Token 与 Prefix KV Cache 命中率将自动汇总于此。"
+              />
+            ) : (
+              <div className="code-archdoc-llm-usage-table-wrap">
+                <table className="code-archdoc-llm-usage-table">
+                  <thead>
+                    <tr>
+                      <th>模型档位</th>
+                      <th>文档类型 (DocType)</th>
+                      <th>调用次数</th>
+                      <th>总消耗 Tokens</th>
+                      <th>KV Cache 命中 Tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {storageStats.usage_last_30d.map((item, idx) => (
+                      <tr key={`${item.model_tier}-${item.doc_type_slug || 'glossary'}-${idx}`}>
+                        <td>
+                          <StatusTag
+                            status={item.model_tier === 'flagship' ? 'running' : 'neutral'}
+                            text={item.model_tier}
+                            size="sm"
+                          />
+                        </td>
+                        <td>
+                          <code className="code-archdoc-mono">
+                            {item.doc_type_slug || 'glossary (共享术语表)'}
+                          </code>
+                        </td>
+                        <td>{item.call_count} 次</td>
+                        <td>{item.total_tokens.toLocaleString()}</td>
+                        <td>{item.cached_prompt_tokens.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

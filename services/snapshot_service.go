@@ -48,9 +48,16 @@ type SnapshotService struct {
 	gitSyncer    GitSyncer
 	sandboxDir   string
 	maxFileBytes int64
+	leaseMgr     *ActiveLeaseManager
 
 	syncExtractSF singleflight.Group
 	glossarySF    singleflight.Group
+}
+
+// WithLeaseManager 注入活跃租约管理器，在 Git 同步与 Code IR 读取期间保护目录与分片不被 LRU 回收（F-27）。
+func (s *SnapshotService) WithLeaseManager(leaseMgr *ActiveLeaseManager) *SnapshotService {
+	s.leaseMgr = leaseMgr
+	return s
 }
 
 func NewSnapshotService(
@@ -125,6 +132,9 @@ func (s *SnapshotService) syncAndExtractOnce(
 	normSubdir string,
 	branch string,
 ) (*SnapshotReady, error) {
+	releaseRepoLease := s.leaseMgr.AcquireRepo(repo.ID)
+	defer releaseRepoLease()
+
 	localPath := filepath.Join(s.sandboxDir, fmt.Sprintf("repo_%d", repo.ID))
 	syncRes, err := s.gitSyncer.Sync(ctx, gitsync.SyncOptions{
 		RepoURL:        repo.URL,
@@ -326,6 +336,9 @@ func (s *SnapshotService) LoadIRBundleBySnapshotID(ctx context.Context, snapshot
 }
 
 func (s *SnapshotService) loadBundleFromStore(ctx context.Context, snap *models.RepoSnapshot, loc codeir.SnapshotLoc) (*codeir.CodeIRBundle, error) {
+	releaseSnapLease := s.leaseMgr.AcquireSnapshot(snap.ID)
+	defer releaseSnapLease()
+
 	facetRows, err := s.snapRepo.ListFacetsBySnapshot(ctx, snap.ID)
 	if err != nil {
 		return nil, err

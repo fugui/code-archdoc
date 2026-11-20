@@ -3,7 +3,7 @@ import { MODULE_KEY, MODULE_TITLE } from './constants';
 
 export type { SubMenuItem, MenuGroup, ModuleMenuConfig };
 
-// 标准侧边栏菜单契约（W1 暴露 /repos 与 /admin/llm；W2 入口待 M5/M6 挂载）
+// 标准侧边栏菜单契约（W1/W2 全量业务与治理路由）
 export const archdocMenuConfig: ModuleMenuConfig = {
   moduleKey: MODULE_KEY,
   moduleName: MODULE_TITLE,
@@ -15,6 +15,16 @@ export const archdocMenuConfig: ModuleMenuConfig = {
           path: '/repos',
           label: '仓库与文档覆盖',
           icon: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z',
+        },
+        {
+          path: '/drift',
+          label: '双维漂移雷达',
+          icon: 'M13 10V3L4 14h7v7l9-11h-7z',
+        },
+        {
+          path: '/metrics',
+          label: '生成质量度量',
+          icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
         },
       ],
     },

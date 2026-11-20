@@ -17,11 +17,71 @@ type SpecSlotMeta struct {
 
 // SpecDriftSlotItem 描述单个受模板/指令变更影响的槽位明细。
 type SpecDriftSlotItem struct {
-	SlotID     string
-	SlotTitle  string
-	Ownership  string
-	Reason     string // slot_added | slot_removed | slot_modified | prompt_changed
-	ChangeKind string // added | modified | removed
+	SlotID     string `json:"slot_id"`
+	SlotTitle  string `json:"slot_title"`
+	Ownership  string `json:"ownership"`
+	Reason     string `json:"reason"`      // slot_added | slot_removed | slot_modified | prompt_changed
+	ChangeKind string `json:"change_kind"` // added | modified | removed
+}
+
+// SpecDriftInput 定义槽位级 Spec Drift 纯计算输入。
+type SpecDriftInput struct {
+	BoundRevisionID  uint
+	LatestRevisionID uint
+	BoundSlots       []SpecSlotMeta
+	LatestSlots      []SpecSlotMeta
+	BoundPromptHash  string
+	LatestPromptHash string
+	BoundTemplateMD  string
+	LatestTemplateMD string
+}
+
+// SpecDriftResult 输出槽位级 Spec Drift 结构化集合差结果（SC-08）。
+type SpecDriftResult struct {
+	HasDrift      bool                `json:"has_drift"`
+	AddedSlots    []string            `json:"added_slots"`
+	RemovedSlots  []string            `json:"removed_slots"`
+	ModifiedSlots []string            `json:"modified_slots"`
+	AffectedSlots []SpecDriftSlotItem `json:"affected_slots"`
+}
+
+// DetectSpecDrift 对比新旧两版 DocTypeRevision，返回 added_slots / removed_slots / modified_slots 及完整明细。
+func DetectSpecDrift(in SpecDriftInput) SpecDriftResult {
+	res := SpecDriftResult{
+		AddedSlots:    []string{},
+		RemovedSlots:  []string{},
+		ModifiedSlots: []string{},
+		AffectedSlots: []SpecDriftSlotItem{},
+	}
+	if in.BoundRevisionID > 0 && in.LatestRevisionID > 0 && in.BoundRevisionID == in.LatestRevisionID {
+		return res
+	}
+
+	items := ComputeSpecDrift(
+		in.BoundSlots,
+		in.LatestSlots,
+		in.BoundPromptHash,
+		in.LatestPromptHash,
+		in.BoundTemplateMD,
+		in.LatestTemplateMD,
+	)
+	if len(items) == 0 {
+		return res
+	}
+
+	res.HasDrift = true
+	res.AffectedSlots = items
+	for _, it := range items {
+		switch it.ChangeKind {
+		case "added":
+			res.AddedSlots = append(res.AddedSlots, it.SlotID)
+		case "removed":
+			res.RemovedSlots = append(res.RemovedSlots, it.SlotID)
+		default:
+			res.ModifiedSlots = append(res.ModifiedSlots, it.SlotID)
+		}
+	}
+	return res
 }
 
 // ComputeSpecDrift 对比文档已发布修订绑定的 DocTypeRevision 与当前最新 DocTypeRevision，

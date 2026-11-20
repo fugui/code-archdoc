@@ -1,0 +1,210 @@
+/* ==========================================================================
+   RevisionTrendChart 原生轻量双主题 SVG 趋势图样式（全量 --color-* Token）
+   ========================================================================== */
+
+.code-archdoc-trend-card {
+  padding: 1.25rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.code-archdoc-trend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-trend-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.code-archdoc-trend-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-trend-subtitle {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-trend-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-trend-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-trend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.code-archdoc-trend-swatch--edit {
+  background: var(--color-warning);
+}
+
+.code-archdoc-trend-swatch--chat {
+  background: var(--color-success);
+}
+
+.code-archdoc-trend-swatch--block {
+  background: var(--color-danger);
+}
+
+.code-archdoc-trend-swatch--cache {
+  background: var(--color-primary);
+}
+
+.code-archdoc-trend-swatch--tokens {
+  background: var(--color-purple);
+  border-radius: 2px;
+}
+
+.code-archdoc-trend-svg-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.code-archdoc-trend-svg {
+  width: 100%;
+  min-width: 560px;
+  height: auto;
+  display: block;
+}
+
+.code-archdoc-trend-grid-line {
+  stroke: var(--color-border-subtle);
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+.code-archdoc-trend-axis-line {
+  stroke: var(--color-border-primary);
+  stroke-width: 1;
+}
+
+.code-archdoc-trend-axis-label {
+  fill: var(--color-text-muted);
+  font-size: 11px;
+  font-family: var(--font-family-mono);
+}
+
+.code-archdoc-trend-x-label {
+  fill: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.code-archdoc-trend-bar {
+  fill: var(--color-purple-subtle);
+  stroke: var(--color-purple);
+  stroke-width: 1;
+  transition: opacity 0.15s ease;
+}
+
+.code-archdoc-trend-bar--active {
+  fill: var(--color-purple);
+  opacity: 0.32;
+}
+
+.code-archdoc-trend-line {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.code-archdoc-trend-line--edit {
+  stroke: var(--color-warning);
+}
+
+.code-archdoc-trend-line--chat {
+  stroke: var(--color-success);
+}
+
+.code-archdoc-trend-line--block {
+  stroke: var(--color-danger);
+}
+
+.code-archdoc-trend-line--cache {
+  stroke: var(--color-primary);
+}
+
+.code-archdoc-trend-dot {
+  stroke: var(--color-bg-surface);
+  stroke-width: 2;
+  cursor: pointer;
+}
+
+.code-archdoc-trend-dot--edit {
+  fill: var(--color-warning);
+}
+
+.code-archdoc-trend-dot--chat {
+  fill: var(--color-success);
+}
+
+.code-archdoc-trend-dot--block {
+  fill: var(--color-danger);
+}
+
+.code-archdoc-trend-dot--cache {
+  fill: var(--color-primary);
+}
+
+.code-archdoc-trend-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.code-archdoc-trend-highlight-col {
+  fill: var(--color-bg-hover);
+  opacity: 0.65;
+}
+
+.code-archdoc-trend-inspector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 0.65rem;
+  padding: 0.8rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-trend-insp-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.code-archdoc-trend-insp-label {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-trend-insp-val {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+}

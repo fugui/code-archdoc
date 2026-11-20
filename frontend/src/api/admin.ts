@@ -12,6 +12,8 @@ import type {
   LLMProbeResultVO,
   ModelTier,
   ProbeLLMConfigPayload,
+  ReapResultVO,
+  StorageStatsVO,
   ToggleDocTypeStatusPayload,
   UpdateDocTypePayload,
   UpdateLLMConfigPayload,
@@ -107,6 +109,18 @@ export async function deleteDocType(slug: string): Promise<DocTypeDeleteResultVO
 
 export async function syncDocTypes(): Promise<DocTypeSyncResultVO> {
   return apiRequest<DocTypeSyncResultVO>('/admin/doc-types/sync', {
+    method: 'POST',
+  });
+}
+
+// ─── 沙箱磁盘配额、调度队列与成本观测 API (F-27 W2) ───
+
+export async function getAdminStorageStats(): Promise<StorageStatsVO> {
+  return apiRequest<StorageStatsVO>('/admin/storage/stats');
+}
+
+export async function triggerAdminStorageReap(): Promise<ReapResultVO> {
+  return apiRequest<ReapResultVO>('/admin/storage/reap', {
     method: 'POST',
   });
 }

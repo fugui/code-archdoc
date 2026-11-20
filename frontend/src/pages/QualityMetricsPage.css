@@ -1,0 +1,191 @@
+/* ==========================================================================
+   QualityMetricsPage 样式（Flat BEM .code-archdoc-metrics-*，全量 --color-* Token）
+   ========================================================================== */
+
+.code-archdoc-metrics-filter {
+  padding: 0.95rem 1.15rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.code-archdoc-metrics-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.code-archdoc-metrics-filter-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.code-archdoc-metrics-select {
+  min-width: 185px;
+}
+
+.code-archdoc-metrics-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.code-archdoc-metrics-kpi {
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.code-archdoc-metrics-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.code-archdoc-metrics-kpi-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-metrics-kpi-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.code-archdoc-metrics-kpi-val {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-mono);
+  line-height: 1.2;
+}
+
+.code-archdoc-metrics-kpi-sub {
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-metrics-heatmap-card {
+  padding: 1.25rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.code-archdoc-metrics-heatmap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-metrics-heatmap-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-metrics-heatmap-sub {
+  margin: 0.2rem 0 0 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-metrics-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.code-archdoc-metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.code-archdoc-metrics-table th {
+  padding: 0.75rem 0.9rem;
+  text-align: left;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-primary);
+  white-space: nowrap;
+}
+
+.code-archdoc-metrics-table td {
+  padding: 0.8rem 0.9rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  vertical-align: middle;
+}
+
+.code-archdoc-metrics-table tr:hover td {
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-metrics-heat-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 210px;
+}
+
+.code-archdoc-metrics-heat-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+}
+
+.code-archdoc-metrics-heat-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.code-archdoc-metrics-heat-fill--low {
+  background: var(--color-success);
+}
+
+.code-archdoc-metrics-heat-fill--medium {
+  background: var(--color-warning);
+}
+
+.code-archdoc-metrics-heat-fill--high {
+  background: var(--color-danger);
+}
+
+.code-archdoc-metrics-heat-val {
+  min-width: 48px;
+  text-align: right;
+  font-family: var(--font-family-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+@media (max-width: 1200px) {
+  .code-archdoc-metrics-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .code-archdoc-metrics-kpis {
+    grid-template-columns: 1fr;
+  }
+}

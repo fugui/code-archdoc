@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Cpu, FileText, FolderGit2, LogOut, Moon, Sun } from 'lucide-react';
+import { BarChart3, Cpu, FileText, FolderGit2, LogOut, Moon, Radar, Sun } from 'lucide-react';
 import {
   AUTH_TOKEN_KEY,
   ConfirmProvider,
@@ -22,6 +22,8 @@ import { ModuleUserProvider, useModuleUser } from './context/ModuleUserContext';
 import AdminDocTypesPage from './pages/AdminDocTypesPage';
 import AdminLLMConfigPage from './pages/AdminLLMConfigPage';
 import CanvasStudioPage from './pages/CanvasStudioPage';
+import DriftRadarPage from './pages/DriftRadarPage';
+import QualityMetricsPage from './pages/QualityMetricsPage';
 import RepoCoveragePage from './pages/RepoCoveragePage';
 import type { CurrentUserProfile } from './types';
 import './index.css';
@@ -47,6 +49,12 @@ const EmbeddedRoutes: React.FC = () => {
 
       <Route path="/repos" element={<RepoCoveragePage />} />
       <Route path={`${MODULE_BASE_PATH}/repos`} element={<RepoCoveragePage />} />
+
+      <Route path="/drift" element={<DriftRadarPage />} />
+      <Route path={`${MODULE_BASE_PATH}/drift`} element={<DriftRadarPage />} />
+
+      <Route path="/metrics" element={<QualityMetricsPage />} />
+      <Route path={`${MODULE_BASE_PATH}/metrics`} element={<QualityMetricsPage />} />
 
       <Route path="/studio/:repoId" element={<CanvasStudioPage />} />
       <Route path={`${MODULE_BASE_PATH}/studio/:repoId`} element={<CanvasStudioPage />} />
@@ -102,6 +110,8 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const pathname = location.pathname;
   const isRepos = pathname === '/' || pathname.startsWith('/repos');
   const isStudio = pathname.startsWith('/studio') || pathname.startsWith('/docs/');
+  const isDrift = pathname.startsWith('/drift');
+  const isMetrics = pathname.startsWith('/metrics');
   const isAdminLLM = pathname.startsWith('/admin/llm');
   const isAdminDocTypes = pathname.startsWith('/admin/doc-types');
 
@@ -109,9 +119,13 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     ? '文档类型管理 (DocType 注册表)'
     : isAdminLLM
       ? 'LLM 模型配置与探活'
-      : isStudio
-        ? 'Canvas Studio 协同审校工作台'
-        : '仓库与文档覆盖矩阵';
+      : isDrift
+        ? '章节级双维漂移雷达'
+        : isMetrics
+          ? '生成质量度量与修订纵向对比'
+          : isStudio
+            ? 'Canvas Studio 协同审校工作台'
+            : '仓库与文档覆盖矩阵';
 
   return (
     <div className="code-archdoc-shell">
@@ -135,6 +149,24 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             >
               <FolderGit2 size={17} />
               <span>仓库与文档覆盖</span>
+            </Link>
+            <Link
+              to="/drift"
+              className={`code-archdoc-nav-link ${
+                isDrift ? 'code-archdoc-nav-link--active' : ''
+              }`}
+            >
+              <Radar size={17} />
+              <span>双维漂移雷达</span>
+            </Link>
+            <Link
+              to="/metrics"
+              className={`code-archdoc-nav-link ${
+                isMetrics ? 'code-archdoc-nav-link--active' : ''
+              }`}
+            >
+              <BarChart3 size={17} />
+              <span>生成质量度量</span>
             </Link>
           </div>
 
@@ -193,6 +225,8 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           <Routes>
             <Route path="/" element={<Navigate to="/repos" replace />} />
             <Route path="/repos" element={<RepoCoveragePage />} />
+            <Route path="/drift" element={<DriftRadarPage />} />
+            <Route path="/metrics" element={<QualityMetricsPage />} />
             <Route path="/studio/:repoId" element={<CanvasStudioPage />} />
             <Route path="/studio/:repoId/docs/:docId" element={<CanvasStudioPage />} />
             <Route path="/docs/:docId/evidence" element={<CanvasStudioPage evidenceDeepLink />} />
