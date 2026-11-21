@@ -2,29 +2,6 @@
    TaskCenterPage 样式（Flat BEM .code-archdoc-task-*，全量 --color-* Token）
    ========================================================================== */
 
-.code-archdoc-task-kpis {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.9rem;
-}
-
-.code-archdoc-task-kpi-btn {
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.code-archdoc-task-kpi-btn:hover {
-  border-color: var(--color-border-hover);
-  background: var(--color-bg-hover);
-}
-
-.code-archdoc-task-kpi-btn--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
 .code-archdoc-task-toolbar {
   padding: 0.9rem 1.15rem;
   display: flex;
@@ -253,14 +230,7 @@
   line-height: 1.4;
 }
 
-@media (max-width: 1080px) {
-  .code-archdoc-task-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 640px) {
-  .code-archdoc-task-kpis,
   .code-archdoc-task-launch-modes {
     grid-template-columns: 1fr;
   }

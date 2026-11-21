@@ -232,6 +232,107 @@ body {
   color: var(--color-purple);
 }
 
+/* ── 列表页顶部极简摘要微标 (Micro-Pills) ── */
+.code-archdoc-micro-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-micro-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  height: 28px;
+  padding: 0 0.62rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1;
+  white-space: nowrap;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-micro-pill--interactive {
+  cursor: pointer;
+}
+
+.code-archdoc-micro-pill--interactive:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-hover);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-micro-pill--interactive:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.code-archdoc-micro-pill--success {
+  border-color: var(--color-success-border);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.code-archdoc-micro-pill--warning {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.code-archdoc-micro-pill--purple {
+  border-color: var(--color-purple-border);
+  background: var(--color-purple-subtle);
+  color: var(--color-purple);
+}
+
+.code-archdoc-micro-pill--info {
+  border-color: var(--color-info-border);
+  background: var(--color-info-subtle);
+  color: var(--color-info);
+}
+
+.code-archdoc-micro-pill--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--color-primary-border);
+}
+
+.code-archdoc-micro-pill--warning.code-archdoc-micro-pill--active {
+  border-color: var(--color-warning);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  box-shadow: 0 0 0 1px var(--color-warning);
+}
+
+.code-archdoc-micro-pill--success.code-archdoc-micro-pill--active {
+  border-color: var(--color-success);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+  box-shadow: 0 0 0 1px var(--color-success);
+}
+
+.code-archdoc-micro-pill--purple.code-archdoc-micro-pill--active {
+  border-color: var(--color-purple);
+  background: var(--color-purple-subtle);
+  color: var(--color-purple);
+  box-shadow: 0 0 0 1px var(--color-purple);
+}
+
+.code-archdoc-micro-pill-val {
+  font-family: var(--font-family-mono);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+
 .code-archdoc-alert {
   display: flex;
   align-items: flex-start;

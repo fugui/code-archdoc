@@ -1,12 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Activity,
-  AlertTriangle,
   BookOpen,
-  CheckCircle2,
   Eye,
-  ListChecks,
   Loader2,
   Plus,
   RefreshCw,
@@ -26,6 +22,7 @@ import {
 import { getRepoScopes, listDocTypes, listRepos } from '../api/repos';
 import { cancelTask, listTasks } from '../api/tasks';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
+import OverviewMicroPills from '../components/OverviewMicroPills';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
   DocTypeSummaryVO,
@@ -392,6 +389,50 @@ export const TaskCenterPage: React.FC = () => {
         </div>
 
         <div className="code-archdoc-page-actions">
+          <OverviewMicroPills
+            ariaLabel="任务状态快捷筛选"
+            items={[
+              {
+                key: 'all',
+                label: '全部',
+                value: summary.total,
+                active: filterState.status === '' || filterState.status === 'all',
+                title: '查看全部反推生成任务',
+                onClick: () => updateFilter({ status: '' }),
+              },
+              {
+                key: 'active',
+                label: '执行中',
+                value: summary.active,
+                tone: 'purple',
+                active: filterState.status === 'active',
+                title: '筛选执行中或排队中任务',
+                onClick: () =>
+                  updateFilter({ status: filterState.status === 'active' ? '' : 'active' }),
+              },
+              {
+                key: 'ready',
+                label: '已完成',
+                value: summary.ready,
+                tone: 'success',
+                active: filterState.status === 'ready',
+                title: '筛选已完成任务',
+                onClick: () =>
+                  updateFilter({ status: filterState.status === 'ready' ? '' : 'ready' }),
+              },
+              {
+                key: 'failed',
+                label: '失败',
+                value: summary.failed,
+                tone: summary.failed > 0 ? 'warning' : 'default',
+                active: filterState.status === 'failed',
+                title: '筛选失败待处理任务',
+                onClick: () =>
+                  updateFilter({ status: filterState.status === 'failed' ? '' : 'failed' }),
+              },
+            ]}
+          />
+
           {hasActiveTasks && (
             <span className="code-archdoc-task-live-hint">
               <Loader2 size={14} className="code-archdoc-spin" />
@@ -424,81 +465,6 @@ export const TaskCenterPage: React.FC = () => {
             <span>新建生成任务</span>
           </button>
         </div>
-      </div>
-
-      {/* 4 个可点击状态快捷筛选 KPI 卡片 */}
-      <div className="code-archdoc-task-kpis">
-        <button
-          type="button"
-          className={`code-stat-card code-archdoc-task-kpi-btn ${
-            filterState.status === '' || filterState.status === 'all'
-              ? 'code-archdoc-task-kpi-btn--active'
-              : ''
-          }`}
-          onClick={() => updateFilter({ status: '' })}
-        >
-          <div className="code-stat-icon code-archdoc-stat-icon--primary">
-            <ListChecks size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">任务总数</div>
-            <div className="code-stat-value">{summary.total}</div>
-          </div>
-        </button>
-
-        <button
-          type="button"
-          className={`code-stat-card code-archdoc-task-kpi-btn ${
-            filterState.status === 'active' ? 'code-archdoc-task-kpi-btn--active' : ''
-          }`}
-          onClick={() =>
-            updateFilter({ status: filterState.status === 'active' ? '' : 'active' })
-          }
-        >
-          <div className="code-stat-icon code-archdoc-stat-icon--purple">
-            <Activity size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">执行中 / 排队</div>
-            <div className="code-stat-value">{summary.active}</div>
-          </div>
-        </button>
-
-        <button
-          type="button"
-          className={`code-stat-card code-archdoc-task-kpi-btn ${
-            filterState.status === 'ready' ? 'code-archdoc-task-kpi-btn--active' : ''
-          }`}
-          onClick={() =>
-            updateFilter({ status: filterState.status === 'ready' ? '' : 'ready' })
-          }
-        >
-          <div className="code-stat-icon code-archdoc-stat-icon--success">
-            <CheckCircle2 size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">已完成</div>
-            <div className="code-stat-value">{summary.ready}</div>
-          </div>
-        </button>
-
-        <button
-          type="button"
-          className={`code-stat-card code-archdoc-task-kpi-btn ${
-            filterState.status === 'failed' ? 'code-archdoc-task-kpi-btn--active' : ''
-          }`}
-          onClick={() =>
-            updateFilter({ status: filterState.status === 'failed' ? '' : 'failed' })
-          }
-        >
-          <div className="code-stat-icon code-archdoc-stat-icon--warning">
-            <AlertTriangle size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">失败 / 需处理</div>
-            <div className="code-stat-value">{summary.failed}</div>
-          </div>
-        </button>
       </div>
 
       {/* 单行筛选工具栏 */}

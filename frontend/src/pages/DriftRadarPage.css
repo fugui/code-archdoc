@@ -2,48 +2,6 @@
    DriftRadarPage 样式（Flat BEM .code-archdoc-drift-*，全量 --color-* Token）
    ========================================================================== */
 
-.code-archdoc-drift-kpis {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.9rem;
-}
-
-.code-archdoc-drift-kpi {
-  padding: 1.05rem 1.2rem;
-  display: flex;
-  align-items: center;
-  gap: 0.9rem;
-}
-
-.code-archdoc-drift-kpi-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: var(--radius-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.code-archdoc-drift-kpi-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
-}
-
-.code-archdoc-drift-kpi-label {
-  font-size: 0.78rem;
-  color: var(--color-text-secondary);
-}
-
-.code-archdoc-drift-kpi-value {
-  font-size: 1.35rem;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  line-height: 1.2;
-}
-
 .code-archdoc-drift-kpi-sub {
   font-size: 0.73rem;
   color: var(--color-text-muted);
@@ -250,16 +208,4 @@
 .code-archdoc-drift-pagination {
   padding: 0.9rem 1.1rem;
   border-top: 1px solid var(--color-border-subtle);
-}
-
-@media (max-width: 1080px) {
-  .code-archdoc-drift-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .code-archdoc-drift-kpis {
-    grid-template-columns: 1fr;
-  }
 }

@@ -484,6 +484,38 @@ export function buildModulePath(isEmbedded: boolean, path: string): string {
 }
 
 /**
+ * 计算覆盖率百分比文本（分母为 0 安全返回 0.0%，上限 100.0%）。
+ */
+export function formatCoverageRate(covered: number, total: number): string {
+  if (!Number.isFinite(covered) || !Number.isFinite(total) || total <= 0 || covered <= 0) {
+    return '0.0%';
+  }
+  const pct = Math.min(100, (covered / total) * 100);
+  return `${pct.toFixed(1)}%`;
+}
+
+/**
+ * 生成全局概览大盘下钻至各业务列表页的路由路径（兼容独立态与嵌入态，并自动携带筛选参数）。
+ */
+export function buildOverviewDrilldownPath(
+  isEmbedded: boolean,
+  targetPath: '/repos' | '/arch-tree' | '/tasks' | '/drift',
+  query?: Record<string, string>,
+): string {
+  const base = buildModulePath(isEmbedded, targetPath);
+  if (!query) return base;
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    const trimmed = value.trim();
+    if (trimmed) {
+      qs.set(key, trimmed);
+    }
+  }
+  const queryStr = qs.toString();
+  return queryStr ? `${base}?${queryStr}` : base;
+}
+
+/**
  * 生成兼顾独立态与门户嵌入态的 Canvas Studio 路由路径。
  */
 export function buildStudioPath(

@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import {
-  BarChart3,
   Cpu,
   FileText,
   FolderGit2,
+  LayoutDashboard,
   ListChecks,
   ListTree,
   LogOut,
@@ -53,12 +53,15 @@ export interface AppProps {
  * 嵌入模式路由视图：无独立侧边栏与顶栏，同时兼容相对子路径与 /archdoc/* 完整前缀
  */
 const EmbeddedRoutes: React.FC = () => {
-  const defaultTarget = `${MODULE_BASE_PATH}/repos`;
+  const defaultTarget = `${MODULE_BASE_PATH}/overview`;
   return (
     <Routes>
       <Route path="/" element={<Navigate to={defaultTarget} replace />} />
       <Route path={MODULE_BASE_PATH} element={<Navigate to={defaultTarget} replace />} />
       <Route path={`${MODULE_BASE_PATH}/`} element={<Navigate to={defaultTarget} replace />} />
+
+      <Route path="/overview" element={<QualityMetricsPage />} />
+      <Route path={`${MODULE_BASE_PATH}/overview`} element={<QualityMetricsPage />} />
 
       <Route path="/repos" element={<RepoCoveragePage />} />
       <Route path={`${MODULE_BASE_PATH}/repos`} element={<RepoCoveragePage />} />
@@ -127,12 +130,13 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   }
 
   const pathname = location.pathname;
-  const isRepos = pathname === '/' || pathname.startsWith('/repos');
+  const isOverview =
+    pathname === '/' || pathname.startsWith('/overview') || pathname.startsWith('/metrics');
+  const isRepos = pathname.startsWith('/repos');
   const isArchTree = pathname.startsWith('/arch-tree');
   const isTasks = pathname.startsWith('/tasks');
   const isStudio = pathname.startsWith('/studio') || pathname.startsWith('/docs/');
   const isDrift = pathname.startsWith('/drift');
-  const isMetrics = pathname.startsWith('/metrics');
   const isAdminLLM = pathname.startsWith('/admin/llm');
   const isAdminDocTypes = pathname.startsWith('/admin/doc-types');
 
@@ -146,8 +150,8 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           ? '架构文档全景'
           : isDrift
             ? '章节级双维漂移雷达'
-            : isMetrics
-              ? '生成质量度量与修订纵向对比'
+            : isOverview
+              ? '全局概览 · 文档治理与质量度量大盘'
               : isStudio
                 ? 'Canvas Studio 协同审校工作台'
                 : '仓库文档覆盖';
@@ -166,6 +170,15 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         <nav className="code-archdoc-nav">
           <div className="code-archdoc-nav-group">
             <div className="code-archdoc-nav-group-title">文档全景</div>
+            <Link
+              to="/overview"
+              className={`code-archdoc-nav-link ${
+                isOverview ? 'code-archdoc-nav-link--active' : ''
+              }`}
+            >
+              <LayoutDashboard size={17} />
+              <span>全局概览</span>
+            </Link>
             <Link
               to="/repos"
               className={`code-archdoc-nav-link ${
@@ -205,15 +218,6 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             >
               <Radar size={17} />
               <span>双维漂移雷达</span>
-            </Link>
-            <Link
-              to="/metrics"
-              className={`code-archdoc-nav-link ${
-                isMetrics ? 'code-archdoc-nav-link--active' : ''
-              }`}
-            >
-              <BarChart3 size={17} />
-              <span>生成质量度量</span>
             </Link>
           </div>
 
@@ -270,7 +274,8 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
         <div className="flex-1">
           <Routes>
-            <Route path="/" element={<Navigate to="/repos" replace />} />
+            <Route path="/" element={<Navigate to="/overview" replace />} />
+            <Route path="/overview" element={<QualityMetricsPage />} />
             <Route path="/repos" element={<RepoCoveragePage />} />
             <Route path="/arch-tree" element={<ArchTreeCoveragePage />} />
             <Route path="/tasks" element={<TaskCenterPage />} />
@@ -281,7 +286,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             <Route path="/docs/:docId/evidence" element={<CanvasStudioPage evidenceDeepLink />} />
             <Route path="/admin/llm" element={<AdminLLMConfigPage />} />
             <Route path="/admin/doc-types" element={<AdminDocTypesPage />} />
-            <Route path="*" element={<Navigate to="/repos" replace />} />
+            <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </div>
       </div>

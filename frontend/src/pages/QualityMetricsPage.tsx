@@ -1,32 +1,98 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
+  Activity,
+  AlertTriangle,
+  ArrowRight,
   BarChart3,
   CheckCircle2,
   Cpu,
   Edit3,
+  FileCode2,
+  FileText,
+  FolderGit2,
   Layers,
+  ListChecks,
   Loader2,
   MessageSquareCode,
+  Radar,
   RefreshCw,
 } from 'lucide-react';
 import { EmptyState, StatusTag, useToast, type StatusType } from '@code/common';
 import { listDocTypeRevisions } from '../api/admin';
+import { getDriftSummary } from '../api/drift';
 import {
   compareMetricsRevisions,
   getMetricsOverview,
   getMetricsSlotHeatmap,
 } from '../api/metrics';
-import { listDocTypes } from '../api/repos';
+import { listDocTypes, listRepos } from '../api/repos';
+import { listTasks } from '../api/tasks';
 import RevisionTrendChart from '../components/metrics/RevisionTrendChart';
+import { useModuleUser } from '../context/ModuleUserContext';
 import type {
   DocTypeRevisionSummaryVO,
   DocTypeSummaryVO,
+  DriftSummaryVO,
   MetricsOverviewVO,
+  RepoCoverageSummaryVO,
   RevisionMetricPointVO,
   SlotHeatmapItemVO,
+  TaskSummaryVO,
 } from '../types';
 import { formatApiError } from '../utils/errorMessages';
+import {
+  buildModulePath,
+  buildOverviewDrilldownPath,
+  formatCoverageRate,
+  formatDateTime,
+} from '../utils/urlQuery';
 import './QualityMetricsPage.css';
+
+type OverviewTargetPath = '/repos' | '/arch-tree' | '/tasks' | '/drift';
+type OverviewIconTone = 'primary' | 'purple' | 'success' | 'warning';
+
+interface OverviewCardSpec {
+  key: string;
+  label: string;
+  value: string | number;
+  sub: string;
+  icon: React.ReactNode;
+  iconTone: OverviewIconTone;
+  targetPath: OverviewTargetPath;
+  query?: Record<string, string>;
+}
+
+const OverviewCardGrid: React.FC<{
+  cards: OverviewCardSpec[];
+  onDrilldown: (targetPath: OverviewTargetPath, query?: Record<string, string>) => void;
+}> = ({ cards, onDrilldown }) => (
+  <div className="code-archdoc-overview-grid-4">
+    {cards.map((card) => (
+      <button
+        key={card.key}
+        type="button"
+        className="code-card code-archdoc-overview-card code-archdoc-overview-card--clickable"
+        onClick={() => onDrilldown(card.targetPath, card.query)}
+        title={`点击前往查看「${card.label}」明细`}
+      >
+        <div
+          className={`code-archdoc-overview-card-icon code-archdoc-stat-icon--${card.iconTone}`}
+        >
+          {card.icon}
+        </div>
+        <div className="code-archdoc-overview-card-body">
+          <div className="code-archdoc-overview-card-top">
+            <span className="code-archdoc-overview-card-label">{card.label}</span>
+            <ArrowRight size={13} className="code-archdoc-overview-card-arrow" />
+          </div>
+          <span className="code-archdoc-overview-card-val">{card.value}</span>
+          <span className="code-archdoc-overview-card-sub">{card.sub}</span>
+        </div>
+      </button>
+    ))}
+  </div>
+);
 
 function formatPercent(v: number): string {
   return `${(v * 100).toFixed(1)}%`;
@@ -65,8 +131,37 @@ function slotHeatLevel(ratio: number): {
 }
 
 export const QualityMetricsPage: React.FC = () => {
+  const navigate = useNavigate();
+  const { isEmbedded } = useModuleUser();
   const { showToast } = useToast();
 
+  // 三大宏观态势摘要状态
+  const [summaryLoading, setSummaryLoading] = useState<boolean>(true);
+  const [coverageSummary, setCoverageSummary] = useState<RepoCoverageSummaryVO>({
+    total_scopes: 0,
+    covered_scopes: 0,
+    approved_docs: 0,
+    drifted_docs: 0,
+  });
+  const [driftSummary, setDriftSummary] = useState<DriftSummaryVO>({
+    total_drifted_docs: 0,
+    code_drift_docs: 0,
+    spec_drift_docs: 0,
+    both_drift_docs: 0,
+    monitored_repos: 0,
+    unhealthy_repos: 0,
+    last_poll_at: null,
+    poll_interval_minutes: 15,
+  });
+  const [taskSummary, setTaskSummary] = useState<TaskSummaryVO>({
+    total: 0,
+    active: 0,
+    ready: 0,
+    failed: 0,
+    canceled: 0,
+  });
+
+  // 第四分区：生成质量度量与修订纵向对比状态
   const [days, setDays] = useState<number>(30);
   const [docTypes, setDocTypes] = useState<DocTypeSummaryVO[]>([]);
   const [selectedDocType, setSelectedDocType] = useState<string>('system-architecture');
@@ -87,6 +182,49 @@ export const QualityMetricsPage: React.FC = () => {
   const [trendPoints, setTrendPoints] = useState<RevisionMetricPointVO[]>([]);
   const [heatmapSlots, setHeatmapSlots] = useState<SlotHeatmapItemVO[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  const handleDrilldown = useCallback(
+    (targetPath: OverviewTargetPath, query?: Record<string, string>) => {
+      navigate(buildOverviewDrilldownPath(isEmbedded, targetPath, query));
+    },
+    [isEmbedded, navigate],
+  );
+
+  // 加载三大宏观态势摘要（覆盖率 / 漂移 / 任务队列）
+  const loadGlobalSummaries = useCallback(async () => {
+    setSummaryLoading(true);
+    try {
+      const [repoRes, driftRes, taskRes] = await Promise.allSettled([
+        listRepos({ page: 1, pageSize: 15 }),
+        getDriftSummary(),
+        listTasks({ page: 1, pageSize: 15, topLevelOnly: true }),
+      ]);
+      if (repoRes.status === 'fulfilled' && repoRes.value.summary) {
+        setCoverageSummary(repoRes.value.summary);
+      }
+      if (driftRes.status === 'fulfilled') {
+        setDriftSummary(driftRes.value);
+      }
+      if (taskRes.status === 'fulfilled' && taskRes.value.summary) {
+        setTaskSummary(taskRes.value.summary);
+      }
+      const failedCount = [repoRes, driftRes, taskRes].filter(
+        (res) => res.status === 'rejected',
+      ).length;
+      if (failedCount > 0) {
+        showToast(
+          `部分全局汇总接口加载失败（${failedCount} 项），其余分区已正常展示`,
+          'warning',
+        );
+      }
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    void loadGlobalSummaries();
+  }, [loadGlobalSummaries]);
 
   // 初始化加载 DocType 列表
   useEffect(() => {
@@ -167,13 +305,150 @@ export const QualityMetricsPage: React.FC = () => {
     void loadMetrics();
   }, [loadMetrics]);
 
+  const handleRefreshAll = () => {
+    void Promise.all([loadGlobalSummaries(), loadMetrics()]);
+  };
+
+  const coverageRateText = formatCoverageRate(
+    coverageSummary.covered_scopes,
+    coverageSummary.total_scopes,
+  );
+
+  const coverageCards: OverviewCardSpec[] = [
+    {
+      key: 'total_scopes',
+      label: '纳入范围总数',
+      value: coverageSummary.total_scopes,
+      sub: `总体覆盖率 ${coverageRateText}（整仓与子目录）`,
+      icon: <FolderGit2 size={20} />,
+      iconTone: 'primary',
+      targetPath: '/repos',
+    },
+    {
+      key: 'covered_scopes',
+      label: '已覆盖范围',
+      value: coverageSummary.covered_scopes,
+      sub: '已产出至少 1 篇设计文档的纳管范围',
+      icon: <Layers size={20} />,
+      iconTone: 'purple',
+      targetPath: '/arch-tree',
+    },
+    {
+      key: 'approved_docs',
+      label: '已发布定稿文档',
+      value: coverageSummary.approved_docs,
+      sub: '已通过 Verifier 并挂载至门户知识库',
+      icon: <CheckCircle2 size={20} />,
+      iconTone: 'success',
+      targetPath: '/repos',
+      query: { status: 'approved' },
+    },
+    {
+      key: 'drifted_docs',
+      label: '存在漂移文档',
+      value: coverageSummary.drifted_docs,
+      sub: '代码变更或模板规范升级待增量刷新',
+      icon: <AlertTriangle size={20} />,
+      iconTone: 'warning',
+      targetPath: '/repos',
+      query: { status: 'drifted' },
+    },
+  ];
+
+  const driftCards: OverviewCardSpec[] = [
+    {
+      key: 'total_drifted',
+      label: '待治理漂移文档',
+      value: driftSummary.total_drifted_docs,
+      sub: `含双维漂移 ${driftSummary.both_drift_docs} 篇`,
+      icon: <AlertTriangle size={20} />,
+      iconTone: 'warning',
+      targetPath: '/drift',
+    },
+    {
+      key: 'code_drift',
+      label: 'Code Drift（代码语义变更）',
+      value: driftSummary.code_drift_docs,
+      sub: '基于 AST 指纹，行号平移 0 误报',
+      icon: <FileCode2 size={20} />,
+      iconTone: 'primary',
+      targetPath: '/drift',
+      query: { drift_type: 'code' },
+    },
+    {
+      key: 'spec_drift',
+      label: 'Spec Drift（模板规范升级）',
+      value: driftSummary.spec_drift_docs,
+      sub: 'DocType 新修订槽位/Prompt 差异',
+      icon: <FileText size={20} />,
+      iconTone: 'purple',
+      targetPath: '/drift',
+      query: { drift_type: 'spec' },
+    },
+    {
+      key: 'poll_status',
+      label: '远端轻量巡检状态',
+      value: `${driftSummary.monitored_repos} 仓`,
+      sub: `${
+        driftSummary.unhealthy_repos > 0 ? `${driftSummary.unhealthy_repos} 仓退避重试中 · ` : ''
+      }每 ${driftSummary.poll_interval_minutes}m · 最近 ${formatDateTime(driftSummary.last_poll_at)}`,
+      icon: <Radar size={20} />,
+      iconTone: 'success',
+      targetPath: '/drift',
+    },
+  ];
+
+  const taskCards: OverviewCardSpec[] = [
+    {
+      key: 'task_total',
+      label: '任务总数',
+      value: taskSummary.total,
+      sub: '累计反推生成与批量分层编排任务',
+      icon: <ListChecks size={20} />,
+      iconTone: 'primary',
+      targetPath: '/tasks',
+    },
+    {
+      key: 'task_active',
+      label: '执行中 / 排队',
+      value: taskSummary.active,
+      sub: '正在抽取 Code IR 或执行 LLM 并发生成',
+      icon: <Activity size={20} />,
+      iconTone: 'purple',
+      targetPath: '/tasks',
+      query: { status: 'active' },
+    },
+    {
+      key: 'task_ready',
+      label: '已完成',
+      value: taskSummary.ready,
+      sub: '已产出修订草稿并等待工作台审校定稿',
+      icon: <CheckCircle2 size={20} />,
+      iconTone: 'success',
+      targetPath: '/tasks',
+      query: { status: 'ready' },
+    },
+    {
+      key: 'task_failed',
+      label: '失败 / 需处理',
+      value: taskSummary.failed,
+      sub: `已取消 ${taskSummary.canceled} 个 · 支持单槽位重试`,
+      icon: <AlertTriangle size={20} />,
+      iconTone: 'warning',
+      targetPath: '/tasks',
+      query: { status: 'failed' },
+    },
+  ];
+
+  const isRefreshing = loading || summaryLoading;
+
   return (
     <div className="code-archdoc-workspace">
       <div className="code-archdoc-page-header">
         <div>
-          <h1 className="code-archdoc-page-title">生成质量度量与修订纵向对比看板</h1>
+          <h1 className="code-archdoc-page-title">全局概览 · 文档治理与质量度量大盘</h1>
           <p className="code-archdoc-page-subtitle">
-            闭环度量首版 AI 草稿→定稿章节级修改率、Chat 局部精修采纳率、Verifier 四重门禁拦截率及 KV Cache 命中率，量化评估每次 DocType 模板调优收益。
+            一站式总览仓库/架构文档资产覆盖率、章节级双维漂移健康度、AI 反推任务队列态势及各 DocType 修订质量度量，点击任意指标卡片即可直达明细处理。
           </p>
         </div>
 
@@ -181,235 +456,346 @@ export const QualityMetricsPage: React.FC = () => {
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={() => void loadMetrics()}
-            disabled={loading}
+            onClick={handleRefreshAll}
+            disabled={isRefreshing}
           >
-            <RefreshCw size={15} className={loading ? 'code-archdoc-spin' : ''} />
-            <span>刷新指标</span>
+            <RefreshCw size={15} className={isRefreshing ? 'code-archdoc-spin' : ''} />
+            <span>刷新大盘</span>
           </button>
         </div>
       </div>
 
-      {/* 顶部筛选栏 */}
-      <div className="code-card code-archdoc-metrics-filter">
-        <div className="code-archdoc-metrics-filter-group">
-          <label className="code-archdoc-metrics-filter-label" htmlFor="metrics-doctype-select">
-            文档类型 (DocType)
-          </label>
-          <select
-            id="metrics-doctype-select"
-            className="code-select code-archdoc-metrics-select"
-            value={selectedDocType}
-            onChange={(e) => {
-              setSelectedDocType(e.target.value);
-              setSelectedRevId('');
-            }}
-          >
-            {docTypes.map((dt) => (
-              <option key={dt.slug} value={dt.slug}>
-                {dt.display_name} ({dt.slug})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="code-archdoc-metrics-filter-group">
-          <label className="code-archdoc-metrics-filter-label" htmlFor="metrics-rev-select">
-            聚焦修订版本
-          </label>
-          <select
-            id="metrics-rev-select"
-            className="code-select code-archdoc-metrics-select"
-            value={selectedRevId}
-            onChange={(e) => setSelectedRevId(e.target.value)}
-          >
-            <option value="">全部修订聚合</option>
-            {revisions.map((r) => (
-              <option key={r.id} value={String(r.id)}>
-                Rev {r.revision_no} ({r.aggregate_hash.slice(0, 8)})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="code-archdoc-metrics-filter-group">
-          <label className="code-archdoc-metrics-filter-label" htmlFor="metrics-days-select">
-            统计窗口
-          </label>
-          <select
-            id="metrics-days-select"
-            className="code-select"
-            value={days}
-            onChange={(e) => setDays(Number.parseInt(e.target.value, 10) || 30)}
-          >
-            <option value={7}>最近 7 天</option>
-            <option value={30}>最近 30 天</option>
-            <option value={90}>最近 90 天</option>
-            <option value={180}>最近 180 天</option>
-            <option value={365}>最近 365 天</option>
-          </select>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="code-archdoc-loading">
-          <Loader2 size={18} className="code-archdoc-spin" />
-          <span>正在聚合质量度量与 Token 缓存指标...</span>
-        </div>
-      ) : (
-        <>
-          {/* 5 大核心 KPI 卡片 */}
-          <div className="code-archdoc-metrics-kpis">
-            <div className="code-card code-archdoc-metrics-kpi">
-              <div className="code-archdoc-metrics-kpi-top">
-                <span className="code-archdoc-metrics-kpi-label">草稿→定稿修改率</span>
-                <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--warning">
-                  <Edit3 size={16} />
-                </div>
-              </div>
-              <span className="code-archdoc-metrics-kpi-val">
-                {formatPercent(overview.avg_edit_diff_ratio)}
-              </span>
-              <span className="code-archdoc-metrics-kpi-sub">
-                越低代表 AI 初稿越贴近定稿（样本 {overview.sample_doc_count} 篇）
-              </span>
-            </div>
-
-            <div className="code-card code-archdoc-metrics-kpi">
-              <div className="code-archdoc-metrics-kpi-top">
-                <span className="code-archdoc-metrics-kpi-label">Chat 精修采纳率</span>
-                <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--success">
-                  <MessageSquareCode size={16} />
-                </div>
-              </div>
-              <span className="code-archdoc-metrics-kpi-val">
-                {formatPercent(overview.chat_accept_rate)}
-              </span>
-              <span className="code-archdoc-metrics-kpi-sub">
-                Accepted 提案 / 已决提案总数
-              </span>
-            </div>
-
-            <div className="code-card code-archdoc-metrics-kpi">
-              <div className="code-archdoc-metrics-kpi-top">
-                <span className="code-archdoc-metrics-kpi-label">Verifier 首次通过率</span>
-                <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--primary">
-                  <CheckCircle2 size={16} />
-                </div>
-              </div>
-              <span className="code-archdoc-metrics-kpi-val">
-                {formatPercent(overview.verifier_first_pass_rate)}
-              </span>
-              <span className="code-archdoc-metrics-kpi-sub">
-                阻断拦截率 {formatPercent(overview.verifier_block_rate)}
-              </span>
-            </div>
-
-            <div className="code-card code-archdoc-metrics-kpi">
-              <div className="code-archdoc-metrics-kpi-top">
-                <span className="code-archdoc-metrics-kpi-label">必填槽位完备度</span>
-                <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--purple">
-                  <Layers size={16} />
-                </div>
-              </div>
-              <span className="code-archdoc-metrics-kpi-val">
-                {formatPercent(overview.avg_slot_coverage_rate)}
-              </span>
-              <span className="code-archdoc-metrics-kpi-sub">
-                Gate 2 必填章节有效字符达标率
-              </span>
-            </div>
-
-            <div className="code-card code-archdoc-metrics-kpi">
-              <div className="code-archdoc-metrics-kpi-top">
-                <span className="code-archdoc-metrics-kpi-label">单篇 Token & KV Cache</span>
-                <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--primary">
-                  <Cpu size={16} />
-                </div>
-              </div>
-              <span className="code-archdoc-metrics-kpi-val">
-                {formatTokens(overview.avg_tokens_per_doc)}
-              </span>
-              <span className="code-archdoc-metrics-kpi-sub">
-                Prefix KV Cache 命中率 {formatPercent(overview.avg_cache_hit_ratio)}
-              </span>
-            </div>
+      {/* 分区 1：文档资产与覆盖态势 */}
+      <section className="code-archdoc-overview-section" aria-label="文档资产与覆盖态势">
+        <div className="code-archdoc-overview-section-head">
+          <div className="code-archdoc-overview-section-title-group">
+            <h2 className="code-archdoc-overview-section-title">
+              <FolderGit2 size={17} />
+              <span>文档资产与覆盖态势</span>
+            </h2>
+            <p className="code-archdoc-overview-section-sub">
+              聚合代码仓整仓、Monorepo 子目录与架构树节点的设计文档沉淀规模及定稿进展
+            </p>
           </div>
 
-          {/* 原生轻量双主题 SVG 趋势图 */}
-          <RevisionTrendChart docTypeSlug={selectedDocType} revisions={trendPoints} />
+          <div className="code-archdoc-overview-section-links">
+            <button
+              type="button"
+              className="code-archdoc-overview-section-link"
+              onClick={() => navigate(buildModulePath(isEmbedded, '/repos'))}
+            >
+              <span>仓库文档覆盖</span>
+              <ArrowRight size={13} />
+            </button>
+            <button
+              type="button"
+              className="code-archdoc-overview-section-link"
+              onClick={() => navigate(buildModulePath(isEmbedded, '/arch-tree'))}
+            >
+              <span>架构文档全景</span>
+              <ArrowRight size={13} />
+            </button>
+          </div>
+        </div>
 
-          {/* 槽位级修改率与告警热力表 */}
-          <div className="code-card code-archdoc-metrics-heatmap-card">
-            <div className="code-archdoc-metrics-heatmap-head">
-              <div>
-                <h2 className="code-archdoc-metrics-heatmap-title">
-                  <BarChart3 size={17} /> 章节槽位修改率热力表（{selectedDocType}）
-                </h2>
-                <p className="code-archdoc-metrics-heatmap-sub">
-                  按历史平均人工修改比例降序排列，快速识别需要补充 <code className="code-archdoc-mono">instruction_hint</code> 或优化 <code className="code-archdoc-mono">ir_facets</code> 的薄弱槽位
-                </p>
+        <OverviewCardGrid cards={coverageCards} onDrilldown={handleDrilldown} />
+      </section>
+
+      {/* 分区 2：双维漂移与保鲜健康度 */}
+      <section className="code-archdoc-overview-section" aria-label="双维漂移与保鲜健康度">
+        <div className="code-archdoc-overview-section-head">
+          <div className="code-archdoc-overview-section-title-group">
+            <h2 className="code-archdoc-overview-section-title">
+              <Radar size={17} />
+              <span>双维漂移与保鲜健康度</span>
+            </h2>
+            <p className="code-archdoc-overview-section-sub">
+              基于 AST 语义指纹与 DocType 修订对比，实时追踪已发布文档的保鲜水位与远端巡检状态
+            </p>
+          </div>
+
+          <div className="code-archdoc-overview-section-links">
+            <button
+              type="button"
+              className="code-archdoc-overview-section-link"
+              onClick={() => navigate(buildModulePath(isEmbedded, '/drift'))}
+            >
+              <span>进入双维漂移雷达</span>
+              <ArrowRight size={13} />
+            </button>
+          </div>
+        </div>
+
+        <OverviewCardGrid cards={driftCards} onDrilldown={handleDrilldown} />
+      </section>
+
+      {/* 分区 3：反推生产任务态势 */}
+      <section className="code-archdoc-overview-section" aria-label="反推生产任务态势">
+        <div className="code-archdoc-overview-section-head">
+          <div className="code-archdoc-overview-section-title-group">
+            <h2 className="code-archdoc-overview-section-title">
+              <ListChecks size={17} />
+              <span>反推生产任务态势</span>
+            </h2>
+            <p className="code-archdoc-overview-section-sub">
+              集中观测 AI 反推队列运行负荷、批量分层编排吞吐及待重试异常任务
+            </p>
+          </div>
+
+          <div className="code-archdoc-overview-section-links">
+            <button
+              type="button"
+              className="code-archdoc-overview-section-link"
+              onClick={() => navigate(buildModulePath(isEmbedded, '/tasks'))}
+            >
+              <span>进入反推任务中心</span>
+              <ArrowRight size={13} />
+            </button>
+          </div>
+        </div>
+
+        <OverviewCardGrid cards={taskCards} onDrilldown={handleDrilldown} />
+      </section>
+
+      {/* 分区 4：生成质量度量与修订纵向对比 */}
+      <section className="code-archdoc-overview-section" aria-label="生成质量度量与修订纵向对比">
+        <div className="code-archdoc-overview-section-head">
+          <div className="code-archdoc-overview-section-title-group">
+            <h2 className="code-archdoc-overview-section-title">
+              <BarChart3 size={17} />
+              <span>生成质量度量与修订纵向对比</span>
+            </h2>
+            <p className="code-archdoc-overview-section-sub">
+              闭环度量首版 AI 草稿→定稿章节级修改率、Chat 局部精修采纳率、Verifier 门禁拦截率及 KV Cache 命中率
+            </p>
+          </div>
+
+          <div className="code-archdoc-overview-quality-filters">
+            <div className="code-archdoc-metrics-filter-group">
+              <label className="code-archdoc-metrics-filter-label" htmlFor="metrics-doctype-select">
+                文档类型
+              </label>
+              <select
+                id="metrics-doctype-select"
+                className="code-select code-archdoc-metrics-select"
+                value={selectedDocType}
+                onChange={(e) => {
+                  setSelectedDocType(e.target.value);
+                  setSelectedRevId('');
+                }}
+              >
+                {docTypes.map((dt) => (
+                  <option key={dt.slug} value={dt.slug}>
+                    {dt.display_name} ({dt.slug})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="code-archdoc-metrics-filter-group">
+              <label className="code-archdoc-metrics-filter-label" htmlFor="metrics-rev-select">
+                修订版本
+              </label>
+              <select
+                id="metrics-rev-select"
+                className="code-select code-archdoc-metrics-select"
+                value={selectedRevId}
+                onChange={(e) => setSelectedRevId(e.target.value)}
+              >
+                <option value="">全部修订聚合</option>
+                {revisions.map((r) => (
+                  <option key={r.id} value={String(r.id)}>
+                    Rev {r.revision_no} ({r.aggregate_hash.slice(0, 8)})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="code-archdoc-metrics-filter-group">
+              <label className="code-archdoc-metrics-filter-label" htmlFor="metrics-days-select">
+                统计窗口
+              </label>
+              <select
+                id="metrics-days-select"
+                className="code-select"
+                value={days}
+                onChange={(e) => setDays(Number.parseInt(e.target.value, 10) || 30)}
+              >
+                <option value={7}>最近 7 天</option>
+                <option value={30}>最近 30 天</option>
+                <option value={90}>最近 90 天</option>
+                <option value={180}>最近 180 天</option>
+                <option value={365}>最近 365 天</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="code-archdoc-loading">
+            <Loader2 size={18} className="code-archdoc-spin" />
+            <span>正在聚合质量度量与 Token 缓存指标...</span>
+          </div>
+        ) : (
+          <>
+            {/* 5 大核心 KPI 卡片 */}
+            <div className="code-archdoc-metrics-kpis">
+              <div className="code-card code-archdoc-metrics-kpi">
+                <div className="code-archdoc-metrics-kpi-top">
+                  <span className="code-archdoc-metrics-kpi-label">草稿→定稿修改率</span>
+                  <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--warning">
+                    <Edit3 size={16} />
+                  </div>
+                </div>
+                <span className="code-archdoc-metrics-kpi-val">
+                  {formatPercent(overview.avg_edit_diff_ratio)}
+                </span>
+                <span className="code-archdoc-metrics-kpi-sub">
+                  越低代表 AI 初稿越贴近定稿（样本 {overview.sample_doc_count} 篇）
+                </span>
+              </div>
+
+              <div className="code-card code-archdoc-metrics-kpi">
+                <div className="code-archdoc-metrics-kpi-top">
+                  <span className="code-archdoc-metrics-kpi-label">Chat 精修采纳率</span>
+                  <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--success">
+                    <MessageSquareCode size={16} />
+                  </div>
+                </div>
+                <span className="code-archdoc-metrics-kpi-val">
+                  {formatPercent(overview.chat_accept_rate)}
+                </span>
+                <span className="code-archdoc-metrics-kpi-sub">
+                  Accepted 提案 / 已决提案总数
+                </span>
+              </div>
+
+              <div className="code-card code-archdoc-metrics-kpi">
+                <div className="code-archdoc-metrics-kpi-top">
+                  <span className="code-archdoc-metrics-kpi-label">Verifier 首次通过率</span>
+                  <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--primary">
+                    <CheckCircle2 size={16} />
+                  </div>
+                </div>
+                <span className="code-archdoc-metrics-kpi-val">
+                  {formatPercent(overview.verifier_first_pass_rate)}
+                </span>
+                <span className="code-archdoc-metrics-kpi-sub">
+                  阻断拦截率 {formatPercent(overview.verifier_block_rate)}
+                </span>
+              </div>
+
+              <div className="code-card code-archdoc-metrics-kpi">
+                <div className="code-archdoc-metrics-kpi-top">
+                  <span className="code-archdoc-metrics-kpi-label">必填槽位完备度</span>
+                  <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--purple">
+                    <Layers size={16} />
+                  </div>
+                </div>
+                <span className="code-archdoc-metrics-kpi-val">
+                  {formatPercent(overview.avg_slot_coverage_rate)}
+                </span>
+                <span className="code-archdoc-metrics-kpi-sub">
+                  Gate 2 必填章节有效字符达标率
+                </span>
+              </div>
+
+              <div className="code-card code-archdoc-metrics-kpi">
+                <div className="code-archdoc-metrics-kpi-top">
+                  <span className="code-archdoc-metrics-kpi-label">单篇 Token & KV Cache</span>
+                  <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--primary">
+                    <Cpu size={16} />
+                  </div>
+                </div>
+                <span className="code-archdoc-metrics-kpi-val">
+                  {formatTokens(overview.avg_tokens_per_doc)}
+                </span>
+                <span className="code-archdoc-metrics-kpi-sub">
+                  Prefix KV Cache 命中率 {formatPercent(overview.avg_cache_hit_ratio)}
+                </span>
               </div>
             </div>
 
-            {heatmapSlots.length === 0 ? (
-              <EmptyState
-                title="暂无章节槽位热力数据"
-                description="当文档完成首次定稿发布后，系统将自动计算各章节 Levenshtein / Myers 修改率并生成热力排行。"
-              />
-            ) : (
-              <div className="code-archdoc-metrics-table-wrap">
-                <table className="code-archdoc-metrics-table">
-                  <thead>
-                    <tr>
-                      <th>章节标题</th>
-                      <th>槽位标识 (slot_id)</th>
-                      <th>统计样本</th>
-                      <th>平均草稿→定稿修改率</th>
-                      <th>Verifier 告警率</th>
-                      <th>Prompt 治理诊断</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {heatmapSlots.map((slot) => {
-                      const heat = slotHeatLevel(slot.avg_edit_diff_ratio);
-                      const widthPct = Math.min(100, Math.max(4, Math.round(slot.avg_edit_diff_ratio * 100)));
-                      return (
-                        <tr key={slot.slot_id}>
-                          <td>
-                            <strong>{slot.title}</strong>
-                          </td>
-                          <td>
-                            <code className="code-archdoc-mono">{slot.slot_id}</code>
-                          </td>
-                          <td>{slot.sample_count} 篇</td>
-                          <td>
-                            <div className="code-archdoc-metrics-heat-cell">
-                              <div className="code-archdoc-metrics-heat-track">
-                                <div
-                                  className={`code-archdoc-metrics-heat-fill ${heat.barClass}`}
-                                  style={{ width: `${widthPct}%` }}
-                                />
+            {/* 原生轻量双主题 SVG 趋势图 */}
+            <RevisionTrendChart docTypeSlug={selectedDocType} revisions={trendPoints} />
+
+            {/* 槽位级修改率与告警热力表 */}
+            <div className="code-card code-archdoc-metrics-heatmap-card">
+              <div className="code-archdoc-metrics-heatmap-head">
+                <div>
+                  <h3 className="code-archdoc-metrics-heatmap-title">
+                    <BarChart3 size={17} /> 章节槽位修改率热力表（{selectedDocType}）
+                  </h3>
+                  <p className="code-archdoc-metrics-heatmap-sub">
+                    按历史平均人工修改比例降序排列，快速识别需要补充{' '}
+                    <code className="code-archdoc-mono">instruction_hint</code> 或优化{' '}
+                    <code className="code-archdoc-mono">ir_facets</code> 的薄弱槽位
+                  </p>
+                </div>
+              </div>
+
+              {heatmapSlots.length === 0 ? (
+                <EmptyState
+                  title="暂无章节槽位热力数据"
+                  description="当文档完成首次定稿发布后，系统将自动计算各章节 Levenshtein / Myers 修改率并生成热力排行。"
+                />
+              ) : (
+                <div className="code-archdoc-metrics-table-wrap">
+                  <table className="code-archdoc-metrics-table">
+                    <thead>
+                      <tr>
+                        <th>章节标题</th>
+                        <th>槽位标识 (slot_id)</th>
+                        <th>统计样本</th>
+                        <th>平均草稿→定稿修改率</th>
+                        <th>Verifier 告警率</th>
+                        <th>Prompt 治理诊断</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {heatmapSlots.map((slot) => {
+                        const heat = slotHeatLevel(slot.avg_edit_diff_ratio);
+                        const widthPct = Math.min(
+                          100,
+                          Math.max(4, Math.round(slot.avg_edit_diff_ratio * 100)),
+                        );
+                        return (
+                          <tr key={slot.slot_id}>
+                            <td>
+                              <strong>{slot.title}</strong>
+                            </td>
+                            <td>
+                              <code className="code-archdoc-mono">{slot.slot_id}</code>
+                            </td>
+                            <td>{slot.sample_count} 篇</td>
+                            <td>
+                              <div className="code-archdoc-metrics-heat-cell">
+                                <div className="code-archdoc-metrics-heat-track">
+                                  <div
+                                    className={`code-archdoc-metrics-heat-fill ${heat.barClass}`}
+                                    style={{ width: `${widthPct}%` }}
+                                  />
+                                </div>
+                                <span className="code-archdoc-metrics-heat-val">
+                                  {formatPercent(slot.avg_edit_diff_ratio)}
+                                </span>
                               </div>
-                              <span className="code-archdoc-metrics-heat-val">
-                                {formatPercent(slot.avg_edit_diff_ratio)}
-                              </span>
-                            </div>
-                          </td>
-                          <td>{formatPercent(slot.verifier_warning_rate)}</td>
-                          <td>
-                            <StatusTag status={heat.tagStatus} text={heat.advice} size="sm" />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </>
-      )}
+                            </td>
+                            <td>{formatPercent(slot.verifier_warning_rate)}</td>
+                            <td>
+                              <StatusTag status={heat.tagStatus} text={heat.advice} size="sm" />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </section>
     </div>
   );
 };

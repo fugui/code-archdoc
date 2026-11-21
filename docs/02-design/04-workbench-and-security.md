@@ -13,24 +13,29 @@
 ### 1.1 Module Federation 联邦契约（`./App` 与 `./menu`）
 
 - **构建契约**：`frontend/vite.config.ts` 保持 `name: 'archdoc'`、`base: '/archdoc/'`、`filename: 'remoteEntry.js'`，共享 `react`、`react-dom`、`react-router-dom`。
-- **`./menu` 侧边栏导出**：
-  - **核心业务分组（全员可见）**：
-    - `/repos`（仓库与文档覆盖，`W1`）
+- **`./menu` 侧边栏导出（3 组 7 项）**：
+  - **文档全景（全员可见）**：
+    - `/overview`（全局概览：文档资产覆盖、双维漂移健康度、反推生产任务态势与生成质量度量大盘）
+    - `/repos`（仓库文档覆盖，`W1`）
+    - `/arch-tree`（架构文档全景，`W2`）
+  - **生产与保鲜（全员可见）**：
+    - `/tasks`（反推任务中心，`W1`）
     - `/drift`（双维漂移雷达，`W2`）
-    - `/metrics`（生成质量度量，`W2`）
-  - **模块治理分组（`adminOnly: true`，仅 `archdoc_admin` / `super_admin` 可见）**：
+  - **模块治理（`adminOnly: true`，仅 `archdoc_admin` / `super_admin` 可见）**：
     - `/admin/llm`（LLM 模型配置与探活，`W1`）
     - `/admin/doc-types`（`DocType` 文档类型管理，`W2`）
 - **`./App` 内部路由表（双模同时兼容相对子路径与 `/archdoc/*` 完整前缀）**：
 
 | 路由路径（嵌入态均含 `/archdoc` 前缀兼容） | 视图组件 | 波次 | 角色访问边界 |
 | :--- | :--- | :---: | :--- |
-| `/` → 重定向至 `/repos` | `RepoCoveragePage` | W1 | 登录全员 |
-| `/repos` | `RepoCoveragePage`（仓库与子目录文档覆盖列表） | W1 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
+| `/` → 重定向至 `/overview` | `QualityMetricsPage` | W1/W2 | 登录全员 |
+| `/overview` & `/metrics`（兼容路由） | `QualityMetricsPage`（全局概览大盘：覆盖态势 + 漂移雷达汇总 + 任务态势 + 质量度量与修订纵向对比） | W2 | 登录全员 |
+| `/repos` | `RepoCoveragePage`（仓库与子目录文档覆盖列表，Header 保留极简微标） | W1 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
+| `/arch-tree` | `ArchTreeCoveragePage`（架构树文档全景视图，Header 保留极简微标） | W2 | 登录全员 |
+| `/tasks` | `TaskCenterPage`（反推任务中心，Header 保留极简状态微标） | W1 | 登录全员 |
 | `/studio/:repoId` & `/studio/:repoId/docs/:docId` | `CanvasStudioPage`（双栏协同审校工作台） | W1 / W2 | 全员只读已发布；负责人可查看/编辑草稿 |
 | `/docs/:docId/evidence` | `CanvasStudioPage`（**深链直达入口**：自动定位 `docId` 并打开只读源码证据抽屉，读取 Query 参数 `commit`、`file`、`symbol`、`lines` 高亮渲染，承接 `code-bench` `D-03` 跳转） | W1 | 登录全员（仅限已发布文档；草稿仅负责人可看） |
-| `/drift` | `DriftRadarPage`（章节级双维漂移雷达） | W2 | 全员只读；负责人可触发所属范围增量刷新 |
-| `/metrics` | `QualityMetricsPage`（质量评测与 `DocTypeRevision` 对比看板） | W2 | 登录全员 |
+| `/drift` | `DriftRadarPage`（章节级双维漂移雷达，Header 保留极简微标） | W2 | 全员只读；负责人可触发所属范围增量刷新 |
 | `/admin/llm` | `AdminLLMConfigPage`（分层模型配置、预算阈值与探活） | W1 | `archdoc_admin` / `super_admin` |
 | `/admin/doc-types` | `AdminDocTypesPage`（`DocType` 注册表 CRUD 与模板编辑器） | W2 | `archdoc_admin` / `super_admin` |
 

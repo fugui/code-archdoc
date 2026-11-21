@@ -1,17 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  FolderGit2,
-  Layers,
-  RefreshCw,
-  RotateCcw,
-} from 'lucide-react';
+import { RefreshCw, RotateCcw } from 'lucide-react';
 import { useDebounce, useToast } from '@code/common';
 import { exportDocumentsZip } from '../api/documents';
 import { getArchTree, listDocTypes } from '../api/repos';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
+import OverviewMicroPills, { buildCoverageMicroPills } from '../components/OverviewMicroPills';
 import ArchTreeView from '../components/coverage/ArchTreeView';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
@@ -227,6 +221,12 @@ export const ArchTreeCoveragePage: React.FC = () => {
           </p>
         </div>
         <div className="code-archdoc-page-actions">
+          <OverviewMicroPills
+            ariaLabel="架构覆盖快捷摘要"
+            items={buildCoverageMicroPills(summary, filterState.status, (nextStatus) =>
+              updateFilter({ status: nextStatus }),
+            )}
+          />
           <button
             type="button"
             className="code-archdoc-ghost-btn"
@@ -236,46 +236,6 @@ export const ArchTreeCoveragePage: React.FC = () => {
             <RefreshCw size={14} className={loading ? 'code-archdoc-spin' : ''} />
             <span>刷新全景</span>
           </button>
-        </div>
-      </div>
-
-      {/* 架构维度覆盖 KPI 摘要 */}
-      <div className="grid-cols-4 gap-md">
-        <div className="code-stat-card">
-          <div className="code-stat-icon code-archdoc-stat-icon--primary">
-            <FolderGit2 size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">纳入范围总数</div>
-            <div className="code-stat-value">{summary.total_scopes}</div>
-          </div>
-        </div>
-        <div className="code-stat-card">
-          <div className="code-stat-icon code-archdoc-stat-icon--purple">
-            <Layers size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">已覆盖范围</div>
-            <div className="code-stat-value">{summary.covered_scopes}</div>
-          </div>
-        </div>
-        <div className="code-stat-card">
-          <div className="code-stat-icon code-archdoc-stat-icon--success">
-            <CheckCircle2 size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">已发布定稿文档</div>
-            <div className="code-stat-value">{summary.approved_docs}</div>
-          </div>
-        </div>
-        <div className="code-stat-card">
-          <div className="code-stat-icon code-archdoc-stat-icon--warning">
-            <AlertTriangle size={20} />
-          </div>
-          <div>
-            <div className="code-stat-label">存在漂移文档</div>
-            <div className="code-stat-value">{summary.drifted_docs}</div>
-          </div>
         </div>
       </div>
 

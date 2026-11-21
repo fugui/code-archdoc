@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildModulePath,
+  buildOverviewDrilldownPath,
   buildStudioPath,
+  formatCoverageRate,
   parseArchTreeFilterParams,
   parseDriftFilterParams,
   parseEvidenceDeepLinkParams,
@@ -559,5 +561,33 @@ describe('DocType 短名分组、方案 A1 覆盖汇总与架构元素类型标�
     assert.equal(formatArchElementTypeLabel('subsystem'), '子系统');
     assert.equal(formatArchElementTypeLabel('group'), '功能组');
     assert.equal(formatArchElementTypeLabel('module'), '功能模块');
+  });
+});
+
+describe('全局概览大盘覆盖率计算与下钻路由拼装', () => {
+  it('formatCoverageRate 正确处理正常比例、分母为零、负数及超出上限边界', () => {
+    assert.equal(formatCoverageRate(0, 0), '0.0%');
+    assert.equal(formatCoverageRate(3, 0), '0.0%');
+    assert.equal(formatCoverageRate(-1, 10), '0.0%');
+    assert.equal(formatCoverageRate(1, 10), '10.0%');
+    assert.equal(formatCoverageRate(2, 3), '66.7%');
+    assert.equal(formatCoverageRate(12, 10), '100.0%');
+  });
+
+  it('buildOverviewDrilldownPath 在独立态与门户嵌入态下正确拼接筛选参数并过滤空值', () => {
+    assert.equal(buildOverviewDrilldownPath(false, '/repos'), '/repos');
+    assert.equal(buildOverviewDrilldownPath(true, '/arch-tree'), '/archdoc/arch-tree');
+    assert.equal(
+      buildOverviewDrilldownPath(false, '/repos', { status: 'drifted', empty: '   ' }),
+      '/repos?status=drifted',
+    );
+    assert.equal(
+      buildOverviewDrilldownPath(true, '/tasks', { status: 'failed' }),
+      '/archdoc/tasks?status=failed',
+    );
+    assert.equal(
+      buildOverviewDrilldownPath(true, '/drift', { drift_type: 'code' }),
+      '/archdoc/drift?drift_type=code',
+    );
   });
 });

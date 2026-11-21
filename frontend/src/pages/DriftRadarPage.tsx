@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  AlertTriangle,
   ArrowRight,
   BookOpen,
   ChevronDown,
@@ -31,6 +30,7 @@ import {
   triggerIncrementalRefresh,
 } from '../api/drift';
 import { listDepartments, listDocTypes } from '../api/repos';
+import OverviewMicroPills from '../components/OverviewMicroPills';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
   AffectedSlotDrift,
@@ -333,6 +333,56 @@ export const DriftRadarPage: React.FC = () => {
         </div>
 
         <div className="code-archdoc-page-actions">
+          <OverviewMicroPills
+            ariaLabel="漂移态势快捷筛选"
+            items={[
+              {
+                key: 'total_drifted',
+                label: '漂移',
+                value: summary.total_drifted_docs,
+                tone: summary.total_drifted_docs > 0 ? 'warning' : 'default',
+                active: filterState.driftType === 'all',
+                title: `含双维漂移 ${summary.both_drift_docs} 篇 · 点击显示全部漂移`,
+                onClick: () => updateFilter({ driftType: 'all' }),
+              },
+              {
+                key: 'code_drift',
+                label: 'Code',
+                value: summary.code_drift_docs,
+                tone: 'info',
+                active: filterState.driftType === 'code',
+                title: '点击仅筛选 Code Drift（代码语义变更）',
+                onClick: () =>
+                  updateFilter({
+                    driftType: filterState.driftType === 'code' ? 'all' : 'code',
+                  }),
+              },
+              {
+                key: 'spec_drift',
+                label: 'Spec',
+                value: summary.spec_drift_docs,
+                tone: 'purple',
+                active: filterState.driftType === 'spec',
+                title: '点击仅筛选 Spec Drift（模板规范升级）',
+                onClick: () =>
+                  updateFilter({
+                    driftType: filterState.driftType === 'spec' ? 'all' : 'spec',
+                  }),
+              },
+              {
+                key: 'monitored_repos',
+                label: '巡检',
+                value: `${summary.monitored_repos}仓`,
+                tone: summary.unhealthy_repos > 0 ? 'warning' : 'success',
+                title: `${
+                  summary.unhealthy_repos > 0
+                    ? `${summary.unhealthy_repos} 仓退避重试中 · `
+                    : ''
+                }每 ${summary.poll_interval_minutes}m · 最近 ${formatDateTime(summary.last_poll_at)}`,
+              },
+            ]}
+          />
+
           <button
             type="button"
             className="btn btn-secondary"
@@ -354,60 +404,6 @@ export const DriftRadarPage: React.FC = () => {
               <span>{polling ? '巡检启动中...' : '立即触发全量巡检'}</span>
             </button>
           )}
-        </div>
-      </div>
-
-      {/* 汇总 KPI 卡片 */}
-      <div className="code-archdoc-drift-kpis">
-        <div className="code-card code-archdoc-drift-kpi">
-          <div className="code-archdoc-drift-kpi-icon code-archdoc-stat-icon--warning">
-            <AlertTriangle size={20} />
-          </div>
-          <div className="code-archdoc-drift-kpi-meta">
-            <span className="code-archdoc-drift-kpi-label">待治理漂移文档</span>
-            <span className="code-archdoc-drift-kpi-value">{summary.total_drifted_docs}</span>
-            <span className="code-archdoc-drift-kpi-sub">
-              含双维漂移 {summary.both_drift_docs} 篇
-            </span>
-          </div>
-        </div>
-
-        <div className="code-card code-archdoc-drift-kpi">
-          <div className="code-archdoc-drift-kpi-icon code-archdoc-stat-icon--primary">
-            <FileCode2 size={20} />
-          </div>
-          <div className="code-archdoc-drift-kpi-meta">
-            <span className="code-archdoc-drift-kpi-label">Code Drift（代码语义变更）</span>
-            <span className="code-archdoc-drift-kpi-value">{summary.code_drift_docs}</span>
-            <span className="code-archdoc-drift-kpi-sub">基于 AST 指纹，行号平移 0 误报</span>
-          </div>
-        </div>
-
-        <div className="code-card code-archdoc-drift-kpi">
-          <div className="code-archdoc-drift-kpi-icon code-archdoc-stat-icon--purple">
-            <FileText size={20} />
-          </div>
-          <div className="code-archdoc-drift-kpi-meta">
-            <span className="code-archdoc-drift-kpi-label">Spec Drift（模板规范升级）</span>
-            <span className="code-archdoc-drift-kpi-value">{summary.spec_drift_docs}</span>
-            <span className="code-archdoc-drift-kpi-sub">DocType 新修订槽位/Prompt 差异</span>
-          </div>
-        </div>
-
-        <div className="code-card code-archdoc-drift-kpi">
-          <div className="code-archdoc-drift-kpi-icon code-archdoc-stat-icon--success">
-            <Radar size={20} />
-          </div>
-          <div className="code-archdoc-drift-kpi-meta">
-            <span className="code-archdoc-drift-kpi-label">远端轻量巡检状态</span>
-            <span className="code-archdoc-drift-kpi-value">{summary.monitored_repos} 仓</span>
-            <span className="code-archdoc-drift-kpi-sub">
-              {summary.unhealthy_repos > 0
-                ? `${summary.unhealthy_repos} 仓退避重试中 · `
-                : ''}
-              每 {summary.poll_interval_minutes}m · 最近 {formatDateTime(summary.last_poll_at)}
-            </span>
-          </div>
         </div>
       </div>
 
