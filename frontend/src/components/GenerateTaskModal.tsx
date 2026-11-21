@@ -612,6 +612,9 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                       <span className="code-archdoc-doctype-option-title">{dt.display_name}</span>
                       <span className="code-archdoc-doctype-option-desc">{dt.description}</span>
                       <div className="code-archdoc-doctype-option-meta">
+                        {dt.category && (
+                          <span className="code-badge code-badge--purple">{dt.category}</span>
+                        )}
                         <span className="code-badge code-badge--muted">{dt.slug}</span>
                         <span className="code-badge code-badge--primary">{dt.model_tier}</span>
                         <span className="code-badge code-badge--muted">{dt.slot_count} 个槽位</span>

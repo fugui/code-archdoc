@@ -16,6 +16,7 @@ type SharedMasterRepo interface {
 	ListAllActiveRepositories(ctx context.Context, departmentID *uint) ([]commonModels.Repository, error)
 	ListArchElementsByRepo(ctx context.Context, repoID uint) ([]models.ArchitectureElement, error)
 	ListArchElementsByRepos(ctx context.Context, repoIDs []uint) ([]models.ArchitectureElement, error)
+	ListAllArchElements(ctx context.Context) ([]models.ArchitectureElement, error)
 	FindArchElementsByRepoAndOwner(ctx context.Context, repoID, ownerID uint) ([]models.ArchitectureElement, error)
 	GetUsersByIDs(ctx context.Context, ids []uint) (map[uint]commonModels.User, error)
 }

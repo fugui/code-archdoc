@@ -1,9 +1,39 @@
 /* ==========================================================================
-   RepoCoveragePage 样式（Flat BEM .code-archdoc-coverage-*，全量 --color-* Token）
+   RepoCoveragePage & 架构树视角样式（Flat BEM .code-archdoc-* · 全量 --color-* Token）
+   零硬编码色值 · 全面兼容亮/暗双主题 · 免疫宿主全局 .btn 样式污染
    ========================================================================== */
 
+.code-archdoc-ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.38rem 0.78rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-ghost-btn:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-hover);
+}
+
+.code-archdoc-ghost-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .code-archdoc-coverage-toolbar {
-  padding: 1rem 1.25rem;
+  padding: 0.9rem 1.15rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -14,64 +44,118 @@
 .code-archdoc-coverage-filters {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.55rem;
   flex-wrap: wrap;
   flex: 1;
+  min-width: 0;
 }
 
 .code-archdoc-coverage-search {
-  min-width: 240px;
-  flex: 1;
-  max-width: 340px;
+  min-width: 220px;
+  flex: 1 1 240px;
+  max-width: 300px;
 }
 
 .code-archdoc-coverage-select {
-  min-width: 145px;
+  min-width: 132px;
+  max-width: 210px;
 }
 
-.code-archdoc-coverage-table-card {
-  overflow: hidden;
+/* ── 双视角分段切换器 ── */
+.code-archdoc-view-switcher {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  gap: 0.2rem;
+  flex-shrink: 0;
 }
 
-.code-archdoc-coverage-table-scroll {
-  overflow-x: auto;
+.code-archdoc-view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.36rem 0.72rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-fast);
 }
 
-.code-archdoc-coverage-table-scroll .code-table th:last-child,
-.code-archdoc-coverage-table-scroll .code-table td:last-child {
-  position: sticky;
-  right: 0;
-  z-index: 2;
-  border-left: 1px solid var(--color-border-subtle);
+.code-archdoc-view-tab:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-view-tab--active {
   background: var(--color-bg-surface);
+  color: var(--color-primary);
+  border-color: var(--color-primary-border);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
 }
 
-.code-archdoc-coverage-table-scroll .code-table thead th:last-child {
-  z-index: 3;
-  background: var(--color-bg-elevated);
+/* ── 5 列覆盖矩阵卡片（不裁剪 CSS Tooltip） ── */
+.code-archdoc-coverage-table-card {
+  overflow: visible;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .code-archdoc-coverage-table-scroll .code-table tbody tr:hover td:last-child {
-    background: var(--color-bg-elevated);
+.code-archdoc-coverage-table-wrap {
+  width: 100%;
+  overflow: visible;
+}
+
+@media (max-width: 1100px) {
+  .code-archdoc-coverage-table-wrap {
+    overflow-x: auto;
   }
+}
+
+.code-archdoc-table--compact th,
+.code-archdoc-table--compact td {
+  padding: 0.68rem 0.85rem;
+}
+
+.code-archdoc-coverage-actions-col {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.code-archdoc-coverage-row--expanded > td {
+  border-bottom: none;
+  background: var(--color-bg-muted);
+}
+
+.code-archdoc-coverage-expanded-row > td {
+  padding: 0 1rem 1rem 1rem;
+  background: var(--color-bg-muted);
+  border-bottom: 1px solid var(--color-border-primary);
 }
 
 .code-archdoc-coverage-identity {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  min-width: 240px;
+  min-width: 210px;
 }
 
 .code-archdoc-coverage-identity--subdir {
-  padding-left: 1.15rem;
+  padding-left: 1.05rem;
 }
 
 .code-archdoc-coverage-repo-row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.42rem;
   flex-wrap: wrap;
 }
 
@@ -169,59 +253,18 @@
   font-size: 0.88rem;
 }
 
+.code-archdoc-owner-name {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
 .code-archdoc-coverage-meta-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex-wrap: wrap;
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   color: var(--color-text-secondary);
-}
-
-.code-archdoc-coverage-doc-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  border: none;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.code-archdoc-coverage-doc-cell:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.code-archdoc-coverage-missing-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.16rem 0.55rem;
-  border-radius: var(--radius-full);
-  font-size: 0.72rem;
-  color: var(--color-text-muted);
-  background: var(--color-bg-muted);
-  border: 1px dashed var(--color-border-primary);
-  transition: var(--transition-fast);
-}
-
-.code-archdoc-coverage-doc-cell:hover:not(:disabled) .code-archdoc-coverage-missing-pill {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
-.code-archdoc-coverage-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: nowrap;
-}
-
-.code-archdoc-coverage-pagination {
-  padding: 0.85rem 1.25rem;
-  border-top: 1px solid var(--color-border-subtle);
 }
 
 .code-archdoc-coverage-active-task-btn {
@@ -243,4 +286,666 @@
   background: var(--color-primary-subtle);
   border-color: var(--color-primary-border);
   color: var(--color-primary);
+}
+
+/* ── 所属架构元素列 ── */
+.code-archdoc-arch-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 145px;
+}
+
+.code-archdoc-arch-main {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-arch-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-arch-path {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+  line-height: 1.35;
+}
+
+.code-archdoc-arch-unbound {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.14rem 0.5rem;
+  border-radius: var(--radius-xs, 4px);
+  border: 1px dashed var(--color-border-primary);
+  background: var(--color-bg-muted);
+  color: var(--color-text-muted);
+  font-size: 0.73rem;
+}
+
+/* ── 方案 A1 文档覆盖列：进度条 + 紧凑短名胶囊 + 展开网格 ── */
+.code-archdoc-cov-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  min-width: 245px;
+}
+
+.code-archdoc-cov-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-cov-ratio {
+  font-size: 0.76rem;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.code-archdoc-cov-bar-track {
+  width: 68px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.code-archdoc-cov-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  transition: width 0.2s ease;
+}
+
+.code-archdoc-cov-bar-fill--full {
+  background: var(--color-success);
+}
+
+.code-archdoc-cov-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.code-archdoc-cov-alert--warning {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning-border);
+}
+
+.code-archdoc-cov-alert--danger {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger-border);
+}
+
+.code-archdoc-cov-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-doc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-doc-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.code-archdoc-doc-pill-name {
+  font-weight: 600;
+}
+
+.code-archdoc-doc-pill-state {
+  opacity: 0.88;
+  font-size: 0.69rem;
+}
+
+.code-archdoc-doc-pill--success {
+  background: var(--color-success-subtle);
+  border-color: var(--color-success-border);
+  color: var(--color-success);
+}
+
+.code-archdoc-doc-pill--success:hover:not(:disabled) {
+  background: var(--color-success);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-doc-pill--info {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary-border);
+  color: var(--color-primary);
+}
+
+.code-archdoc-doc-pill--info:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-doc-pill--warning {
+  background: var(--color-warning-subtle);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning);
+}
+
+.code-archdoc-doc-pill--warning:hover:not(:disabled) {
+  background: var(--color-warning);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-doc-pill--danger {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger-border);
+  color: var(--color-danger);
+}
+
+.code-archdoc-doc-pill--danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-doc-pill--missing {
+  background: var(--color-bg-muted);
+  border: 1px dashed var(--color-border-primary);
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-doc-pill--missing:hover:not(:disabled) {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.code-archdoc-doc-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-doc-expand-btn:hover,
+.code-archdoc-doc-expand-btn--active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+/* ── 行内展开：按分类分组的全量文档卡片网格 ── */
+.code-archdoc-expanded-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-expanded-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.code-archdoc-expanded-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-expanded-group-title {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-expanded-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
+  gap: 0.65rem;
+}
+
+.code-archdoc-expanded-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0.72rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-muted);
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-expanded-card:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-expanded-card--focused {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-expanded-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.code-archdoc-expanded-card-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.code-archdoc-expanded-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+}
+
+.code-archdoc-expanded-card-short {
+  font-size: 0.71rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-expanded-card-desc {
+  font-size: 0.73rem;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.code-archdoc-expanded-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-expanded-card-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+}
+
+.code-archdoc-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  padding: 0.24rem 0.58rem;
+  border-radius: var(--radius-xs, 4px);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-mini-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-mini-btn--primary {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.code-archdoc-mini-btn--primary:hover:not(:disabled) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-mini-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 纯图标操作按钮组 + CSS Tooltip（完全免疫宿主 .btn 污染） ── */
+.code-archdoc-coverage-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+}
+
+.code-archdoc-icon-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+}
+
+.code-archdoc-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-icon-btn--primary {
+  color: var(--color-primary);
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-icon-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-white);
+}
+
+.code-archdoc-icon-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.code-archdoc-icon-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* 轻量纯 CSS Tooltip（右对齐向左展开防边缘溢出，适配亮/暗双主题） */
+.code-archdoc-icon-btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: auto;
+  right: 0;
+  transform: translateY(2px);
+  bottom: calc(100% + 7px);
+  padding: 0.34rem 0.6rem;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-text-primary);
+  color: var(--color-text-inverse);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+  max-width: 280px;
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: var(--z-index-dropdown, 500);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.code-archdoc-icon-btn[data-tooltip-pos='bottom']::after {
+  bottom: auto;
+  top: calc(100% + 7px);
+  transform: translateY(-2px);
+}
+
+.code-archdoc-icon-btn[data-tooltip]:hover::after,
+.code-archdoc-icon-btn[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* ── 架构树视角样式 ── */
+.code-archdoc-tree-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.code-archdoc-tree-container {
+  overflow: visible;
+}
+
+.code-archdoc-tree-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.15rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-tree-legend {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-tree-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.code-archdoc-tree-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-tree-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 1rem 1rem 1rem;
+  gap: 0.65rem;
+}
+
+.code-archdoc-tree-node {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-tree-node--root {
+  box-shadow: var(--shadow-sm);
+}
+
+.code-archdoc-tree-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.72rem 0.9rem;
+  border-radius: var(--radius-md);
+}
+
+.code-archdoc-tree-node-head--interactive {
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-tree-node-head--interactive:hover {
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-tree-node-left {
+  display: flex;
+  align-items: center;
+  gap: 0.48rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.code-archdoc-tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs, 4px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.code-archdoc-tree-toggle:hover {
+  background: var(--color-bg-active);
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-tree-toggle-placeholder {
+  width: 22px;
+  height: 22px;
+  display: inline-block;
+}
+
+.code-archdoc-tree-node-icon--subsystem {
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.code-archdoc-tree-node-icon--group {
+  color: var(--color-orange);
+  flex-shrink: 0;
+}
+
+.code-archdoc-tree-node-icon--module {
+  color: var(--color-success);
+  flex-shrink: 0;
+}
+
+.code-archdoc-tree-node-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-tree-node-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-tree-node-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-tree-node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.35rem 0.9rem 0.9rem 1.75rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-tree-scopes-wrap {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--color-border-subtle);
+}
+
+.code-archdoc-unassigned-card {
+  overflow: visible;
+}
+
+.code-archdoc-unassigned-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.15rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 0.8rem;
+}
+
+.code-archdoc-unassigned-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-coverage-pagination {
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--color-border-subtle);
 }

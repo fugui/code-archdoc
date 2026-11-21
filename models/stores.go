@@ -208,6 +208,16 @@ func (s *SharedMasterStore) ListArchElementsByRepos(ctx context.Context, repoIDs
 	return elems, nil
 }
 
+func (s *SharedMasterStore) ListAllArchElements(ctx context.Context) ([]ArchitectureElement, error) {
+	var elems []ArchitectureElement
+	if err := s.db.WithContext(ctx).
+		Order("id ASC").
+		Find(&elems).Error; err != nil {
+		return nil, err
+	}
+	return elems, nil
+}
+
 func (s *SharedMasterStore) FindArchElementsByRepoAndOwner(ctx context.Context, repoID, ownerID uint) ([]ArchitectureElement, error) {
 	var elems []ArchitectureElement
 	if err := s.db.WithContext(ctx).
@@ -332,6 +342,8 @@ func (s *DocTypeStore) UpsertFromDirectorySync(ctx context.Context, dt *DocType,
 		dt.ID = existing.ID
 		updates := map[string]any{
 			"display_name":    dt.DisplayName,
+			"short_name":      dt.ShortName,
+			"category":        dt.Category,
 			"description":     dt.Description,
 			"is_builtin":      dt.IsBuiltin,
 			"is_active":       dt.IsActive,

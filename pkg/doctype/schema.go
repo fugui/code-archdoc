@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/sandbox"
@@ -128,6 +129,8 @@ type ModuleDigestSourceSpec struct {
 type Meta struct {
 	Name               string                     `json:"name"`
 	DisplayName        string                     `json:"display_name"`
+	ShortName          string                     `json:"short_name,omitempty"`
+	Category           string                     `json:"category,omitempty"`
 	Description        string                     `json:"description,omitempty"`
 	IsActive           bool                       `json:"is_active"`
 	IsBuiltin          bool                       `json:"is_builtin"`
@@ -147,6 +150,8 @@ type Meta struct {
 var knownMetaKeys = map[string]bool{
 	"name":                 true,
 	"display_name":         true,
+	"short_name":           true,
+	"category":             true,
 	"description":          true,
 	"is_active":            true,
 	"is_builtin":           true,
@@ -160,6 +165,44 @@ var knownMetaKeys = map[string]bool{
 	"module_digest_source": true,
 	"slots":                true,
 	"verify_policy":        true,
+}
+
+var builtinShortNames = map[string]string{
+	"system-architecture": "系统架构",
+	"data-and-contract":   "数据与契约",
+	"code-walkthrough":    "代码导读",
+	"ops-and-config":      "运维与配置",
+	"agents-context":      "Agent 上下文",
+}
+
+var builtinCategories = map[string]string{
+	"system-architecture": "架构设计",
+	"data-and-contract":   "架构设计",
+	"code-walkthrough":    "研发指南",
+	"ops-and-config":      "运维交付",
+	"agents-context":      "AI 上下文",
+}
+
+// EffectiveShortName 解析文档类型短标题：优先显式 short_name，其次内置默认短名，最后回退 display_name。
+func EffectiveShortName(slug, shortName, displayName string) string {
+	if trimmed := strings.TrimSpace(shortName); trimmed != "" {
+		return trimmed
+	}
+	if def, ok := builtinShortNames[strings.TrimSpace(slug)]; ok {
+		return def
+	}
+	return strings.TrimSpace(displayName)
+}
+
+// EffectiveCategory 解析文档类型分组：优先显式 category，其次内置默认分组，否则返回空串。
+func EffectiveCategory(slug, category string) string {
+	if trimmed := strings.TrimSpace(category); trimmed != "" {
+		return trimmed
+	}
+	if def, ok := builtinCategories[strings.TrimSpace(slug)]; ok {
+		return def
+	}
+	return ""
 }
 
 type metaAlias Meta
@@ -277,6 +320,12 @@ func (m *Meta) Validate(expectedSlug string) error {
 	}
 	if strings.TrimSpace(m.DisplayName) == "" {
 		return fmt.Errorf("%w: display_name 不能为空", ErrInvalidMeta)
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(m.ShortName)) > 32 {
+		return fmt.Errorf("%w: short_name 长度不能超过 32 个字符", ErrInvalidMeta)
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(m.Category)) > 32 {
+		return fmt.Errorf("%w: category 长度不能超过 32 个字符", ErrInvalidMeta)
 	}
 	if m.ModelTier != "fast" && m.ModelTier != "flagship" {
 		return fmt.Errorf("%w: model_tier 必须为 fast 或 flagship", ErrInvalidMeta)

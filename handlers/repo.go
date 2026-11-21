@@ -14,26 +14,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ListRepos 分页查询代码仓与 Monorepo 子目录覆盖矩阵（GET /api/repos）。
-func (h *AppHandlers) ListRepos(c *gin.Context) {
-	user, ok := CurrentUserFromContext(c)
-	if !ok {
-		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
-		return
-	}
-
-	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if pageErr != nil {
-		page = 1
-	}
-	pageSizeRaw := strings.TrimSpace(c.Query("page_size"))
-	if pageSizeRaw == "" {
-		pageSizeRaw = strings.TrimSpace(c.Query("pageSize"))
-	}
+func parseRepoCoverageFilter(c *gin.Context, withPagination bool) (services.RepoCoverageFilter, bool) {
+	page := 1
 	pageSize := 25
-	if pageSizeRaw != "" {
-		if parsedSize, sizeErr := strconv.Atoi(pageSizeRaw); sizeErr == nil {
-			pageSize = parsedSize
+	if withPagination {
+		var pageErr error
+		page, pageErr = strconv.Atoi(c.DefaultQuery("page", "1"))
+		if pageErr != nil {
+			page = 1
+		}
+		pageSizeRaw := strings.TrimSpace(c.Query("page_size"))
+		if pageSizeRaw == "" {
+			pageSizeRaw = strings.TrimSpace(c.Query("pageSize"))
+		}
+		if pageSizeRaw != "" {
+			if parsedSize, sizeErr := strconv.Atoi(pageSizeRaw); sizeErr == nil {
+				pageSize = parsedSize
+			}
 		}
 	}
 
@@ -42,13 +39,32 @@ func (h *AppHandlers) ListRepos(c *gin.Context) {
 		parsed, err := strconv.ParseUint(deptStr, 10, 64)
 		if err != nil || parsed == 0 {
 			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "department_id 参数格式非法", nil)
-			return
+			return services.RepoCoverageFilter{}, false
 		}
 		v := uint(parsed)
 		deptIDPtr = &v
 	}
 
-	resp, err := h.repoSvc.ListRepoCoverage(c.Request.Context(), user, services.RepoCoverageFilter{
+	var subsystemIDPtr *uint
+	if subsysStr := strings.TrimSpace(c.Query("subsystem_id")); subsysStr != "" {
+		parsed, err := strconv.ParseUint(subsysStr, 10, 64)
+		if err != nil || parsed == 0 {
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "subsystem_id 参数格式非法", nil)
+			return services.RepoCoverageFilter{}, false
+		}
+		v := uint(parsed)
+		subsystemIDPtr = &v
+	}
+
+	archBinding := strings.ToLower(strings.TrimSpace(c.Query("arch_binding")))
+	switch archBinding {
+	case "", "all", "bound", "unbound":
+	default:
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "arch_binding 参数仅支持 all | bound | unbound", nil)
+		return services.RepoCoverageFilter{}, false
+	}
+
+	return services.RepoCoverageFilter{
 		Page:         page,
 		PageSize:     pageSize,
 		Search:       c.Query("search"),
@@ -56,10 +72,51 @@ func (h *AppHandlers) ListRepos(c *gin.Context) {
 		DocType:      c.Query("doc_type"),
 		Status:       c.Query("status"),
 		ScopeType:    c.Query("scope_type"),
-	})
+		SubsystemID:  subsystemIDPtr,
+		ArchBinding:  archBinding,
+	}, true
+}
+
+// ListRepos 分页查询代码仓与 Monorepo 子目录覆盖矩阵（GET /api/repos）。
+func (h *AppHandlers) ListRepos(c *gin.Context) {
+	user, ok := CurrentUserFromContext(c)
+	if !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+
+	filter, valid := parseRepoCoverageFilter(c, true)
+	if !valid {
+		return
+	}
+
+	resp, err := h.repoSvc.ListRepoCoverage(c.Request.Context(), user, filter)
 	if err != nil {
 		log.Printf("[%s] 查询仓库覆盖矩阵失败: %v", config.ServiceName, err)
 		WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "查询仓库覆盖视图失败", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// GetArchTree 只读聚合架构元素层级树（子系统 -> 功能组 -> 模块）与文档覆盖统计（GET /api/arch-tree）。
+func (h *AppHandlers) GetArchTree(c *gin.Context) {
+	user, ok := CurrentUserFromContext(c)
+	if !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+
+	filter, valid := parseRepoCoverageFilter(c, false)
+	if !valid {
+		return
+	}
+
+	resp, err := h.repoSvc.GetArchTree(c.Request.Context(), user, filter)
+	if err != nil {
+		log.Printf("[%s] 查询架构树覆盖视图失败: %v", config.ServiceName, err)
+		WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "查询架构树覆盖视图失败", nil)
 		return
 	}
 

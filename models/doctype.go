@@ -13,6 +13,8 @@ type DocType struct {
 	ID                  uint           `gorm:"primaryKey" json:"id"`
 	Slug                string         `gorm:"size:64;uniqueIndex;not null" json:"slug"`
 	DisplayName         string         `gorm:"size:120;not null" json:"display_name"`
+	ShortName           string         `gorm:"size:40;default:''" json:"short_name"`
+	Category            string         `gorm:"size:40;default:''" json:"category"`
 	Description         string         `gorm:"type:text;default:''" json:"description"`
 	IsBuiltin           bool           `gorm:"default:false;not null" json:"is_builtin"`
 	IsActive            bool           `gorm:"default:true;not null;index" json:"is_active"`

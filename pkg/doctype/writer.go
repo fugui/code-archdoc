@@ -103,9 +103,14 @@ func (r *Registry) CloneAsset(srcSlug, newSlug, displayName string) (*AssetBundl
 	clonedMeta := cloneMeta(srcBundle.Meta)
 	clonedMeta.Name = newSlug
 	clonedMeta.IsBuiltin = false
-	if strings.TrimSpace(displayName) != "" {
-		clonedMeta.DisplayName = strings.TrimSpace(displayName)
+	trimmedDisplay := strings.TrimSpace(displayName)
+	if trimmedDisplay != "" {
+		if trimmedDisplay != strings.TrimSpace(srcBundle.Meta.DisplayName) {
+			clonedMeta.ShortName = ""
+		}
+		clonedMeta.DisplayName = trimmedDisplay
 	} else {
+		clonedMeta.ShortName = ""
 		clonedMeta.DisplayName = srcBundle.Meta.DisplayName + " (副本)"
 	}
 

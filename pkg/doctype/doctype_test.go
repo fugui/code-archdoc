@@ -42,6 +42,9 @@ func TestBuiltinSeedIdempotentAndNoOverwrite(t *testing.T) {
 		if len(b.AggregateHash) != 64 {
 			t.Fatalf("%s aggregate_hash 长度异常: %q", b.Slug, b.AggregateHash)
 		}
+		if strings.TrimSpace(b.Meta.ShortName) == "" || strings.TrimSpace(b.Meta.Category) == "" {
+			t.Fatalf("内置类型 %s 应包含非空 short_name 与 category，实际=%+v", b.Slug, b.Meta)
+		}
 	}
 	if totalSlots != 19 {
 		t.Fatalf("期望 5 类内置 DocType 共计 19 个稳定槽位，实际 %d", totalSlots)
@@ -213,5 +216,51 @@ func TestSlugWhitelistValidation(t *testing.T) {
 		if err := doctype.ValidateSlug(s); err != nil {
 			t.Errorf("合法 slug %q 不应被拦截，返回错误: %v", s, err)
 		}
+	}
+}
+
+func TestDocTypeShortNameAndCategoryValidationAndFallback(t *testing.T) {
+	if got := doctype.EffectiveShortName("system-architecture", "", "系统架构与核心链路"); got != "系统架构" {
+		t.Fatalf("内置短名兜底异常: %q", got)
+	}
+	if got := doctype.EffectiveShortName("custom-doc", "自定义短名", "很长的自定义文档名称"); got != "自定义短名" {
+		t.Fatalf("显式短名应优先返回，实际: %q", got)
+	}
+	if got := doctype.EffectiveShortName("custom-doc", "", "自定义文档全称"); got != "自定义文档全称" {
+		t.Fatalf("自定义类型无 short_name 时应回退 display_name，实际: %q", got)
+	}
+	if got := doctype.EffectiveCategory("code-walkthrough", ""); got != "研发指南" {
+		t.Fatalf("内置分类兜底异常: %q", got)
+	}
+	if got := doctype.EffectiveCategory("custom-doc", "安全合规"); got != "安全合规" {
+		t.Fatalf("显式分类应优先返回，实际: %q", got)
+	}
+	if got := doctype.EffectiveCategory("custom-doc", ""); got != "" {
+		t.Fatalf("自定义无分类应返回空串，实际: %q", got)
+	}
+
+	m := doctype.Meta{
+		Name:        "custom-doc",
+		DisplayName: "自定义文档",
+		ShortName:   strings.Repeat("字", 33),
+		ModelTier:   "fast",
+		IRFacets:    []string{"tree"},
+		Slots: []doctype.SlotSpec{
+			{SlotID: "sec_one", Title: "1. 章节", Ownership: "auto", Required: true, IRFacets: []string{"tree"}},
+		},
+	}
+	if err := m.Validate("custom-doc"); err == nil {
+		t.Fatal("short_name 超过 32 个字符应被 Validate 拦截")
+	}
+
+	m.ShortName = "短标题"
+	m.Category = strings.Repeat("类", 33)
+	if err := m.Validate("custom-doc"); err == nil {
+		t.Fatal("category 超过 32 个字符应被 Validate 拦截")
+	}
+
+	m.Category = "质量与安全"
+	if err := m.Validate("custom-doc"); err != nil {
+		t.Fatalf("合法 short_name/category 不应被拦截: %v", err)
 	}
 }

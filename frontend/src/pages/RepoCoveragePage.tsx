@@ -1,49 +1,53 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Activity,
   AlertTriangle,
-  Archive,
-  BookOpen,
   CheckCircle2,
-  CornerDownRight,
   FolderGit2,
-  FolderTree,
   Layers,
   Layers3,
-  Loader2,
+  ListTree,
   RefreshCw,
   RotateCcw,
-  Sparkles,
+  Table2,
   X,
 } from 'lucide-react';
 import {
   EmptyState,
   Pagination,
-  StatusTag,
   useDebounce,
   usePagination,
   useToast,
-  type StatusType,
 } from '@code/common';
 import { exportDocumentsZip } from '../api/documents';
-import { listDepartments, listDocTypes, listRepos, refreshRepoModules } from '../api/repos';
+import {
+  getArchTree,
+  listDepartments,
+  listDocTypes,
+  listRepos,
+  refreshRepoModules,
+} from '../api/repos';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
 import ModuleGovernanceModal, {
   type ModuleGovernanceTarget,
 } from '../components/ModuleGovernanceModal';
+import ArchTreeView from '../components/coverage/ArchTreeView';
+import ScopeCoverageTable from '../components/coverage/ScopeCoverageTable';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
+  ArchBindingFilter,
+  ArchSubsystemOptionVO,
+  ArchTreeResponse,
+  CoverageViewMode,
   DepartmentVO,
-  DocStatusSummaryVO,
   DocTypeSummaryVO,
   RepoCoverageSummaryVO,
   RepoScopeCoverageVO,
   RepoScopeFilter,
   RepoStatusFilter,
 } from '../types';
+import { groupDocTypesByCategory } from '../utils/docTypeUtils';
 import { formatApiError } from '../utils/errorMessages';
-import { formatModuleSourceLabel } from '../utils/moduleUtils';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildStudioPath,
@@ -67,19 +71,6 @@ interface ModuleModalState {
   target: ModuleGovernanceTarget | null;
 }
 
-function docStatusTag(ds: DocStatusSummaryVO): { status: StatusType; label: string } {
-  if (ds.status === 'approved') {
-    if (ds.has_code_drift || ds.has_spec_drift) {
-      return { status: 'warning', label: `已发布·漂移(${ds.affected_slot_count || 1})` };
-    }
-    return { status: 'success', label: `已发布 v${ds.published_revision_no || ds.current_revision_no}` };
-  }
-  if (!ds.can_approve) {
-    return { status: 'failed', label: `草稿·阻断 v${ds.current_revision_no}` };
-  }
-  return { status: 'pending', label: `草稿 v${ds.current_revision_no}` };
-}
-
 export const RepoCoveragePage: React.FC = () => {
   const navigate = useNavigate();
   const { isEmbedded } = useModuleUser();
@@ -93,8 +84,10 @@ export const RepoCoveragePage: React.FC = () => {
   const debouncedSearch = useDebounce(searchInput, 300);
 
   const [departments, setDepartments] = useState<DepartmentVO[]>([]);
+  const [subsystems, setSubsystems] = useState<ArchSubsystemOptionVO[]>([]);
   const [docTypes, setDocTypes] = useState<DocTypeSummaryVO[]>([]);
   const [rows, setRows] = useState<RepoScopeCoverageVO[]>([]);
+  const [archTreeData, setArchTreeData] = useState<ArchTreeResponse | null>(null);
   const [total, setTotal] = useState<number>(0);
   const [summary, setSummary] = useState<RepoCoverageSummaryVO>({
     total_scopes: 0,
@@ -108,6 +101,7 @@ export const RepoCoveragePage: React.FC = () => {
   const [selectedRepoId, setSelectedRepoId] = useState<number | null>(null);
   const [selectedRepoName, setSelectedRepoName] = useState<string>('');
   const [selectedSubdirs, setSelectedSubdirs] = useState<string[]>([]);
+  const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
 
   const [taskModal, setTaskModal] = useState<ModalLaunchState>({
     open: false,
@@ -151,9 +145,31 @@ export const RepoCoveragePage: React.FC = () => {
     };
   }, [showToast]);
 
+  const docTypeGroups = useMemo(() => groupDocTypesByCategory(docTypes), [docTypes]);
+
   const fetchCoverage = useCallback(async () => {
     setLoading(true);
     try {
+      if (filterState.view === 'arch') {
+        const res = await getArchTree({
+          search: filterState.search,
+          departmentId: filterState.departmentId,
+          docType: filterState.docType,
+          status: filterState.status,
+          scopeType: filterState.scopeType,
+          subsystemId: filterState.subsystemId,
+          archBinding: filterState.archBinding,
+        });
+        setArchTreeData(res);
+        if (res.summary) {
+          setSummary(res.summary);
+        }
+        if (Array.isArray(res.subsystems)) {
+          setSubsystems(res.subsystems);
+        }
+        return;
+      }
+
       const res = await listRepos({
         page,
         pageSize,
@@ -162,6 +178,8 @@ export const RepoCoveragePage: React.FC = () => {
         docType: filterState.docType,
         status: filterState.status,
         scopeType: filterState.scopeType,
+        subsystemId: filterState.subsystemId,
+        archBinding: filterState.archBinding,
       });
       const nextRows = Array.isArray(res.items) ? res.items : [];
       setRows(nextRows);
@@ -189,19 +207,25 @@ export const RepoCoveragePage: React.FC = () => {
       if (res.summary) {
         setSummary(res.summary);
       }
+      if (Array.isArray(res.subsystems)) {
+        setSubsystems(res.subsystems);
+      }
     } catch (err: unknown) {
       showToast(formatApiError(err, '加载仓库文档覆盖矩阵失败').message, 'error');
     } finally {
       setLoading(false);
     }
   }, [
-    page,
-    pageSize,
+    filterState.view,
     filterState.search,
     filterState.departmentId,
     filterState.docType,
     filterState.status,
     filterState.scopeType,
+    filterState.subsystemId,
+    filterState.archBinding,
+    page,
+    pageSize,
     selectedRepoId,
     showToast,
   ]);
@@ -210,12 +234,24 @@ export const RepoCoveragePage: React.FC = () => {
     void fetchCoverage();
   }, [fetchCoverage]);
 
+  const clearSubdirSelection = useCallback(() => {
+    setSelectedRepoId(null);
+    setSelectedRepoName('');
+    setSelectedSubdirs([]);
+  }, []);
+
   const updateFilter = (patch: {
+    view?: CoverageViewMode;
     departmentId?: string;
     docType?: string;
     status?: RepoStatusFilter;
     scopeType?: RepoScopeFilter;
+    subsystemId?: string;
+    archBinding?: ArchBindingFilter;
   }) => {
+    if (patch.view && patch.view !== filterState.view) {
+      clearSubdirSelection();
+    }
     setSearchParams((prev) => serializeRepoFilterParams({ ...patch, page: 1 }, prev));
   };
 
@@ -230,11 +266,25 @@ export const RepoCoveragePage: React.FC = () => {
           docType: '',
           status: '',
           scopeType: '',
+          subsystemId: '',
+          archBinding: '',
         },
         prev,
       ),
     );
   };
+
+  const toggleExpandRow = useCallback((rowKey: string) => {
+    setExpandedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) {
+        next.delete(rowKey);
+      } else {
+        next.add(rowKey);
+      }
+      return next;
+    });
+  }, []);
 
   const openStudio = useCallback(
     (repoId: number, docId?: number, subdirectory?: string) => {
@@ -243,32 +293,35 @@ export const RepoCoveragePage: React.FC = () => {
     [isEmbedded, navigate],
   );
 
-  const openGenerateModal = (
-    row: RepoScopeCoverageVO,
-    options?: {
-      initialDocTypeSlugs?: string[];
-      initialTaskId?: number | null;
-      batchMode?: boolean;
-      initialSelectedModules?: string[];
-    },
-  ) => {
-    setTaskModal({
-      open: true,
-      scope: {
-        repoId: row.repo_id,
-        repoName: row.repo_name,
-        subdirectory: row.subdirectory,
-        branch: row.branch || 'master',
-        canWrite: row.can_write,
+  const openGenerateModal = useCallback(
+    (
+      row: RepoScopeCoverageVO,
+      options?: {
+        initialDocTypeSlugs?: string[];
+        initialTaskId?: number | null;
+        batchMode?: boolean;
+        initialSelectedModules?: string[];
       },
-      initialDocTypeSlugs: options?.initialDocTypeSlugs,
-      initialTaskId: options?.initialTaskId ?? null,
-      batchMode: Boolean(options?.batchMode),
-      initialSelectedModules: options?.initialSelectedModules,
-    });
-  };
+    ) => {
+      setTaskModal({
+        open: true,
+        scope: {
+          repoId: row.repo_id,
+          repoName: row.repo_name,
+          subdirectory: row.subdirectory,
+          branch: row.branch || 'master',
+          canWrite: row.can_write,
+        },
+        initialDocTypeSlugs: options?.initialDocTypeSlugs,
+        initialTaskId: options?.initialTaskId ?? null,
+        batchMode: Boolean(options?.batchMode),
+        initialSelectedModules: options?.initialSelectedModules,
+      });
+    },
+    [],
+  );
 
-  const openModuleGovernanceModal = (row: RepoScopeCoverageVO) => {
+  const openModuleGovernanceModal = useCallback((row: RepoScopeCoverageVO) => {
     setModuleModal({
       open: true,
       target: {
@@ -278,55 +331,55 @@ export const RepoCoveragePage: React.FC = () => {
         canWrite: row.can_write,
       },
     });
-  };
+  }, []);
 
-  const handleDiscoverRepoModules = async (row: RepoScopeCoverageVO) => {
-    setDiscoveringRepoId(row.repo_id);
-    try {
-      const res = await refreshRepoModules(row.repo_id);
-      if (res.active_count > 0) {
-        showToast(
-          `已完成仓库 ${row.repo_name} 一级目录扫描（${shortSha(res.commit_sha)}），发现 ${res.active_count} 个子模块`,
-          'success',
-        );
-      } else {
-        showToast(
-          `已完成仓库 ${row.repo_name} 扫描（${shortSha(res.commit_sha)}），未发现独立一级业务子目录（可在模块治理调整策略或阈值）`,
-          'info',
-        );
+  const handleDiscoverRepoModules = useCallback(
+    async (row: RepoScopeCoverageVO) => {
+      setDiscoveringRepoId(row.repo_id);
+      try {
+        const res = await refreshRepoModules(row.repo_id);
+        if (res.active_count > 0) {
+          showToast(
+            `已完成仓库 ${row.repo_name} 一级目录扫描（${shortSha(res.commit_sha)}），发现 ${res.active_count} 个子模块`,
+            'success',
+          );
+        } else {
+          showToast(
+            `已完成仓库 ${row.repo_name} 扫描（${shortSha(res.commit_sha)}），未发现独立一级业务子目录（可在模块治理调整策略或阈值）`,
+            'info',
+          );
+        }
+        await fetchCoverage();
+      } catch (err: unknown) {
+        showToast(formatApiError(err, '扫描仓库一级目录失败').message, 'error');
+      } finally {
+        setDiscoveringRepoId(null);
       }
-      await fetchCoverage();
-    } catch (err: unknown) {
-      showToast(formatApiError(err, '扫描仓库一级目录失败').message, 'error');
-    } finally {
-      setDiscoveringRepoId(null);
-    }
-  };
+    },
+    [fetchCoverage, showToast],
+  );
 
-  const toggleSubdirRowSelection = (row: RepoScopeCoverageVO) => {
-    if (selectedRepoId !== row.repo_id) {
-      setSelectedRepoId(row.repo_id);
-      setSelectedRepoName(row.repo_name);
-      setSelectedSubdirs([row.subdirectory]);
-      return;
-    }
-    setSelectedSubdirs((prev) => {
-      const next = prev.includes(row.subdirectory)
-        ? prev.filter((item) => item !== row.subdirectory)
-        : [...prev, row.subdirectory];
-      if (next.length === 0) {
-        setSelectedRepoId(null);
-        setSelectedRepoName('');
+  const toggleSubdirRowSelection = useCallback(
+    (row: RepoScopeCoverageVO) => {
+      if (selectedRepoId !== row.repo_id) {
+        setSelectedRepoId(row.repo_id);
+        setSelectedRepoName(row.repo_name);
+        setSelectedSubdirs([row.subdirectory]);
+        return;
       }
-      return next;
-    });
-  };
-
-  const clearSubdirSelection = () => {
-    setSelectedRepoId(null);
-    setSelectedRepoName('');
-    setSelectedSubdirs([]);
-  };
+      setSelectedSubdirs((prev) => {
+        const next = prev.includes(row.subdirectory)
+          ? prev.filter((item) => item !== row.subdirectory)
+          : [...prev, row.subdirectory];
+        if (next.length === 0) {
+          setSelectedRepoId(null);
+          setSelectedRepoName('');
+        }
+        return next;
+      });
+    },
+    [selectedRepoId],
+  );
 
   const handleBatchGenerateSelectedRows = () => {
     if (!selectedRepoId || selectedSubdirs.length === 0) return;
@@ -340,40 +393,42 @@ export const RepoCoveragePage: React.FC = () => {
     });
   };
 
-  const handleExportRowZip = async (row: RepoScopeCoverageVO) => {
-    const approvedDocIds = Object.values(row.doc_statuses)
-      .filter((ds) => ds.status === 'approved')
-      .map((ds) => ds.document_id);
-    if (approvedDocIds.length === 0) {
-      showToast('当前范围尚无已发布文档可供打包导出', 'warning');
-      return;
-    }
+  const handleExportRowZip = useCallback(
+    async (row: RepoScopeCoverageVO) => {
+      const approvedDocIds = Object.values(row.doc_statuses ?? {})
+        .filter((ds) => ds.status === 'approved')
+        .map((ds) => ds.document_id);
+      if (approvedDocIds.length === 0) {
+        showToast('当前范围尚无已发布文档可供打包导出', 'warning');
+        return;
+      }
 
-    const rowKey = `${row.repo_id}:${row.subdirectory}`;
-    setExportingKey(rowKey);
-    try {
-      const filename = await exportDocumentsZip(
-        { document_ids: approvedDocIds, include_index: true },
-        `${row.repo_name}-archdocs.zip`,
-      );
-      showToast(`已导出压缩包：${filename}`, 'success');
-    } catch (err: unknown) {
-      showToast(formatApiError(err, 'ZIP 打包导出失败').message, 'error');
-    } finally {
-      setExportingKey(null);
-    }
-  };
+      const rowKey = `${row.repo_id}:${row.subdirectory}`;
+      setExportingKey(rowKey);
+      try {
+        const filename = await exportDocumentsZip(
+          { document_ids: approvedDocIds, include_index: true },
+          `${row.repo_name}-archdocs.zip`,
+        );
+        showToast(`已导出压缩包：${filename}`, 'success');
+      } catch (err: unknown) {
+        showToast(formatApiError(err, 'ZIP 打包导出失败').message, 'error');
+      } finally {
+        setExportingKey(null);
+      }
+    },
+    [showToast],
+  );
 
   const hasActiveFilters = Boolean(
     filterState.search ||
       filterState.departmentId ||
       filterState.docType ||
       filterState.status ||
-      filterState.scopeType,
+      filterState.scopeType ||
+      filterState.subsystemId ||
+      filterState.archBinding,
   );
-
-  const visibleDocTypes = useMemo(() => docTypes.slice(0, 6), [docTypes]);
-  const tableColSpan = 3 + visibleDocTypes.length;
 
   return (
     <div className="code-archdoc-workspace">
@@ -381,13 +436,13 @@ export const RepoCoveragePage: React.FC = () => {
         <div>
           <h1 className="code-archdoc-page-title">仓库与文档覆盖矩阵</h1>
           <p className="code-archdoc-page-subtitle">
-            按整仓或 Monorepo 架构子目录追踪各类设计文档的生成、审校、定稿发布与漂移覆盖状态。
+            按代码仓库、Monorepo 子目录与平台架构元素追踪各类设计文档的生成、审校、定稿发布与漂移状态。
           </p>
         </div>
         <div className="code-archdoc-page-actions">
           <button
             type="button"
-            className="btn btn-secondary btn-small"
+            className="code-archdoc-ghost-btn"
             onClick={() => void fetchCoverage()}
             disabled={loading}
           >
@@ -437,7 +492,7 @@ export const RepoCoveragePage: React.FC = () => {
         </div>
       </div>
 
-      {/* URL 双向同步筛选工具栏 */}
+      {/* URL 双向同步筛选与双视角切换工具栏 */}
       <div className="code-card code-archdoc-coverage-toolbar">
         <div className="code-archdoc-coverage-filters">
           <input
@@ -465,15 +520,44 @@ export const RepoCoveragePage: React.FC = () => {
 
           <select
             className="code-select code-archdoc-coverage-select"
+            value={filterState.subsystemId}
+            onChange={(e) => updateFilter({ subsystemId: e.target.value })}
+            aria-label="按架构子系统筛选"
+          >
+            <option value="">全部子系统</option>
+            {subsystems.map((sub) => (
+              <option key={sub.id} value={String(sub.id)}>
+                {sub.name_cn || sub.name_en || sub.identifier} ({sub.scope_count})
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="code-select code-archdoc-coverage-select"
+            value={filterState.archBinding}
+            onChange={(e) => updateFilter({ archBinding: e.target.value as ArchBindingFilter })}
+            aria-label="按架构关联状态筛选"
+          >
+            <option value="">全部架构关联</option>
+            <option value="bound">已关联架构元素</option>
+            <option value="unbound">未关联架构元素</option>
+          </select>
+
+          <select
+            className="code-select code-archdoc-coverage-select"
             value={filterState.docType}
             onChange={(e) => updateFilter({ docType: e.target.value })}
             aria-label="按文档类型筛选"
           >
             <option value="">全部文档类型</option>
-            {docTypes.map((dt) => (
-              <option key={dt.slug} value={dt.slug}>
-                {dt.display_name}
-              </option>
+            {docTypeGroups.map((group) => (
+              <optgroup key={group.category} label={group.category}>
+                {group.items.map((dt) => (
+                  <option key={dt.slug} value={dt.slug}>
+                    {dt.display_name}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
 
@@ -502,16 +586,43 @@ export const RepoCoveragePage: React.FC = () => {
           </select>
 
           {hasActiveFilters && (
-            <button type="button" className="btn btn-secondary btn-small" onClick={resetFilters}>
+            <button type="button" className="code-archdoc-ghost-btn" onClick={resetFilters}>
               <RotateCcw size={13} />
               <span>重置筛选</span>
             </button>
           )}
         </div>
+
+        <div className="code-archdoc-view-switcher" role="tablist" aria-label="覆盖矩阵浏览视角">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filterState.view === 'repo'}
+            className={`code-archdoc-view-tab ${
+              filterState.view === 'repo' ? 'code-archdoc-view-tab--active' : ''
+            }`}
+            onClick={() => updateFilter({ view: 'repo' })}
+          >
+            <Table2 size={14} />
+            <span>仓库视角</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filterState.view === 'arch'}
+            className={`code-archdoc-view-tab ${
+              filterState.view === 'arch' ? 'code-archdoc-view-tab--active' : ''
+            }`}
+            onClick={() => updateFilter({ view: 'arch' })}
+          >
+            <ListTree size={14} />
+            <span>架构树视角</span>
+          </button>
+        </div>
       </div>
 
-      {/* 同仓多选一级目录批量生成操作条 */}
-      {selectedRepoId !== null && selectedSubdirs.length > 0 && (
+      {/* 同仓多选一级目录批量生成操作条（仓库视角） */}
+      {filterState.view === 'repo' && selectedRepoId !== null && selectedSubdirs.length > 0 && (
         <div className="code-archdoc-coverage-selection-bar">
           <div className="code-archdoc-coverage-selection-info">
             <Layers3 size={15} />
@@ -531,7 +642,7 @@ export const RepoCoveragePage: React.FC = () => {
             </button>
             <button
               type="button"
-              className="btn btn-secondary btn-small"
+              className="code-archdoc-ghost-btn"
               onClick={clearSubdirSelection}
             >
               <X size={13} />
@@ -541,35 +652,67 @@ export const RepoCoveragePage: React.FC = () => {
         </div>
       )}
 
-      {/* 仓库与子目录文档覆盖矩阵表格 */}
-      <div className="code-card code-archdoc-coverage-table-card">
-        <div className="code-archdoc-coverage-table-scroll">
-          <table className="code-table">
-            <thead>
-              <tr>
-                <th>仓库 / 子目录范围</th>
-                <th>负责人与提交</th>
-                {visibleDocTypes.map((dt) => (
-                  <th key={dt.slug} title={dt.description}>
-                    {dt.display_name}
-                  </th>
-                ))}
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
+      {/* 主视图区域：仓库视角 / 架构树视角 */}
+      {filterState.view === 'arch' ? (
+        <ArchTreeView
+          data={archTreeData}
+          loading={loading}
+          docTypes={docTypes}
+          focusedDocTypeSlug={filterState.docType}
+          expandedDocRowKeys={expandedRowKeys}
+          discoveringRepoId={discoveringRepoId}
+          exportingKey={exportingKey}
+          hasActiveFilters={hasActiveFilters}
+          onResetFilters={resetFilters}
+          onToggleDocRowExpand={toggleExpandRow}
+          onDiscoverModules={(r) => void handleDiscoverRepoModules(r)}
+          onOpenModuleGovernance={openModuleGovernanceModal}
+          onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
+          onOpenStudio={openStudio}
+          onTriggerGenerate={(r, slug) =>
+            openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
+          }
+          onBatchGenerate={(r) => openGenerateModal(r, { batchMode: true })}
+          onExportZip={(r) => void handleExportRowZip(r)}
+        />
+      ) : (
+        <div className="code-card code-archdoc-coverage-table-card">
+          {loading ? (
+            <table className="code-table">
+              <thead>
+                <tr>
+                  <th>仓库 / 子目录范围</th>
+                  <th>所属架构元素</th>
+                  <th>负责人与提交</th>
+                  <th>文档覆盖（{docTypes.length} 类）</th>
+                  <th className="code-archdoc-coverage-actions-col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
                 <EmptyState
                   inTable
-                  colSpan={tableColSpan}
+                  colSpan={5}
                   compact
                   title="正在加载仓库覆盖矩阵..."
                   description="正在汇总各仓库与子目录的文档状态"
                 />
-              ) : rows.length === 0 ? (
+              </tbody>
+            </table>
+          ) : rows.length === 0 ? (
+            <table className="code-table">
+              <thead>
+                <tr>
+                  <th>仓库 / 子目录范围</th>
+                  <th>所属架构元素</th>
+                  <th>负责人与提交</th>
+                  <th>文档覆盖（{docTypes.length} 类）</th>
+                  <th className="code-archdoc-coverage-actions-col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
                 <EmptyState
                   inTable
-                  colSpan={tableColSpan}
+                  colSpan={5}
                   type={hasActiveFilters ? 'search' : 'data'}
                   title={hasActiveFilters ? '未找到匹配当前筛选条件的范围' : '暂无可用代码仓库'}
                   description={
@@ -579,301 +722,57 @@ export const RepoCoveragePage: React.FC = () => {
                   }
                   action={
                     hasActiveFilters ? (
-                      <button type="button" className="btn btn-secondary btn-small" onClick={resetFilters}>
+                      <button
+                        type="button"
+                        className="code-archdoc-ghost-btn"
+                        onClick={resetFilters}
+                      >
                         重置筛选
                       </button>
                     ) : undefined
                   }
                 />
-              ) : (
-                rows.map((row) => {
-                  const rowKey = `${row.repo_id}:${row.subdirectory}`;
-                  const approvedCount = Object.values(row.doc_statuses).filter(
-                    (d) => d.status === 'approved',
-                  ).length;
-                  const firstDoc = Object.values(row.doc_statuses)[0];
-                  const isSubdirRow = row.scope_type === 'subdir';
-                  const canSelectSubdir =
-                    isSubdirRow && row.can_write && row.scope_status !== 'missing';
-                  const isRowChecked =
-                    canSelectSubdir &&
-                    selectedRepoId === row.repo_id &&
-                    selectedSubdirs.includes(row.subdirectory);
-                  const isDiscovering = discoveringRepoId === row.repo_id;
-                  const activeModuleCount = row.active_module_count ?? 0;
-                  const sourceLabel = formatModuleSourceLabel(
-                    row.scope_status === 'orphan' ? 'orphan' : row.module_source,
-                  );
+              </tbody>
+            </table>
+          ) : (
+            <div className="code-archdoc-coverage-table-wrap">
+              <ScopeCoverageTable
+                rows={rows}
+                docTypes={docTypes}
+                focusedDocTypeSlug={filterState.docType}
+                expandedRowKeys={expandedRowKeys}
+                showArchColumn
+                showSelection
+                selectedRepoId={selectedRepoId}
+                selectedSubdirs={selectedSubdirs}
+                discoveringRepoId={discoveringRepoId}
+                exportingKey={exportingKey}
+                onToggleExpandRow={toggleExpandRow}
+                onToggleSelectSubdir={toggleSubdirRowSelection}
+                onDiscoverModules={(r) => void handleDiscoverRepoModules(r)}
+                onOpenModuleGovernance={openModuleGovernanceModal}
+                onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
+                onOpenStudio={openStudio}
+                onTriggerGenerate={(r, slug) =>
+                  openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
+                }
+                onBatchGenerate={(r) => openGenerateModal(r, { batchMode: true })}
+                onExportZip={(r) => void handleExportRowZip(r)}
+              />
+            </div>
+          )}
 
-                  return (
-                    <tr key={rowKey}>
-                      <td>
-                        <div
-                          className={`code-archdoc-coverage-identity ${
-                            isSubdirRow ? 'code-archdoc-coverage-identity--subdir' : ''
-                          }`}
-                        >
-                          <div className="code-archdoc-coverage-repo-row">
-                            {canSelectSubdir && (
-                              <input
-                                type="checkbox"
-                                className="code-archdoc-coverage-checkbox"
-                                checked={isRowChecked}
-                                onChange={() => toggleSubdirRowSelection(row)}
-                                aria-label={`选择 ${row.repo_name} 子目录 ${row.subdirectory}`}
-                              />
-                            )}
-                            {isSubdirRow ? (
-                              <>
-                                <CornerDownRight
-                                  size={14}
-                                  className="code-archdoc-coverage-tree-icon"
-                                />
-                                <span className="code-badge code-badge--purple">
-                                  {row.subdirectory}
-                                </span>
-                                <span className="code-archdoc-coverage-parent-repo">
-                                  {row.repo_name}
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="code-archdoc-coverage-repo-name">
-                                  {row.repo_name}
-                                </span>
-                                <span className="code-badge code-badge--muted">整仓</span>
-                                {!row.modules_scanned && activeModuleCount === 0 ? (
-                                  row.can_write ? (
-                                    <button
-                                      type="button"
-                                      className="code-archdoc-coverage-discover-btn"
-                                      disabled={isDiscovering}
-                                      onClick={() => void handleDiscoverRepoModules(row)}
-                                      title="执行零 LLM 静态扫描，自动发现仓库一级业务目录"
-                                    >
-                                      {isDiscovering ? (
-                                        <Loader2 size={12} className="code-archdoc-spin" />
-                                      ) : (
-                                        <FolderTree size={12} />
-                                      )}
-                                      <span>{isDiscovering ? '扫描中...' : '发现一级目录'}</span>
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="code-archdoc-coverage-module-pill"
-                                      onClick={() => openModuleGovernanceModal(row)}
-                                      title="查看仓库模块发现索引"
-                                    >
-                                      <FolderTree size={12} />
-                                      <span>查看模块</span>
-                                    </button>
-                                  )
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="code-archdoc-coverage-module-pill"
-                                    onClick={() => openModuleGovernanceModal(row)}
-                                    title="点击打开模块发现与子目录治理弹窗"
-                                  >
-                                    <FolderTree size={12} />
-                                    <span>
-                                      {activeModuleCount > 0
-                                        ? `${activeModuleCount} 个子模块`
-                                        : '单仓 · 模块治理'}
-                                    </span>
-                                  </button>
-                                )}
-                              </>
-                            )}
-                            {row.scope_status === 'missing' && (
-                              <span
-                                className="code-badge code-badge--warning"
-                                title="该子目录在最近提交中已缺失，可在模块治理中迁移文档"
-                              >
-                                目录已缺失
-                              </span>
-                            )}
-                            {row.scope_status === 'orphan' && (
-                              <span
-                                className="code-badge code-badge--warning"
-                                title="历史遗留子目录文档范围（未在当前模块索引中），建议在模块治理中迁移"
-                              >
-                                孤立范围
-                              </span>
-                            )}
-                            {isSubdirRow && sourceLabel && (
-                              <span className="code-badge code-badge--muted">{sourceLabel}</span>
-                            )}
-                            {row.active_task_id && (
-                              <button
-                                type="button"
-                                className="code-archdoc-coverage-active-task-btn"
-                                onClick={() =>
-                                  openGenerateModal(row, { initialTaskId: row.active_task_id })
-                                }
-                                title="点击查看正在执行的反推生成任务进度"
-                              >
-                                <Activity size={12} />
-                                <span>任务 #{row.active_task_id}</span>
-                              </button>
-                            )}
-                          </div>
-                          <div className="code-archdoc-coverage-meta-row">
-                            {row.department_name && <span>{row.department_name}</span>}
-                            {row.arch_element_name && <span>· {row.arch_element_name}</span>}
-                            <span className="code-archdoc-mono">{row.branch || 'master'}</span>
-                            {typeof row.effective_files === 'number' && row.effective_files > 0 && (
-                              <span>
-                                · {row.effective_files} 文件
-                                {typeof row.total_loc === 'number' && row.total_loc > 0
-                                  ? ` / ${row.total_loc.toLocaleString()} LOC`
-                                  : ''}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-
-                      <td>
-                        <div>{row.owner_name || '-'}</div>
-                        <div className="code-archdoc-coverage-meta-row">
-                          <span title={row.latest_commit_sha || '暂无快照'}>
-                            Commit: <code className="code-archdoc-mono">{shortSha(row.latest_commit_sha)}</code>
-                          </span>
-                        </div>
-                      </td>
-
-                      {visibleDocTypes.map((dt) => {
-                        const ds = row.doc_statuses[dt.slug];
-                        if (ds) {
-                          const tagMeta = docStatusTag(ds);
-                          return (
-                            <td key={dt.slug}>
-                              <button
-                                type="button"
-                                className="code-archdoc-coverage-doc-cell"
-                                onClick={() => openStudio(row.repo_id, ds.document_id, row.subdirectory)}
-                                title={`进入工作台查看《${dt.display_name}》`}
-                              >
-                                <StatusTag status={tagMeta.status} text={tagMeta.label} size="sm" />
-                              </button>
-                            </td>
-                          );
-                        }
-                        return (
-                          <td key={dt.slug}>
-                            <button
-                              type="button"
-                              className="code-archdoc-coverage-doc-cell"
-                              disabled={!row.can_write}
-                              onClick={() =>
-                                openGenerateModal(row, { initialDocTypeSlugs: [dt.slug] })
-                              }
-                              title={
-                                row.can_write
-                                  ? `点击为当前范围触发生成《${dt.display_name}》`
-                                  : '尚未生成（仅仓库/子目录负责人或管理员可触发生成）'
-                              }
-                            >
-                              <span className="code-archdoc-coverage-missing-pill">未生成</span>
-                            </button>
-                          </td>
-                        );
-                      })}
-
-                      <td>
-                        <div className="code-archdoc-coverage-actions">
-                          <button
-                            type="button"
-                            className="btn btn-text btn-small"
-                            onClick={() =>
-                              openStudio(row.repo_id, firstDoc?.document_id, row.subdirectory)
-                            }
-                            title="进入 Canvas Studio 工作台"
-                          >
-                            <BookOpen size={14} />
-                            <span>工作台</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            className="btn btn-text btn-small"
-                            disabled={!row.can_write}
-                            onClick={() => openGenerateModal(row)}
-                            title={
-                              row.can_write
-                                ? '触发 AI 设计文档反推生成'
-                                : '权限不足：仅仓库/子目录负责人或管理员可触发生成'
-                            }
-                          >
-                            <Sparkles size={14} />
-                            <span>触发生成</span>
-                          </button>
-
-                          {row.scope_type === 'repo' && (
-                            <>
-                              <button
-                                type="button"
-                                className="btn btn-text btn-small"
-                                disabled={!row.can_write}
-                                onClick={() => openGenerateModal(row, { batchMode: true })}
-                                title={
-                                  row.can_write
-                                    ? '一键批量生成各活跃子模块与整仓分层文档'
-                                    : '权限不足：仅仓库负责人或管理员可发起批量生成'
-                                }
-                              >
-                                <Layers3 size={14} />
-                                <span>批量生成</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                className="btn btn-text btn-small"
-                                onClick={() => openModuleGovernanceModal(row)}
-                                title="配置模块发现策略、扫描子模块或迁移重命名目录文档"
-                              >
-                                <FolderTree size={14} />
-                                <span>模块治理</span>
-                              </button>
-                            </>
-                          )}
-
-                          <button
-                            type="button"
-                            className="btn btn-text btn-small"
-                            disabled={approvedCount === 0 || exportingKey === rowKey}
-                            onClick={() => void handleExportRowZip(row)}
-                            title={
-                              approvedCount > 0
-                                ? `打包下载当前范围 ${approvedCount} 篇已发布文档 ZIP`
-                                : '暂无已发布文档可导出'
-                            }
-                          >
-                            <Archive size={14} />
-                            <span>{exportingKey === rowKey ? '导出中...' : 'ZIP 导出'}</span>
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+          {total > 0 && (
+            <div className="code-archdoc-coverage-pagination">
+              <Pagination
+                totalItems={total}
+                defaultPageSize={DEFAULT_ARCHDOC_PAGE_SIZE}
+                pageSizeOptions={[15, 25, 50, 100]}
+              />
+            </div>
+          )}
         </div>
-
-        {total > 0 && (
-          <div className="code-archdoc-coverage-pagination">
-            <Pagination
-              totalItems={total}
-              defaultPageSize={DEFAULT_ARCHDOC_PAGE_SIZE}
-              pageSizeOptions={[15, 25, 50, 100]}
-            />
-          </div>
-        )}
-      </div>
+      )}
 
       {/* 生成任务触发与实时进度监控弹窗（兼容单范围与批量分层编排） */}
       <GenerateTaskModal

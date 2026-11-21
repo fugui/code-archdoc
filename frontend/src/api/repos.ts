@@ -1,4 +1,6 @@
 import type {
+  ArchTreeQuery,
+  ArchTreeResponse,
   DepartmentVO,
   DocTypeDetailVO,
   DocTypeSummaryVO,
@@ -42,8 +44,24 @@ export async function listRepos(query: RepoListQuery): Promise<RepoCoverageListR
   if (query.docType?.trim()) qs.set('doc_type', query.docType.trim());
   if (query.status && query.status !== 'all') qs.set('status', query.status);
   if (query.scopeType && query.scopeType !== 'all') qs.set('scope_type', query.scopeType);
+  if (query.subsystemId?.trim()) qs.set('subsystem_id', query.subsystemId.trim());
+  if (query.archBinding && query.archBinding !== 'all') qs.set('arch_binding', query.archBinding);
 
   return apiRequest<RepoCoverageListResponse>(`/repos?${qs.toString()}`);
+}
+
+export async function getArchTree(query: ArchTreeQuery): Promise<ArchTreeResponse> {
+  const qs = new URLSearchParams();
+  if (query.search?.trim()) qs.set('search', query.search.trim());
+  if (query.departmentId?.trim()) qs.set('department_id', query.departmentId.trim());
+  if (query.docType?.trim()) qs.set('doc_type', query.docType.trim());
+  if (query.status && query.status !== 'all') qs.set('status', query.status);
+  if (query.scopeType && query.scopeType !== 'all') qs.set('scope_type', query.scopeType);
+  if (query.subsystemId?.trim()) qs.set('subsystem_id', query.subsystemId.trim());
+  if (query.archBinding && query.archBinding !== 'all') qs.set('arch_binding', query.archBinding);
+
+  const suffix = qs.toString();
+  return apiRequest<ArchTreeResponse>(suffix ? `/arch-tree?${suffix}` : '/arch-tree');
 }
 
 export async function getRepoScopes(repoId: number): Promise<RepoScopesDetailResponse> {

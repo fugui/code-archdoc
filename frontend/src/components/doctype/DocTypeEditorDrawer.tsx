@@ -24,6 +24,7 @@ import type {
   SlotDefinition,
 } from '../../types';
 import { formatApiError } from '../../utils/errorMessages';
+import { DOC_TYPE_CATEGORY_PRESETS } from '../../utils/docTypeUtils';
 import { formatDateTime } from '../../utils/urlQuery';
 import SlotsSchemaBuilder, { ALL_FACET_OPTIONS } from './SlotsSchemaBuilder';
 
@@ -77,6 +78,8 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
   // 表单状态
   const [slug, setSlug] = useState<string>('');
   const [displayName, setDisplayName] = useState<string>('');
+  const [shortName, setShortName] = useState<string>('');
+  const [category, setCategory] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [modelTier, setModelTier] = useState<ModelTier>('flagship');
   const [timeoutSeconds, setTimeoutSeconds] = useState<number>(300);
@@ -115,6 +118,8 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
       setRevisions([]);
       setSlug('');
       setDisplayName('');
+      setShortName('');
+      setCategory('');
       setDescription('');
       setModelTier('flagship');
       setTimeoutSeconds(300);
@@ -136,6 +141,8 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
         setLoadedDetail(detail);
         setSlug(detail.slug);
         setDisplayName(detail.display_name);
+        setShortName(detail.short_name || '');
+        setCategory(detail.category || '');
         setDescription(detail.description || '');
         setModelTier(detail.model_tier);
         setTimeoutSeconds(detail.timeout_seconds || 300);
@@ -221,6 +228,12 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
     if (!displayName.trim()) {
       return '展示名称 (display_name) 不能为空';
     }
+    if (Array.from(shortName.trim()).length > 32) {
+      return '短标题 (short_name) 长度不能超过 32 个字符';
+    }
+    if (Array.from(category.trim()).length > 32) {
+      return '文档分组 (category) 长度不能超过 32 个字符';
+    }
     if (irFacets.length === 0) {
       return '请至少订阅 1 个顶层 Code IR 分片 (ir_facets)';
     }
@@ -263,6 +276,8 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
         await createDocType({
           slug: slug.trim(),
           display_name: displayName.trim(),
+          ...(shortName.trim() ? { short_name: shortName.trim() } : {}),
+          ...(category.trim() ? { category: category.trim() } : {}),
           description: description.trim(),
           is_active: isActive,
           model_tier: modelTier,
@@ -288,6 +303,16 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
           ir_facets: irFacets,
           slots,
         };
+        if (shortName.trim()) {
+          baseMeta.short_name = shortName.trim();
+        } else {
+          delete baseMeta.short_name;
+        }
+        if (category.trim()) {
+          baseMeta.category = category.trim();
+        } else {
+          delete baseMeta.category;
+        }
         if (parsedMaxOut && parsedMaxOut > 0) {
           baseMeta.max_output_tokens = parsedMaxOut;
         } else {
@@ -447,6 +472,36 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
                     placeholder="例如: 安全架构评审报告"
                     onChange={(e) => setDisplayName(e.target.value)}
                   />
+                </div>
+
+                <div className="code-archdoc-form-field">
+                  <label className="code-archdoc-field-label">短标题 (short_name，可选)</label>
+                  <input
+                    type="text"
+                    className="code-archdoc-input"
+                    value={shortName}
+                    maxLength={32}
+                    placeholder="例如: 安全评审（用于覆盖矩阵紧凑胶囊）"
+                    onChange={(e) => setShortName(e.target.value)}
+                  />
+                </div>
+
+                <div className="code-archdoc-form-field">
+                  <label className="code-archdoc-field-label">文档分组 (category，可选)</label>
+                  <input
+                    type="text"
+                    list="archdoc-category-presets"
+                    className="code-archdoc-input"
+                    value={category}
+                    maxLength={32}
+                    placeholder="例如: 架构设计 / 质量与安全"
+                    onChange={(e) => setCategory(e.target.value)}
+                  />
+                  <datalist id="archdoc-category-presets">
+                    {DOC_TYPE_CATEGORY_PRESETS.map((preset) => (
+                      <option key={preset} value={preset} />
+                    ))}
+                  </datalist>
                 </div>
 
                 <div className="code-archdoc-form-field">

@@ -1,4 +1,10 @@
-import type { DriftFilterType, RepoScopeFilter, RepoStatusFilter } from '../types';
+import type {
+  ArchBindingFilter,
+  CoverageViewMode,
+  DriftFilterType,
+  RepoScopeFilter,
+  RepoStatusFilter,
+} from '../types';
 
 export const ALLOWED_PAGE_SIZES = [15, 25, 50, 100] as const;
 export const DEFAULT_ARCHDOC_PAGE_SIZE = 25;
@@ -11,6 +17,9 @@ export interface RepoFilterState {
   docType: string;
   status: RepoStatusFilter;
   scopeType: RepoScopeFilter;
+  view: CoverageViewMode;
+  subsystemId: string;
+  archBinding: ArchBindingFilter;
 }
 
 export interface DriftFilterState {
@@ -33,6 +42,7 @@ export interface EvidenceDeepLinkParams {
 
 const VALID_STATUS_SET = new Set<string>(['all', 'approved', 'draft', 'drifted', 'missing']);
 const VALID_SCOPE_SET = new Set<string>(['all', 'repo', 'subdir']);
+const VALID_ARCH_BINDING_SET = new Set<string>(['all', 'bound', 'unbound']);
 const VALID_DRIFT_TYPE_SET = new Set<string>(['all', 'code', 'spec', 'both']);
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
@@ -81,6 +91,18 @@ export function parseRepoFilterParams(params: URLSearchParams): RepoFilterState 
     ? (rawScope as RepoScopeFilter)
     : '';
 
+  const rawView = (params.get('view') ?? '').trim().toLowerCase();
+  const view: CoverageViewMode = rawView === 'arch' ? 'arch' : 'repo';
+
+  const rawSubsys = (params.get('subsystem_id') ?? '').trim();
+  const subsystemId =
+    /^\d+$/.test(rawSubsys) && Number.parseInt(rawSubsys, 10) > 0 ? rawSubsys : '';
+
+  const rawBinding = (params.get('arch_binding') ?? '').trim().toLowerCase();
+  const archBinding: ArchBindingFilter = VALID_ARCH_BINDING_SET.has(rawBinding)
+    ? (rawBinding as ArchBindingFilter)
+    : '';
+
   return {
     page,
     pageSize,
@@ -89,6 +111,9 @@ export function parseRepoFilterParams(params: URLSearchParams): RepoFilterState 
     docType,
     status,
     scopeType,
+    view,
+    subsystemId,
+    archBinding,
   };
 }
 
@@ -110,6 +135,9 @@ export function serializeRepoFilterParams(
   const out = new URLSearchParams();
   out.set('page', String(nextState.page));
   out.set('pageSize', String(nextState.pageSize));
+  if (nextState.view === 'arch') {
+    out.set('view', 'arch');
+  }
   if (nextState.search.trim()) {
     out.set('search', nextState.search.trim());
   }
@@ -124,6 +152,12 @@ export function serializeRepoFilterParams(
   }
   if (nextState.scopeType && nextState.scopeType !== 'all') {
     out.set('scope_type', nextState.scopeType);
+  }
+  if (nextState.subsystemId.trim()) {
+    out.set('subsystem_id', nextState.subsystemId.trim());
+  }
+  if (nextState.archBinding && nextState.archBinding !== 'all') {
+    out.set('arch_binding', nextState.archBinding);
   }
   return out;
 }

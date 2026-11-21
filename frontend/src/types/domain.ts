@@ -48,6 +48,9 @@ export type DriftPrecision = 'section_level' | 'repo_level';
 export type ScopeType = 'repo' | 'subdir';
 export type RepoStatusFilter = '' | 'all' | 'approved' | 'draft' | 'drifted' | 'missing';
 export type RepoScopeFilter = '' | 'all' | 'repo' | 'subdir';
+export type CoverageViewMode = 'repo' | 'arch';
+export type ArchBindingFilter = '' | 'all' | 'bound' | 'unbound';
+export type ArchElementType = 'subsystem' | 'group' | 'module' | '';
 
 export interface CurrentUserProfile {
   id: number;
@@ -204,6 +207,10 @@ export interface RepoScopeCoverageVO {
   modules_scanned?: boolean;
   arch_element_id: number | null;
   arch_element_name: string;
+  arch_element_type?: ArchElementType;
+  arch_path?: string;
+  subsystem_id?: number | null;
+  subsystem_name?: string;
   branch: string;
   owner_id: number;
   owner_name: string;
@@ -260,6 +267,47 @@ export interface MigrateModuleResultVO {
   republished_documents: number;
 }
 
+export interface ArchSubsystemOptionVO {
+  id: number;
+  identifier: string;
+  name_cn: string;
+  name_en: string;
+  scope_count: number;
+}
+
+export interface ArchTreeStatsVO {
+  scope_count: number;
+  covered_scope_count: number;
+  approved_doc_count: number;
+  draft_doc_count: number;
+  drifted_doc_count: number;
+  blocked_doc_count: number;
+}
+
+export interface ArchTreeNodeVO {
+  id: number;
+  identifier: string;
+  name_cn: string;
+  name_en: string;
+  type: 'subsystem' | 'group' | 'module' | string;
+  parent_id: number | null;
+  owner_id: number | null;
+  owner_name: string;
+  repo_id: number | null;
+  subdirectory: string;
+  description: string;
+  stats: ArchTreeStatsVO;
+  scopes: RepoScopeCoverageVO[];
+  children: ArchTreeNodeVO[];
+}
+
+export interface ArchTreeResponse {
+  summary: RepoCoverageSummaryVO;
+  subsystems: ArchSubsystemOptionVO[];
+  nodes: ArchTreeNodeVO[];
+  unassigned_scopes: RepoScopeCoverageVO[];
+}
+
 export interface RepoCoverageSummaryVO {
   total_scopes: number;
   covered_scopes: number;
@@ -269,6 +317,7 @@ export interface RepoCoverageSummaryVO {
 
 export interface RepoCoverageListResponse extends PaginatedResponse<RepoScopeCoverageVO> {
   summary: RepoCoverageSummaryVO;
+  subsystems?: ArchSubsystemOptionVO[];
 }
 
 export interface GenTaskSummaryVO {
@@ -315,6 +364,8 @@ export interface DocTypeSummaryVO {
   id: number;
   slug: string;
   display_name: string;
+  short_name: string;
+  category: string;
   description: string;
   is_builtin: boolean;
   is_active: boolean;

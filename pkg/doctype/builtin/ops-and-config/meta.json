@@ -1,6 +1,8 @@
 {
   "name": "ops-and-config",
   "display_name": "配置、部署与研发上手",
+  "short_name": "运维与配置",
+  "category": "运维交付",
   "description": "面向研发新人与运维值班的脱敏配置清单、部署拓扑、本地构建编译开关及高频故障排障手册",
   "is_active": true,
   "is_builtin": true,

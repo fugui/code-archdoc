@@ -110,8 +110,9 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 		protected.GET("/users", SearchUsers)
 		protected.GET("/departments", h.ListDepartments)
 
-		// 域 1：仓库与 Monorepo 子目录覆盖视图 (F-01 / F-28)
+		// 域 1：仓库与 Monorepo 子目录覆盖视图及架构树只读视图 (F-01 / F-28)
 		protected.GET("/repos", h.ListRepos)
+		protected.GET("/arch-tree", h.GetArchTree)
 		protected.GET("/repos/:repo_id/scopes", h.GetRepoScopes)
 		if h.moduleSvc != nil {
 			protected.GET("/repos/:repo_id/modules", h.ListRepoModules)

@@ -46,6 +46,10 @@ type RepoScopeCoverageVO struct {
 	ModulesScanned    bool                          `json:"modules_scanned"`
 	ArchElementID     *uint                         `json:"arch_element_id"`
 	ArchElementName   string                        `json:"arch_element_name"`
+	ArchElementType   string                        `json:"arch_element_type,omitempty"`
+	ArchPath          string                        `json:"arch_path,omitempty"`
+	SubsystemID       *uint                         `json:"subsystem_id,omitempty"`
+	SubsystemName     string                        `json:"subsystem_name,omitempty"`
 	Branch            string                        `json:"branch"`
 	OwnerID           uint                          `json:"owner_id"`
 	OwnerName         string                        `json:"owner_name"`
@@ -56,6 +60,47 @@ type RepoScopeCoverageVO struct {
 	DocStatuses       map[string]DocStatusSummaryVO `json:"doc_statuses"`
 }
 
+type ArchSubsystemOptionVO struct {
+	ID         uint   `json:"id"`
+	Identifier string `json:"identifier"`
+	NameCn     string `json:"name_cn"`
+	NameEn     string `json:"name_en"`
+	ScopeCount int    `json:"scope_count"`
+}
+
+type ArchTreeStatsVO struct {
+	ScopeCount        int `json:"scope_count"`
+	CoveredScopeCount int `json:"covered_scope_count"`
+	ApprovedDocCount  int `json:"approved_doc_count"`
+	DraftDocCount     int `json:"draft_doc_count"`
+	DriftedDocCount   int `json:"drifted_doc_count"`
+	BlockedDocCount   int `json:"blocked_doc_count"`
+}
+
+type ArchTreeNodeVO struct {
+	ID           uint                  `json:"id"`
+	Identifier   string                `json:"identifier"`
+	NameCn       string                `json:"name_cn"`
+	NameEn       string                `json:"name_en"`
+	Type         string                `json:"type"`
+	ParentID     *uint                 `json:"parent_id"`
+	OwnerID      *uint                 `json:"owner_id"`
+	OwnerName    string                `json:"owner_name"`
+	RepoID       *uint                 `json:"repo_id"`
+	Subdirectory string                `json:"subdirectory"`
+	Description  string                `json:"description"`
+	Stats        ArchTreeStatsVO       `json:"stats"`
+	Scopes       []RepoScopeCoverageVO `json:"scopes"`
+	Children     []*ArchTreeNodeVO     `json:"children"`
+}
+
+type ArchTreeResponse struct {
+	Summary          RepoCoverageSummaryVO   `json:"summary"`
+	Subsystems       []ArchSubsystemOptionVO `json:"subsystems"`
+	Nodes            []*ArchTreeNodeVO       `json:"nodes"`
+	UnassignedScopes []RepoScopeCoverageVO   `json:"unassigned_scopes"`
+}
+
 type RepoCoverageSummaryVO struct {
 	TotalScopes   int `json:"total_scopes"`
 	CoveredScopes int `json:"covered_scopes"`
@@ -64,11 +109,12 @@ type RepoCoverageSummaryVO struct {
 }
 
 type RepoCoverageListResponse struct {
-	Items    []RepoScopeCoverageVO `json:"items"`
-	Total    int64                 `json:"total"`
-	Page     int                   `json:"page"`
-	PageSize int                   `json:"page_size"`
-	Summary  RepoCoverageSummaryVO `json:"summary"`
+	Items      []RepoScopeCoverageVO   `json:"items"`
+	Total      int64                   `json:"total"`
+	Page       int                     `json:"page"`
+	PageSize   int                     `json:"page_size"`
+	Summary    RepoCoverageSummaryVO   `json:"summary"`
+	Subsystems []ArchSubsystemOptionVO `json:"subsystems"`
 }
 
 type GenTaskSummaryVO struct {
@@ -106,6 +152,8 @@ type RepoCoverageFilter struct {
 	DocType      string
 	Status       string // all | approved | draft | drifted | missing
 	ScopeType    string // all | repo | subdir
+	SubsystemID  *uint
+	ArchBinding  string // all | bound | unbound
 }
 
 // RepoService 提供共享部门列表、仓库/子目录覆盖全景矩阵与单仓详情查询编排（F-01）。
@@ -180,36 +228,13 @@ func (s *RepoService) ListRepoCoverage(ctx context.Context, user *commonModels.U
 		return nil, err
 	}
 
-	allRows, err := s.buildCoverageRows(ctx, user, repos)
+	allRows, idx, err := s.buildCoverageData(ctx, user, repos)
 	if err != nil {
 		return nil, err
 	}
 
-	// 应用筛选条件（scope_type, search, status + doc_type）
-	filtered := make([]RepoScopeCoverageVO, 0, len(allRows))
-	searchLower := strings.ToLower(strings.TrimSpace(filter.Search))
-	scopeTypeFilter := strings.ToLower(strings.TrimSpace(filter.ScopeType))
-	statusFilter := strings.ToLower(strings.TrimSpace(filter.Status))
-	docTypeFilter := strings.TrimSpace(filter.DocType)
-
-	for _, row := range allRows {
-		if scopeTypeFilter != "" && scopeTypeFilter != "all" && row.ScopeType != scopeTypeFilter {
-			continue
-		}
-		if searchLower != "" {
-			if !strings.Contains(strings.ToLower(row.RepoName), searchLower) &&
-				!strings.Contains(strings.ToLower(row.Subdirectory), searchLower) &&
-				!strings.Contains(strings.ToLower(row.ArchElementName), searchLower) {
-				continue
-			}
-		}
-		if statusFilter != "" && statusFilter != "all" {
-			if !matchesStatusFilter(row.DocStatuses, docTypeFilter, statusFilter) {
-				continue
-			}
-		}
-		filtered = append(filtered, row)
-	}
+	subsystems := idx.buildSubsystems(allRows)
+	filtered := filterCoverageRows(allRows, filter)
 
 	summary := computeCoverageSummary(filtered)
 	total := int64(len(filtered))
@@ -224,11 +249,133 @@ func (s *RepoService) ListRepoCoverage(ctx context.Context, user *commonModels.U
 	}
 
 	return &RepoCoverageListResponse{
-		Items:    filtered[start:end],
-		Total:    total,
-		Page:     page,
-		PageSize: pageSize,
-		Summary:  summary,
+		Items:      filtered[start:end],
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		Summary:    summary,
+		Subsystems: subsystems,
+	}, nil
+}
+
+// GetArchTree 按平台 architecture_elements 树形结构聚合各节点下的仓库/子目录覆盖范围与统计指标。
+func (s *RepoService) GetArchTree(ctx context.Context, user *commonModels.User, filter RepoCoverageFilter) (*ArchTreeResponse, error) {
+	repos, err := s.masterRepo.ListAllActiveRepositories(ctx, filter.DepartmentID)
+	if err != nil {
+		return nil, err
+	}
+
+	allRows, idx, err := s.buildCoverageData(ctx, user, repos)
+	if err != nil {
+		return nil, err
+	}
+
+	subsystems := idx.buildSubsystems(allRows)
+	filtered := filterCoverageRows(allRows, filter)
+	summary := computeCoverageSummary(filtered)
+
+	// 预先记录每个仓库整仓应挂接的目标节点 ID（兼容仅筛选 scope_type=subdir 时子目录仍能挂入父仓所属节点）
+	repoAttachNodeID := make(map[uint]uint, len(repos))
+	for _, r := range allRows {
+		if r.ScopeType != "repo" {
+			continue
+		}
+		if r.ArchElementID != nil {
+			repoAttachNodeID[r.RepoID] = *r.ArchElementID
+		} else if r.SubsystemID != nil {
+			repoAttachNodeID[r.RepoID] = *r.SubsystemID
+		}
+	}
+
+	nodeByID := make(map[uint]*ArchTreeNodeVO, len(idx.allElems))
+	for _, el := range idx.allElems {
+		nodeByID[el.ID] = &ArchTreeNodeVO{
+			ID:           el.ID,
+			Identifier:   el.Identifier,
+			NameCn:       el.NameCn,
+			NameEn:       el.NameEn,
+			Type:         el.Type,
+			ParentID:     el.ParentID,
+			OwnerID:      el.OwnerID,
+			OwnerName:    idx.resolveUserName(el.OwnerID, ""),
+			RepoID:       el.RepoID,
+			Subdirectory: el.Subdirectory,
+			Description:  el.Description,
+			Scopes:       []RepoScopeCoverageVO{},
+			Children:     []*ArchTreeNodeVO{},
+		}
+	}
+
+	roots := make([]*ArchTreeNodeVO, 0)
+	for _, el := range idx.allElems {
+		node := nodeByID[el.ID]
+		if el.ParentID != nil && *el.ParentID != el.ID {
+			if parent, ok := nodeByID[*el.ParentID]; ok && !wouldCreateTreeCycle(el.ID, *el.ParentID, idx.elemByID) {
+				parent.Children = append(parent.Children, node)
+				continue
+			}
+		}
+		roots = append(roots, node)
+	}
+
+	unassigned := make([]RepoScopeCoverageVO, 0)
+	for _, row := range filtered {
+		attached := false
+		if row.ArchElementID != nil {
+			if node, ok := nodeByID[*row.ArchElementID]; ok {
+				node.Scopes = append(node.Scopes, row)
+				attached = true
+			}
+		}
+		if !attached && row.ScopeType == "subdir" {
+			if targetID, ok := repoAttachNodeID[row.RepoID]; ok {
+				if node, exists := nodeByID[targetID]; exists {
+					node.Scopes = append(node.Scopes, row)
+					attached = true
+				}
+			}
+		}
+		if !attached && row.SubsystemID != nil {
+			if node, ok := nodeByID[*row.SubsystemID]; ok {
+				node.Scopes = append(node.Scopes, row)
+				attached = true
+			}
+		}
+		if !attached {
+			unassigned = append(unassigned, row)
+		}
+	}
+
+	for _, root := range roots {
+		aggregateArchTreeStats(root)
+	}
+
+	searchLower := strings.ToLower(strings.TrimSpace(filter.Search))
+	statusFilter := strings.ToLower(strings.TrimSpace(filter.Status))
+	scopeTypeFilter := strings.ToLower(strings.TrimSpace(filter.ScopeType))
+	archBindingFilter := strings.ToLower(strings.TrimSpace(filter.ArchBinding))
+
+	hasNonSearchRestriction := filter.DepartmentID != nil ||
+		(statusFilter != "" && statusFilter != "all") ||
+		(scopeTypeFilter != "" && scopeTypeFilter != "all") ||
+		(archBindingFilter != "" && archBindingFilter != "all")
+	hasAnyFilter := hasNonSearchRestriction || searchLower != "" || filter.SubsystemID != nil
+
+	if hasAnyFilter {
+		pruned := make([]*ArchTreeNodeVO, 0, len(roots))
+		for _, root := range roots {
+			if kept := pruneArchTreeNode(root, idx, filter, searchLower, !hasNonSearchRestriction); kept != nil {
+				pruned = append(pruned, kept)
+			}
+		}
+		roots = pruned
+	}
+
+	return &ArchTreeResponse{
+		Summary:          summary,
+		Subsystems:       subsystems,
+		Nodes:            roots,
+		UnassignedScopes: unassigned,
 	}, nil
 }
 
@@ -296,28 +443,306 @@ type scopeKey struct {
 	subdir string
 }
 
-func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.User, repos []commonModels.Repository) ([]RepoScopeCoverageVO, error) {
-	if len(repos) == 0 {
-		return []RepoScopeCoverageVO{}, nil
+type archIndex struct {
+	allElems       []models.ArchitectureElement
+	elemByID       map[uint]models.ArchitectureElement
+	elemsByRepo    map[uint][]models.ArchitectureElement
+	subsystemByKey map[string]models.ArchitectureElement
+	elemUsers      map[uint]commonModels.User
+}
+
+func archElementDisplayName(el models.ArchitectureElement) string {
+	if s := strings.TrimSpace(el.NameCn); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(el.NameEn); s != "" {
+		return s
+	}
+	return strings.TrimSpace(el.Identifier)
+}
+
+func (idx *archIndex) resolveUserName(ownerID *uint, fallback string) string {
+	if ownerID != nil && *ownerID > 0 {
+		if u, ok := idx.elemUsers[*ownerID]; ok {
+			if u.Name != "" {
+				return u.Name
+			}
+			if u.Username != "" {
+				return u.Username
+			}
+		}
+	}
+	return fallback
+}
+
+func (idx *archIndex) resolveHierarchy(el models.ArchitectureElement) (string, *uint, string) {
+	parts := make([]string, 0, 4)
+	var subsysID *uint
+	subsysName := ""
+
+	visited := make(map[uint]bool, 4)
+	cur := el
+	for {
+		if visited[cur.ID] {
+			break
+		}
+		visited[cur.ID] = true
+
+		if name := archElementDisplayName(cur); name != "" {
+			parts = append(parts, name)
+		}
+		if subsysID == nil && cur.Type == "subsystem" {
+			id := cur.ID
+			subsysID = &id
+			subsysName = archElementDisplayName(cur)
+		}
+		if cur.ParentID == nil || *cur.ParentID == 0 {
+			break
+		}
+		parent, ok := idx.elemByID[*cur.ParentID]
+		if !ok {
+			break
+		}
+		cur = parent
 	}
 
-	repoIDs := make([]uint, 0, len(repos))
-	for _, r := range repos {
-		repoIDs = append(repoIDs, r.ID)
+	for l, r := 0, len(parts)-1; l < r; l, r = l+1, r-1 {
+		parts[l], parts[r] = parts[r], parts[l]
+	}
+	return strings.Join(parts, " / "), subsysID, subsysName
+}
+
+func archElementTypePriority(elemType string) int {
+	switch elemType {
+	case "module":
+		return 3
+	case "group":
+		return 2
+	case "subsystem":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (idx *archIndex) resolveRepoElement(repo *commonModels.Repository) *models.ArchitectureElement {
+	var best *models.ArchitectureElement
+	bestPriority := -1
+	for i := range idx.elemsByRepo[repo.ID] {
+		el := &idx.elemsByRepo[repo.ID][i]
+		ns, normErr := sandbox.NormalizeSubdir(el.Subdirectory)
+		if normErr != nil || ns != "" {
+			continue
+		}
+		p := archElementTypePriority(el.Type)
+		if best == nil || p > bestPriority {
+			best = el
+			bestPriority = p
+		}
+	}
+	if best != nil {
+		return best
 	}
 
-	elems, err := s.masterRepo.ListArchElementsByRepos(ctx, repoIDs)
+	if sg := strings.ToLower(strings.TrimSpace(repo.ServiceGroup)); sg != "" {
+		if el, ok := idx.subsystemByKey[sg]; ok {
+			cp := el
+			return &cp
+		}
+	}
+	return nil
+}
+
+func (idx *archIndex) buildSubsystems(allRows []RepoScopeCoverageVO) []ArchSubsystemOptionVO {
+	scopeCounts := make(map[uint]int)
+	for _, r := range allRows {
+		if r.SubsystemID != nil {
+			scopeCounts[*r.SubsystemID]++
+		}
+	}
+	out := make([]ArchSubsystemOptionVO, 0)
+	for _, el := range idx.allElems {
+		if el.Type != "subsystem" {
+			continue
+		}
+		out = append(out, ArchSubsystemOptionVO{
+			ID:         el.ID,
+			Identifier: el.Identifier,
+			NameCn:     el.NameCn,
+			NameEn:     el.NameEn,
+			ScopeCount: scopeCounts[el.ID],
+		})
+	}
+	return out
+}
+
+func filterCoverageRows(allRows []RepoScopeCoverageVO, filter RepoCoverageFilter) []RepoScopeCoverageVO {
+	filtered := make([]RepoScopeCoverageVO, 0, len(allRows))
+	searchLower := strings.ToLower(strings.TrimSpace(filter.Search))
+	scopeTypeFilter := strings.ToLower(strings.TrimSpace(filter.ScopeType))
+	statusFilter := strings.ToLower(strings.TrimSpace(filter.Status))
+	docTypeFilter := strings.TrimSpace(filter.DocType)
+	archBindingFilter := strings.ToLower(strings.TrimSpace(filter.ArchBinding))
+
+	for _, row := range allRows {
+		if scopeTypeFilter != "" && scopeTypeFilter != "all" && row.ScopeType != scopeTypeFilter {
+			continue
+		}
+		if filter.SubsystemID != nil {
+			if row.SubsystemID == nil || *row.SubsystemID != *filter.SubsystemID {
+				continue
+			}
+		}
+		switch archBindingFilter {
+		case "bound":
+			if row.ArchElementID == nil {
+				continue
+			}
+		case "unbound":
+			if row.ArchElementID != nil {
+				continue
+			}
+		}
+		if searchLower != "" {
+			if !strings.Contains(strings.ToLower(row.RepoName), searchLower) &&
+				!strings.Contains(strings.ToLower(row.Subdirectory), searchLower) &&
+				!strings.Contains(strings.ToLower(row.ArchElementName), searchLower) &&
+				!strings.Contains(strings.ToLower(row.ArchPath), searchLower) &&
+				!strings.Contains(strings.ToLower(row.SubsystemName), searchLower) {
+				continue
+			}
+		}
+		if statusFilter != "" && statusFilter != "all" {
+			if !matchesStatusFilter(row.DocStatuses, docTypeFilter, statusFilter) {
+				continue
+			}
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func wouldCreateTreeCycle(nodeID, parentID uint, elemByID map[uint]models.ArchitectureElement) bool {
+	visited := map[uint]bool{nodeID: true}
+	curID := parentID
+	for curID > 0 {
+		if visited[curID] {
+			return true
+		}
+		visited[curID] = true
+		el, ok := elemByID[curID]
+		if !ok || el.ParentID == nil {
+			return false
+		}
+		curID = *el.ParentID
+	}
+	return false
+}
+
+func aggregateArchTreeStats(node *ArchTreeNodeVO) ArchTreeStatsVO {
+	var stats ArchTreeStatsVO
+	for _, sc := range node.Scopes {
+		stats.ScopeCount++
+		if len(sc.DocStatuses) > 0 {
+			stats.CoveredScopeCount++
+		}
+		for _, ds := range sc.DocStatuses {
+			if ds.Status == models.DocStatusApproved {
+				stats.ApprovedDocCount++
+			} else {
+				stats.DraftDocCount++
+				if !ds.CanApprove {
+					stats.BlockedDocCount++
+				}
+			}
+			if ds.HasCodeDrift || ds.HasSpecDrift {
+				stats.DriftedDocCount++
+			}
+		}
+	}
+	for _, child := range node.Children {
+		cs := aggregateArchTreeStats(child)
+		stats.ScopeCount += cs.ScopeCount
+		stats.CoveredScopeCount += cs.CoveredScopeCount
+		stats.ApprovedDocCount += cs.ApprovedDocCount
+		stats.DraftDocCount += cs.DraftDocCount
+		stats.DriftedDocCount += cs.DriftedDocCount
+		stats.BlockedDocCount += cs.BlockedDocCount
+	}
+	node.Stats = stats
+	return stats
+}
+
+func archNodeMatchesSearch(node *ArchTreeNodeVO, searchLower string) bool {
+	return strings.Contains(strings.ToLower(node.NameCn), searchLower) ||
+		strings.Contains(strings.ToLower(node.NameEn), searchLower) ||
+		strings.Contains(strings.ToLower(node.Identifier), searchLower)
+}
+
+func pruneArchTreeNode(
+	node *ArchTreeNodeVO,
+	idx *archIndex,
+	filter RepoCoverageFilter,
+	searchLower string,
+	allowSearchOnlyEmpty bool,
+) *ArchTreeNodeVO {
+	keptChildren := make([]*ArchTreeNodeVO, 0, len(node.Children))
+	for _, child := range node.Children {
+		if kept := pruneArchTreeNode(child, idx, filter, searchLower, allowSearchOnlyEmpty); kept != nil {
+			keptChildren = append(keptChildren, kept)
+		}
+	}
+	node.Children = keptChildren
+
+	if len(keptChildren) > 0 || node.Stats.ScopeCount > 0 {
+		return node
+	}
+
+	if allowSearchOnlyEmpty && searchLower != "" && archNodeMatchesSearch(node, searchLower) {
+		if filter.SubsystemID == nil {
+			return node
+		}
+		if el, ok := idx.elemByID[node.ID]; ok {
+			_, subsysID, _ := idx.resolveHierarchy(el)
+			if subsysID != nil && *subsysID == *filter.SubsystemID {
+				return node
+			}
+		}
+	}
+	return nil
+}
+
+func (s *RepoService) loadArchIndex(ctx context.Context) (*archIndex, error) {
+	allElems, err := s.masterRepo.ListAllArchElements(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 收集架构元素关联负责人 ID 批量加载姓名
+	elemByID := make(map[uint]models.ArchitectureElement, len(allElems))
+	elemsByRepo := make(map[uint][]models.ArchitectureElement)
+	subsystemByKey := make(map[string]models.ArchitectureElement)
 	ownerIDSet := make(map[uint]struct{})
-	for _, el := range elems {
+
+	for _, el := range allElems {
+		elemByID[el.ID] = el
+		if el.RepoID != nil {
+			elemsByRepo[*el.RepoID] = append(elemsByRepo[*el.RepoID], el)
+		}
+		if el.Type == "subsystem" {
+			for _, key := range []string{el.Identifier, el.NameCn, el.NameEn} {
+				k := strings.ToLower(strings.TrimSpace(key))
+				if k != "" {
+					if _, exists := subsystemByKey[k]; !exists {
+						subsystemByKey[k] = el
+					}
+				}
+			}
+		}
 		if el.OwnerID != nil && *el.OwnerID > 0 {
 			ownerIDSet[*el.OwnerID] = struct{}{}
 		}
 	}
+
 	ownerIDs := make([]uint, 0, len(ownerIDSet))
 	for id := range ownerIDSet {
 		ownerIDs = append(ownerIDs, id)
@@ -327,9 +752,37 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		return nil, err
 	}
 
+	return &archIndex{
+		allElems:       allElems,
+		elemByID:       elemByID,
+		elemsByRepo:    elemsByRepo,
+		subsystemByKey: subsystemByKey,
+		elemUsers:      elemUsers,
+	}, nil
+}
+
+func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.User, repos []commonModels.Repository) ([]RepoScopeCoverageVO, error) {
+	rows, _, err := s.buildCoverageData(ctx, user, repos)
+	return rows, err
+}
+
+func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.User, repos []commonModels.Repository) ([]RepoScopeCoverageVO, *archIndex, error) {
+	idx, err := s.loadArchIndex(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(repos) == 0 {
+		return []RepoScopeCoverageVO{}, idx, nil
+	}
+
+	repoIDs := make([]uint, 0, len(repos))
+	for _, r := range repos {
+		repoIDs = append(repoIDs, r.ID)
+	}
+
 	docs, err := s.docRepo.ListByRepos(ctx, repoIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	revIDs := make([]uint, 0, len(docs)*2)
@@ -345,12 +798,12 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 	}
 	revMap, err := s.docRepo.ListRevisionsByIDs(ctx, revIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	drifts, err := s.driftRepo.ListDriftsByDocIDs(ctx, docIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	codeDriftByDoc := make(map[uint]models.DocumentDrift)
 	specDriftByDoc := make(map[uint]models.DocumentDrift)
@@ -364,7 +817,7 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 
 	snaps, err := s.snapRepo.ListLatestByRepos(ctx, repoIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	latestCommitByScope := make(map[scopeKey]string)
 	for _, sn := range snaps {
@@ -376,7 +829,7 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 
 	remoteHeads, err := s.driftRepo.ListRemoteHeadsByRepos(ctx, repoIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	remoteHeadByRepo := make(map[uint]string)
 	for _, rh := range remoteHeads {
@@ -387,7 +840,7 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 
 	activeTasks, err := s.taskRepo.ListActiveTasksByRepos(ctx, repoIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	activeTaskByScope := make(map[scopeKey]uint)
 	for _, tk := range activeTasks {
@@ -407,13 +860,6 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 	}
 
-	// 按仓库分组架构元素，并按规范化子目录聚合文档
-	elemsByRepo := make(map[uint][]models.ArchitectureElement)
-	for _, el := range elems {
-		if el.RepoID != nil {
-			elemsByRepo[*el.RepoID] = append(elemsByRepo[*el.RepoID], el)
-		}
-	}
 	docsByScope := make(map[scopeKey][]models.Document)
 	docSubdirsByRepo := make(map[uint][]string)
 	seenDocSubdir := make(map[scopeKey]bool)
@@ -435,7 +881,7 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 	}
 
-	rows := make([]RepoScopeCoverageVO, 0, len(repos)+len(elems))
+	rows := make([]RepoScopeCoverageVO, 0, len(repos)+len(idx.allElems))
 	for i := range repos {
 		repo := &repos[i]
 		branch := strings.TrimSpace(repo.Branch)
@@ -448,7 +894,7 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 		repoLevelWrite := IsRepoLevelWriter(user, repo)
 
-		repoElems := elemsByRepo[repo.ID]
+		repoElems := idx.elemsByRepo[repo.ID]
 		repoMods := modulesByRepo[repo.ID]
 
 		// 构建该仓库下架构元素索引与当前用户子目录写权限集合（供整仓行模块计数与子目录行共用）
@@ -467,10 +913,33 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 			}
 		}
 
-		// 1. 整仓范围行 (subdirectory == "")
+		// 1. 整仓范围行 (subdirectory == "")：解析整仓绑定架构元素及所属子系统
+		var repoArchElemID *uint
+		var repoArchElemName, repoArchElemType, repoArchPath string
+		var repoSubsysID *uint
+		var repoSubsysName string
+
+		if matched := idx.resolveRepoElement(repo); matched != nil {
+			id := matched.ID
+			repoArchElemID = &id
+			repoArchElemName = archElementDisplayName(*matched)
+			repoArchElemType = matched.Type
+			repoArchPath, repoSubsysID, repoSubsysName = idx.resolveHierarchy(*matched)
+		}
+		if repoSubsysID == nil {
+			if sg := strings.ToLower(strings.TrimSpace(repo.ServiceGroup)); sg != "" {
+				if subEl, ok := idx.subsystemByKey[sg]; ok {
+					id := subEl.ID
+					repoSubsysID = &id
+					repoSubsysName = archElementDisplayName(subEl)
+				}
+			}
+		}
+
 		repoSnap := latestSnapByScope[scopeKey{repoID: repo.ID, subdir: ""}]
 		repoRow := buildSingleScopeRow(
-			repo, branch, "", "repo", nil, "",
+			repo, branch, "", "repo",
+			repoArchElemID, repoArchElemName, repoArchElemType, repoArchPath, repoSubsysID, repoSubsysName,
 			repo.OwnerID, repoOwnerName, repoLevelWrite,
 			docsByScope[scopeKey{repoID: repo.ID, subdir: ""}],
 			revMap, codeDriftByDoc, specDriftByDoc,
@@ -495,30 +964,41 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		rows = append(rows, repoRow)
 
 		// 2. 合并生成子目录行元数据解析函数
-		resolveSubdirMeta := func(normSub string) (*uint, string, uint, string) {
-			scopeOwnerID := repo.OwnerID
-			scopeOwnerName := repoOwnerName
-			var elIDPtr *uint
-			elName := ""
+		type subdirMeta struct {
+			elID       *uint
+			elName     string
+			elType     string
+			archPath   string
+			subsysID   *uint
+			subsysName string
+			ownerID    uint
+			ownerName  string
+		}
+		resolveSubdirMeta := func(normSub string) subdirMeta {
+			meta := subdirMeta{
+				subsysID:   repoSubsysID,
+				subsysName: repoSubsysName,
+				ownerID:    repo.OwnerID,
+				ownerName:  repoOwnerName,
+			}
 			if el, ok := elemBySub[normSub]; ok {
 				id := el.ID
-				elIDPtr = &id
-				elName = el.NameCn
-				if elName == "" {
-					elName = el.NameEn
+				meta.elID = &id
+				meta.elName = archElementDisplayName(el)
+				meta.elType = el.Type
+				var subID *uint
+				var subName string
+				meta.archPath, subID, subName = idx.resolveHierarchy(el)
+				if subID != nil {
+					meta.subsysID = subID
+					meta.subsysName = subName
 				}
 				if el.OwnerID != nil && *el.OwnerID > 0 {
-					scopeOwnerID = *el.OwnerID
-					if u, uOK := elemUsers[*el.OwnerID]; uOK {
-						if u.Name != "" {
-							scopeOwnerName = u.Name
-						} else {
-							scopeOwnerName = u.Username
-						}
-					}
+					meta.ownerID = *el.OwnerID
+					meta.ownerName = idx.resolveUserName(el.OwnerID, meta.ownerName)
 				}
 			}
-			return elIDPtr, elName, scopeOwnerID, scopeOwnerName
+			return meta
 		}
 
 		seenSubdirs := make(map[string]bool)
@@ -535,12 +1015,13 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 					continue
 				}
 				seenSubdirs[mod.Subdirectory] = true
-				elIDPtr, elName, scopeOwnerID, scopeOwnerName := resolveSubdirMeta(mod.Subdirectory)
+				sm := resolveSubdirMeta(mod.Subdirectory)
 				canWrite := repoLevelWrite || userOwnedSubdirs[mod.Subdirectory]
 				k := scopeKey{repoID: repo.ID, subdir: mod.Subdirectory}
 				row := buildSingleScopeRow(
-					repo, branch, mod.Subdirectory, "subdir", elIDPtr, elName,
-					scopeOwnerID, scopeOwnerName, canWrite,
+					repo, branch, mod.Subdirectory, "subdir",
+					sm.elID, sm.elName, sm.elType, sm.archPath, sm.subsysID, sm.subsysName,
+					sm.ownerID, sm.ownerName, canWrite,
 					docsByScope[k],
 					revMap, codeDriftByDoc, specDriftByDoc,
 					latestCommitByScope[k],
@@ -561,12 +1042,13 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 					continue
 				}
 				seenSubdirs[normSub] = true
-				elIDPtr, elName, scopeOwnerID, scopeOwnerName := resolveSubdirMeta(normSub)
+				sm := resolveSubdirMeta(normSub)
 				canWrite := repoLevelWrite || userOwnedSubdirs[normSub]
 				k := scopeKey{repoID: repo.ID, subdir: normSub}
 				row := buildSingleScopeRow(
-					repo, branch, normSub, "subdir", elIDPtr, elName,
-					scopeOwnerID, scopeOwnerName, canWrite,
+					repo, branch, normSub, "subdir",
+					sm.elID, sm.elName, sm.elType, sm.archPath, sm.subsysID, sm.subsysName,
+					sm.ownerID, sm.ownerName, canWrite,
 					docsByScope[k],
 					revMap, codeDriftByDoc, specDriftByDoc,
 					latestCommitByScope[k],
@@ -588,13 +1070,13 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 			if seenSubdirs[docSub] {
 				continue
 			}
-			// 若已被显式忽略且当前用户看不到任何可见文档则跳过
 			k := scopeKey{repoID: repo.ID, subdir: docSub}
 			canWrite := repoLevelWrite || userOwnedSubdirs[docSub]
-			elIDPtr, elName, scopeOwnerID, scopeOwnerName := resolveSubdirMeta(docSub)
+			sm := resolveSubdirMeta(docSub)
 			row := buildSingleScopeRow(
-				repo, branch, docSub, "subdir", elIDPtr, elName,
-				scopeOwnerID, scopeOwnerName, canWrite,
+				repo, branch, docSub, "subdir",
+				sm.elID, sm.elName, sm.elType, sm.archPath, sm.subsysID, sm.subsysName,
+				sm.ownerID, sm.ownerName, canWrite,
 				docsByScope[k],
 				revMap, codeDriftByDoc, specDriftByDoc,
 				latestCommitByScope[k],
@@ -610,7 +1092,7 @@ func (s *RepoService) buildCoverageRows(ctx context.Context, user *commonModels.
 		}
 	}
 
-	return rows, nil
+	return rows, idx, nil
 }
 
 func buildSingleScopeRow(
@@ -620,6 +1102,10 @@ func buildSingleScopeRow(
 	scopeType string,
 	archElemID *uint,
 	archElemName string,
+	archElemType string,
+	archPath string,
+	subsystemID *uint,
+	subsystemName string,
 	ownerID uint,
 	ownerName string,
 	canWrite bool,
@@ -696,6 +1182,10 @@ func buildSingleScopeRow(
 		ScopeType:       scopeType,
 		ArchElementID:   archElemID,
 		ArchElementName: archElemName,
+		ArchElementType: archElemType,
+		ArchPath:        archPath,
+		SubsystemID:     subsystemID,
+		SubsystemName:   subsystemName,
 		Branch:          branch,
 		OwnerID:         ownerID,
 		OwnerName:       ownerName,

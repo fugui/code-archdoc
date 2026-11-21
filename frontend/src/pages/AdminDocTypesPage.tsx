@@ -254,7 +254,17 @@ export const AdminDocTypesPage: React.FC = () => {
                         </div>
                       </td>
                       <td>
-                        <div className="code-archdoc-doctype-name">{dt.display_name}</div>
+                        <div className="code-archdoc-doctype-slug-cell">
+                          <span className="code-archdoc-doctype-name">{dt.display_name}</span>
+                          {dt.category && (
+                            <span className="code-badge code-badge--primary">{dt.category}</span>
+                          )}
+                          {dt.short_name && dt.short_name !== dt.display_name && (
+                            <span className="code-badge code-badge--muted" title="紧凑短标题">
+                              短名：{dt.short_name}
+                            </span>
+                          )}
+                        </div>
                         {dt.description && (
                           <div className="code-archdoc-doctype-desc">{dt.description}</div>
                         )}

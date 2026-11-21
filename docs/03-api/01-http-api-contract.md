@@ -91,6 +91,7 @@
 | **域 1：仓库与 Monorepo 子目录覆盖视图（`F-01`）** | | | | | | |
 | 10 | `GET` | `/api/repos` | `JWT` | W1 | 分页查询仓库及子目录在各 `DocType` 下的文档覆盖与漂移矩阵 | - |
 | 11 | `GET` | `/api/repos/:repo_id/scopes` | `JWT` | W1 | 查询单仓（整仓 + 全部 `ArchitectureElement` 子目录）详细范围视图 | - |
+| 11a | `GET` | `/api/arch-tree` | `JWT` | W2 | 按平台 `architecture_elements` 树形结构只读聚合覆盖范围与统计指标 | - |
 | **域 2：可管理文档类型注册表（`F-03`）** | | | | | | |
 | 12 | `GET` | `/api/doc-types` | `JWT` | W1 | 获取 `DocType` 列表（支持 `active_only`） | - |
 | 13 | `GET` | `/api/doc-types/:slug` | `JWT` | W1 | 获取单个 `DocType` 元数据、槽位与当前修订资产内容 | - |
@@ -194,8 +195,10 @@
 #### `GET /api/repos` (`JWT`, W1)
 - **Query 参数**：
   - `page` (int, 默认 `1`)、`page_size` (int, `15|25|50|100`, 默认 `25`)
-  - `search` (string, 模糊匹配仓库名、子目录路径或架构元素中文/英文名)
+  - `search` (string, 模糊匹配仓库名、子目录路径、架构元素名、层级路径或子系统名)
   - `department_id` (uint, 可选)
+  - `subsystem_id` (uint, 可选，按归属架构子系统 ID 筛选)
+  - `arch_binding` (string, 可选：`all` | `bound` | `unbound`，按是否已关联架构元素筛选)
   - `doc_type` (string, 可选 `DocType.slug`，仅在搭配 `status` 筛选时限定该类型的状态)
   - `status` (string, 可选：`all` | `approved` | `draft` | `drifted` | `missing`)
   - `scope_type` (string, 可选：`all` | `repo` | `subdir`，默认 `all`)
@@ -212,6 +215,10 @@
       "scope_type": "subdir",
       "arch_element_id": 502,
       "arch_element_name": "订单核心服务",
+      "arch_element_type": "module",
+      "arch_path": "核心平台 / 交易域组 / 订单核心服务",
+      "subsystem_id": 500,
+      "subsystem_name": "核心平台",
       "branch": "master",
       "owner_id": 2001,
       "owner_name": "李四",
@@ -255,10 +262,23 @@
     "covered_scopes": 84,
     "approved_docs": 210,
     "drifted_docs": 19
-  }
+  },
+  "subsystems": [
+    {
+      "id": 500,
+      "identifier": "core-platform",
+      "name_cn": "核心平台",
+      "name_en": "Core Platform",
+      "scope_count": 18
+    }
+  ]
 }
 ```
 > **草稿可见性规则**：当当前用户对某行 `can_write == false` 时，`doc_statuses` 中仅包含 `status == "approved"` 的文档条目，未发布草稿对该用户显示为缺失（不暴露 `document_id` 与草稿状态）。
+
+#### `GET /api/arch-tree` (`JWT`)
+- **Query 参数**：复用 `GET /api/repos` 全部筛选条件（`search`、`department_id`、`subsystem_id`、`arch_binding`、`doc_type`、`status`、`scope_type`，不分页）。
+- **响应 (`200 OK`)**：返回 `{ "summary": RepoCoverageSummaryVO, "subsystems": ArchSubsystemOptionVO[], "nodes": ArchTreeNodeVO[], "unassigned_scopes": RepoScopeCoverageVO[] }`，按 `architecture_elements`（`subsystem → group → module`）树形嵌套并向上聚合 `stats`（`scope_count`、`covered_scope_count`、`approved_doc_count`、`draft_doc_count`、`drifted_doc_count`、`blocked_doc_count`）；未绑定且无子系统归属的范围收拢至 `unassigned_scopes`。普通用户视角严格过滤未发布草稿统计与明细。
 
 #### `GET /api/repos/:repo_id/scopes` (`JWT`, W1)
 - **响应 (`200 OK`)**：返回仓库基础元数据与 `scopes: RepoScopeCoverageVO[]`（首条为整仓 `subdirectory: ""`，其余为关联的 `ArchitectureElement` 子目录），并附带该仓库最近 5 条活跃或历史 `GenTask` 摘要。
@@ -277,6 +297,8 @@
       "id": 1,
       "slug": "system-architecture",
       "display_name": "系统架构与核心链路",
+      "short_name": "系统架构",
+      "category": "架构设计",
       "description": "面向架构师与研发骨干的运行时分层、并发、容错与核心链路文档",
       "is_builtin": true,
       "is_active": true,
@@ -306,6 +328,8 @@
 {
   "slug": "security-review",
   "display_name": "安全架构评审报告",
+  "short_name": "安全评审",
+  "category": "质量与安全",
   "description": "面向研发安全评审的入口面、鉴权与敏感数据流分析",
   "model_tier": "flagship",
   "timeout_seconds": 300,

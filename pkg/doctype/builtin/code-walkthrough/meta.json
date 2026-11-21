@@ -1,6 +1,8 @@
 {
   "name": "code-walkthrough",
   "display_name": "代码导读与改码指南",
+  "short_name": "代码导读",
+  "category": "研发指南",
   "description": "面向研发迭代的仓库目录职责地图、核心请求逐跳源码导航与典型二次开发修改清单",
   "is_active": true,
   "is_builtin": true,

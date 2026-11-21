@@ -1,4 +1,5 @@
 import type {
+  ArchBindingFilter,
   DriftFilterType,
   FacetName,
   ModelTier,
@@ -38,6 +39,18 @@ export interface RepoListQuery {
   docType?: string;
   status?: RepoStatusFilter;
   scopeType?: RepoScopeFilter;
+  subsystemId?: string;
+  archBinding?: ArchBindingFilter;
+}
+
+export interface ArchTreeQuery {
+  search?: string;
+  departmentId?: string;
+  docType?: string;
+  status?: RepoStatusFilter;
+  scopeType?: RepoScopeFilter;
+  subsystemId?: string;
+  archBinding?: ArchBindingFilter;
 }
 
 export interface GenerateTaskPayload {
@@ -146,6 +159,8 @@ export interface ProbeLLMConfigPayload {
 export interface CreateDocTypePayload {
   slug: string;
   display_name: string;
+  short_name?: string;
+  category?: string;
   description: string;
   is_active?: boolean;
   model_tier: ModelTier;

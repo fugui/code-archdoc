@@ -36,6 +36,8 @@ type DocTypeSummaryVO struct {
 	ID                  uint      `json:"id"`
 	Slug                string    `json:"slug"`
 	DisplayName         string    `json:"display_name"`
+	ShortName           string    `json:"short_name"`
+	Category            string    `json:"category"`
 	Description         string    `json:"description"`
 	IsBuiltin           bool      `json:"is_builtin"`
 	IsActive            bool      `json:"is_active"`
@@ -89,6 +91,8 @@ type DocTypeSyncResult struct {
 type DocTypeAuditSnapshot struct {
 	Slug                string   `json:"slug"`
 	DisplayName         string   `json:"display_name"`
+	ShortName           string   `json:"short_name"`
+	Category            string   `json:"category"`
 	Description         string   `json:"description"`
 	IsActive            bool     `json:"is_active"`
 	IsBuiltin           bool     `json:"is_builtin"`
@@ -105,6 +109,8 @@ type DocTypeAuditSnapshot struct {
 type CreateDocTypeRequest struct {
 	Slug               string                      `json:"slug"`
 	DisplayName        string                      `json:"display_name"`
+	ShortName          string                      `json:"short_name"`
+	Category           string                      `json:"category"`
 	Description        string                      `json:"description"`
 	IsActive           *bool                       `json:"is_active"`
 	ModelTier          string                      `json:"model_tier"`
@@ -249,6 +255,8 @@ func (s *DocTypeService) Create(ctx context.Context, req CreateDocTypeRequest, o
 	meta := doctype.Meta{
 		Name:            slug,
 		DisplayName:     strings.TrimSpace(req.DisplayName),
+		ShortName:       strings.TrimSpace(req.ShortName),
+		Category:        strings.TrimSpace(req.Category),
 		Description:     strings.TrimSpace(req.Description),
 		IsActive:        isActive,
 		IsBuiltin:       false,
@@ -630,6 +638,8 @@ func (s *DocTypeService) syncBundle(ctx context.Context, b *doctype.AssetBundle,
 	dt := &models.DocType{
 		Slug:           b.Slug,
 		DisplayName:    b.Meta.DisplayName,
+		ShortName:      strings.TrimSpace(b.Meta.ShortName),
+		Category:       strings.TrimSpace(b.Meta.Category),
 		Description:    b.Meta.Description,
 		IsBuiltin:      b.Meta.IsBuiltin,
 		IsActive:       b.Meta.IsActive,
@@ -745,6 +755,8 @@ func buildDocTypeAuditSnapshot(d *DocTypeDetailVO) *DocTypeAuditSnapshot {
 	return &DocTypeAuditSnapshot{
 		Slug:                d.Slug,
 		DisplayName:         d.DisplayName,
+		ShortName:           d.ShortName,
+		Category:            d.Category,
 		Description:         d.Description,
 		IsActive:            d.IsActive,
 		IsBuiltin:           d.IsBuiltin,
@@ -784,6 +796,8 @@ func toDocTypeSummaryVO(dt *models.DocType, slotCount int, pubCount int64) DocTy
 		ID:                  dt.ID,
 		Slug:                dt.Slug,
 		DisplayName:         dt.DisplayName,
+		ShortName:           doctype.EffectiveShortName(dt.Slug, dt.ShortName, dt.DisplayName),
+		Category:            doctype.EffectiveCategory(dt.Slug, dt.Category),
 		Description:         dt.Description,
 		IsBuiltin:           dt.IsBuiltin,
 		IsActive:            dt.IsActive,

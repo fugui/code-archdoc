@@ -150,6 +150,8 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 	createPayload := map[string]any{
 		"slug":            "security-review",
 		"display_name":    "安全架构评审报告",
+		"short_name":      "安全评审",
+		"category":        "质量与安全",
 		"description":     "面向研发安全评审的攻击面分析",
 		"model_tier":      "flagship",
 		"timeout_seconds": 300,
@@ -198,6 +200,9 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 	}
 	if created.Slug != "security-review" || created.LatestRevisionNo != 1 || created.LatestRevisionID == nil {
 		t.Fatalf("新建结果异常: %+v", created)
+	}
+	if created.ShortName != "安全评审" || created.Category != "质量与安全" {
+		t.Fatalf("新建 DocType 应持久化并返回 short_name/category，实际 short=%q category=%q", created.ShortName, created.Category)
 	}
 	for _, fn := range doctype.OrderedAssetFiles {
 		fp := filepath.Join(env.docTypesDir, "security-review", fn)
@@ -274,6 +279,8 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 		"meta": map[string]any{
 			"name":            "security-review",
 			"display_name":    "安全架构评审报告",
+			"short_name":      "安全基线",
+			"category":        "安全治理",
 			"description":     "面向研发安全评审的攻击面分析",
 			"is_active":       true,
 			"model_tier":      "flagship",
@@ -305,6 +312,9 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 	}
 	if !updated.RevisionCreated || updated.LatestRevisionNo != 2 {
 		t.Fatalf("期望生成 revision_no=2 且 revision_created=true，实际: rev=%d created=%v", updated.LatestRevisionNo, updated.RevisionCreated)
+	}
+	if updated.ShortName != "安全基线" || updated.Category != "安全治理" {
+		t.Fatalf("PUT 更新后应返回新 short_name/category，实际 short=%q category=%q", updated.ShortName, updated.Category)
 	}
 	if len(updated.Slots) != 1 || updated.Slots[0].SlotID != "attack_surface" {
 		t.Fatalf("未改动槽位 slot_id 应保持不变: %+v", updated.Slots)

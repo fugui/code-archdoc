@@ -19,6 +19,13 @@ import {
   isBatchTaskKind,
   normalizeModuleStrategy,
 } from './moduleUtils.ts';
+import {
+  formatArchElementTypeLabel,
+  getDocTypeCategory,
+  getDocTypeShortName,
+  groupDocTypesByCategory,
+  summarizeScopeDocs,
+} from './docTypeUtils.ts';
 import { parseChatSSEBlock } from './sseParser.ts';
 
 describe('URL Search Params 分页与筛选序列化/反序列化 (Verification Checklist §3.2.1)', () => {
@@ -31,9 +38,14 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
     assert.equal(empty.docType, '');
     assert.equal(empty.status, '');
     assert.equal(empty.scopeType, '');
+    assert.equal(empty.view, 'repo');
+    assert.equal(empty.subsystemId, '');
+    assert.equal(empty.archBinding, '');
 
     const populated = parseRepoFilterParams(
-      new URLSearchParams('page=3&pageSize=50&search=order&department_id=10&doc_type=system-architecture&status=approved&scope_type=subdir'),
+      new URLSearchParams(
+        'page=3&pageSize=50&search=order&department_id=10&doc_type=system-architecture&status=approved&scope_type=subdir&view=arch&subsystem_id=7&arch_binding=bound',
+      ),
     );
     assert.deepEqual(populated, {
       page: 3,
@@ -43,24 +55,40 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
       docType: 'system-architecture',
       status: 'approved',
       scopeType: 'subdir',
+      view: 'arch',
+      subsystemId: '7',
+      archBinding: 'bound',
     });
   });
 
   it('非法页码、非白名单 pageSize 与非法枚举自动安全兜底', () => {
     const parsed = parseRepoFilterParams(
-      new URLSearchParams('page=-4&pageSize=999&department_id=abc&status=invalid&scope_type=unknown'),
+      new URLSearchParams(
+        'page=-4&pageSize=999&department_id=abc&status=invalid&scope_type=unknown&view=grid&subsystem_id=0&arch_binding=none',
+      ),
     );
     assert.equal(parsed.page, 1);
     assert.equal(parsed.pageSize, 25);
     assert.equal(parsed.departmentId, '');
     assert.equal(parsed.status, '');
     assert.equal(parsed.scopeType, '');
+    assert.equal(parsed.view, 'repo');
+    assert.equal(parsed.subsystemId, '');
+    assert.equal(parsed.archBinding, '');
   });
 
   it('序列化支持增量更新筛选并保持 URL 双向同步往返一致', () => {
     const initial = new URLSearchParams('page=4&pageSize=100&search=pay');
     const updated = serializeRepoFilterParams(
-      { page: 1, departmentId: '12', status: 'draft', docType: 'data-and-contract' },
+      {
+        page: 1,
+        departmentId: '12',
+        status: 'draft',
+        docType: 'data-and-contract',
+        view: 'arch',
+        subsystemId: '9',
+        archBinding: 'unbound',
+      },
       initial,
     );
     assert.equal(updated.get('page'), '1');
@@ -69,6 +97,9 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
     assert.equal(updated.get('department_id'), '12');
     assert.equal(updated.get('status'), 'draft');
     assert.equal(updated.get('doc_type'), 'data-and-contract');
+    assert.equal(updated.get('view'), 'arch');
+    assert.equal(updated.get('subsystem_id'), '9');
+    assert.equal(updated.get('arch_binding'), 'unbound');
 
     const roundTrip = parseRepoFilterParams(updated);
     assert.equal(roundTrip.page, 1);
@@ -77,6 +108,9 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
     assert.equal(roundTrip.departmentId, '12');
     assert.equal(roundTrip.status, 'draft');
     assert.equal(roundTrip.docType, 'data-and-contract');
+    assert.equal(roundTrip.view, 'arch');
+    assert.equal(roundTrip.subsystemId, '9');
+    assert.equal(roundTrip.archBinding, 'unbound');
   });
 
   it('生成 Studio 路径兼顾独立态与门户嵌入态', () => {
@@ -322,5 +356,131 @@ describe('ADR-04 模块发现策略、来源标签与批量任务契约对齐', 
     assert.equal(isBatchTaskKind('batch'), true);
     assert.equal(isBatchTaskKind('batch_generate'), false);
     assert.equal(isBatchTaskKind('generate'), false);
+  });
+});
+
+describe('DocType 短名分组、方案 A1 覆盖汇总与架构元素类型标签', () => {
+  it('正确解析 short_name/category 回退并按预设顺序分组', () => {
+    assert.equal(getDocTypeShortName({ short_name: '系统架构', display_name: '系统架构与核心链路' }), '系统架构');
+    assert.equal(getDocTypeShortName({ short_name: '', display_name: '自定义长标题' }), '自定义长标题');
+    assert.equal(getDocTypeCategory({ category: '架构设计' }), '架构设计');
+    assert.equal(getDocTypeCategory({ category: '' }), '其他文档');
+
+    const groups = groupDocTypesByCategory([
+      { slug: 'misc', category: '', display_name: '杂项' },
+      { slug: 'custom', category: '专项评审', display_name: '专项' },
+      { slug: 'ops', category: '运维交付', display_name: '运维' },
+      { slug: 'arch', category: '架构设计', display_name: '架构' },
+    ]);
+    assert.deepEqual(
+      groups.map((g) => g.category),
+      ['架构设计', '运维交付', '专项评审', '其他文档'],
+    );
+  });
+
+  it('summarizeScopeDocs 精确汇总已发布/草稿/漂移/阻断/待生成数量', () => {
+    const docTypes = [
+      {
+        id: 1,
+        slug: 'system-architecture',
+        display_name: '系统架构与核心链路',
+        short_name: '系统架构',
+        category: '架构设计',
+        description: '',
+        is_builtin: true,
+        is_active: true,
+        model_tier: 'flagship' as const,
+        timeout_seconds: 300,
+        ir_facets: [],
+        slot_count: 5,
+        latest_revision_id: 1,
+        latest_revision_no: 1,
+        latest_aggregate_hash: 'h1',
+        published_doc_count: 1,
+        updated_at: '',
+      },
+      {
+        id: 2,
+        slug: 'code-walkthrough',
+        display_name: '代码导读与改码指南',
+        short_name: '代码导读',
+        category: '研发指南',
+        description: '',
+        is_builtin: true,
+        is_active: true,
+        model_tier: 'fast' as const,
+        timeout_seconds: 240,
+        ir_facets: [],
+        slot_count: 3,
+        latest_revision_id: 2,
+        latest_revision_no: 1,
+        latest_aggregate_hash: 'h2',
+        published_doc_count: 0,
+        updated_at: '',
+      },
+      {
+        id: 3,
+        slug: 'ops-and-config',
+        display_name: '配置、部署与研发上手',
+        short_name: '运维与配置',
+        category: '运维交付',
+        description: '',
+        is_builtin: true,
+        is_active: true,
+        model_tier: 'fast' as const,
+        timeout_seconds: 240,
+        ir_facets: [],
+        slot_count: 4,
+        latest_revision_id: 3,
+        latest_revision_no: 1,
+        latest_aggregate_hash: 'h3',
+        published_doc_count: 0,
+        updated_at: '',
+      },
+    ];
+
+    const summary = summarizeScopeDocs(
+      {
+        doc_statuses: {
+          'system-architecture': {
+            document_id: 11,
+            status: 'approved',
+            current_revision_no: 2,
+            published_revision_no: 2,
+            has_code_drift: true,
+            has_spec_drift: false,
+            affected_slot_count: 1,
+            verifier_passed: true,
+            can_approve: true,
+            updated_at: '',
+          },
+          'code-walkthrough': {
+            document_id: 12,
+            status: 'draft',
+            current_revision_no: 1,
+            published_revision_no: 0,
+            has_code_drift: false,
+            has_spec_drift: false,
+            affected_slot_count: 0,
+            verifier_passed: false,
+            can_approve: false,
+            updated_at: '',
+          },
+        },
+      },
+      docTypes,
+    );
+
+    assert.equal(summary.totalTypes, 3);
+    assert.equal(summary.generatedCount, 2);
+    assert.equal(summary.approvedCount, 1);
+    assert.equal(summary.draftCount, 1);
+    assert.equal(summary.driftedCount, 1);
+    assert.equal(summary.blockedCount, 1);
+    assert.equal(summary.missingCount, 1);
+    assert.equal(summary.missingItems[0].slug, 'ops-and-config');
+    assert.equal(formatArchElementTypeLabel('subsystem'), '子系统');
+    assert.equal(formatArchElementTypeLabel('group'), '功能组');
+    assert.equal(formatArchElementTypeLabel('module'), '功能模块');
   });
 });
