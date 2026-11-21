@@ -107,22 +107,25 @@ type DocTypeAuditSnapshot struct {
 // ─── W2 管理员写请求 DTO ───
 
 type CreateDocTypeRequest struct {
-	Slug               string                      `json:"slug"`
-	DisplayName        string                      `json:"display_name"`
-	ShortName          string                      `json:"short_name"`
-	Category           string                      `json:"category"`
-	Description        string                      `json:"description"`
-	IsActive           *bool                       `json:"is_active"`
-	ModelTier          string                      `json:"model_tier"`
-	TimeoutSeconds     int                         `json:"timeout_seconds"`
-	MaxOutputTokens    int                         `json:"max_output_tokens,omitempty"`
-	ScopeProfile       *doctype.ScopeProfileConfig `json:"scope_profile,omitempty"`
-	IRFacets           []string                    `json:"ir_facets"`
-	Slots              []doctype.SlotSpec          `json:"slots"`
-	VerifyPolicy       *doctype.VerifyPolicy       `json:"verify_policy,omitempty"`
-	TemplateMD         string                      `json:"template_md"`
-	GenerationPromptMD string                      `json:"generation_prompt_md"`
-	RefinePromptMD     string                      `json:"refine_prompt_md"`
+	Slug               string                          `json:"slug"`
+	DisplayName        string                          `json:"display_name"`
+	ShortName          string                          `json:"short_name"`
+	Category           string                          `json:"category"`
+	Description        string                          `json:"description"`
+	IsActive           *bool                           `json:"is_active"`
+	ModelTier          string                          `json:"model_tier"`
+	TimeoutSeconds     int                             `json:"timeout_seconds"`
+	MaxOutputTokens    int                             `json:"max_output_tokens,omitempty"`
+	ScopeProfile       *doctype.ScopeProfileConfig     `json:"scope_profile,omitempty"`
+	IRFacets           []string                        `json:"ir_facets"`
+	RepoIRFacets       []string                        `json:"repo_ir_facets,omitempty"`
+	ContextInputs      []string                        `json:"context_inputs,omitempty"`
+	ModuleDigestSource *doctype.ModuleDigestSourceSpec `json:"module_digest_source,omitempty"`
+	Slots              []doctype.SlotSpec              `json:"slots"`
+	VerifyPolicy       *doctype.VerifyPolicy           `json:"verify_policy,omitempty"`
+	TemplateMD         string                          `json:"template_md"`
+	GenerationPromptMD string                          `json:"generation_prompt_md"`
+	RefinePromptMD     string                          `json:"refine_prompt_md"`
 }
 
 type CloneDocTypeRequest struct {
@@ -253,20 +256,23 @@ func (s *DocTypeService) Create(ctx context.Context, req CreateDocTypeRequest, o
 		isActive = *req.IsActive
 	}
 	meta := doctype.Meta{
-		Name:            slug,
-		DisplayName:     strings.TrimSpace(req.DisplayName),
-		ShortName:       strings.TrimSpace(req.ShortName),
-		Category:        strings.TrimSpace(req.Category),
-		Description:     strings.TrimSpace(req.Description),
-		IsActive:        isActive,
-		IsBuiltin:       false,
-		ModelTier:       strings.TrimSpace(req.ModelTier),
-		TimeoutSeconds:  req.TimeoutSeconds,
-		MaxOutputTokens: req.MaxOutputTokens,
-		ScopeProfile:    req.ScopeProfile,
-		IRFacets:        req.IRFacets,
-		Slots:           req.Slots,
-		VerifyPolicy:    req.VerifyPolicy,
+		Name:               slug,
+		DisplayName:        strings.TrimSpace(req.DisplayName),
+		ShortName:          strings.TrimSpace(req.ShortName),
+		Category:           strings.TrimSpace(req.Category),
+		Description:        strings.TrimSpace(req.Description),
+		IsActive:           isActive,
+		IsBuiltin:          false,
+		ModelTier:          strings.TrimSpace(req.ModelTier),
+		TimeoutSeconds:     req.TimeoutSeconds,
+		MaxOutputTokens:    req.MaxOutputTokens,
+		ScopeProfile:       req.ScopeProfile,
+		IRFacets:           req.IRFacets,
+		RepoIRFacets:       req.RepoIRFacets,
+		ContextInputs:      req.ContextInputs,
+		ModuleDigestSource: req.ModuleDigestSource,
+		Slots:              req.Slots,
+		VerifyPolicy:       req.VerifyPolicy,
 	}
 
 	mu := s.lockSlugOp(slug)
@@ -609,12 +615,14 @@ func unmarshalSpecSlotMetas(raw datatypes.JSON) []drift.SpecSlotMeta {
 	out := make([]drift.SpecSlotMeta, 0, len(defs))
 	for _, sl := range defs {
 		out = append(out, drift.SpecSlotMeta{
-			SlotID:          sl.SlotID,
-			Title:           sl.Title,
-			Ownership:       sl.Ownership,
-			Required:        sl.Required,
-			IRFacets:        sl.IRFacets,
-			InstructionHint: sl.InstructionHint,
+			SlotID:            sl.SlotID,
+			Title:             sl.Title,
+			Ownership:         sl.Ownership,
+			Required:          sl.Required,
+			IRFacets:          sl.IRFacets,
+			InstructionHint:   sl.InstructionHint,
+			EnableSourceTools: sl.EnableSourceTools,
+			MaxToolRounds:     sl.MaxToolRounds,
 		})
 	}
 	return out
@@ -773,14 +781,16 @@ func toModelSlotDefs(specs []doctype.SlotSpec) []models.SlotDefinition {
 	out := make([]models.SlotDefinition, 0, len(specs))
 	for _, sl := range specs {
 		out = append(out, models.SlotDefinition{
-			SlotID:          sl.SlotID,
-			Title:           sl.Title,
-			Ownership:       sl.Ownership,
-			Required:        sl.Required,
-			IRFacets:        sl.IRFacets,
-			TokenBudget:     sl.TokenBudget,
-			MinChars:        sl.MinChars,
-			InstructionHint: sl.InstructionHint,
+			SlotID:            sl.SlotID,
+			Title:             sl.Title,
+			Ownership:         sl.Ownership,
+			Required:          sl.Required,
+			IRFacets:          sl.IRFacets,
+			TokenBudget:       sl.TokenBudget,
+			MinChars:          sl.MinChars,
+			InstructionHint:   sl.InstructionHint,
+			EnableSourceTools: sl.EnableSourceTools,
+			MaxToolRounds:     sl.MaxToolRounds,
 		})
 	}
 	return out

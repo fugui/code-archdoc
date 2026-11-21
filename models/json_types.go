@@ -145,14 +145,16 @@ type AffectedSlotDrift struct {
 	ChangedFiles   []string `json:"changed_files,omitempty"`
 }
 
-// 10. DocTypeRevision.SlotsSnapshotJSON (对齐 03-doctype-drift-and-publishing.md §1.2)
+// 10. DocTypeRevision.SlotsSnapshotJSON (对齐 03-doctype-drift-and-publishing.md §1.2 & ADR-05 §5.4)
 type SlotDefinition struct {
-	SlotID          string   `json:"slot_id"`
-	Title           string   `json:"title"`
-	Ownership       string   `json:"ownership"` // auto | hybrid | locked
-	Required        bool     `json:"required"`
-	IRFacets        []string `json:"ir_facets"`
-	TokenBudget     int      `json:"token_budget"`
-	MinChars        int      `json:"min_chars"`
-	InstructionHint string   `json:"instruction_hint,omitempty"`
+	SlotID            string   `json:"slot_id"`
+	Title             string   `json:"title"`
+	Ownership         string   `json:"ownership"` // auto | hybrid | locked
+	Required          bool     `json:"required"`
+	IRFacets          []string `json:"ir_facets"`
+	TokenBudget       int      `json:"token_budget"`
+	MinChars          int      `json:"min_chars"`
+	InstructionHint   string   `json:"instruction_hint,omitempty"`
+	EnableSourceTools bool     `json:"enable_source_tools,omitempty"`
+	MaxToolRounds     int      `json:"max_tool_rounds,omitempty"`
 }

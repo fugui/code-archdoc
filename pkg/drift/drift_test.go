@@ -374,3 +374,140 @@ func TestCodeDriftSymbolAnchorSubsumesFileAnchor(t *testing.T) {
 		t.Fatalf("预期仅 slot_changed_fn 触发 symbol_modified 漂移，实际 %+v", res)
 	}
 }
+
+// TestSpecDriftHeadingRenameDoesNotTriggerSiblingPromptChanged 验证 T-ADR05-09：
+// 仅修改槽位 A 的 title（并同步修改 template.md 中紧邻绑定 ## 标题），兄弟槽位 B/C 与静态文本不变时，
+// ComputeSpecDrift 仅返回槽位 A（reason="slot_modified"），兄弟槽位零误报。
+func TestSpecDriftHeadingRenameDoesNotTriggerSiblingPromptChanged(t *testing.T) {
+	boundSlots := []drift.SpecSlotMeta{
+		{SlotID: "slot_a", Title: "1. 模块边界", Ownership: "auto", Required: true, IRFacets: []string{"tree"}},
+		{SlotID: "slot_b", Title: "2. 核心链路", Ownership: "auto", Required: true, IRFacets: []string{"symbols"}},
+		{SlotID: "slot_c", Title: "3. 约束说明", Ownership: "hybrid", Required: false, IRFacets: []string{"deps"}},
+	}
+	latestSlots := []drift.SpecSlotMeta{
+		{SlotID: "slot_a", Title: "1. 系统职责与模块分层边界", Ownership: "auto", Required: true, IRFacets: []string{"tree"}},
+		{SlotID: "slot_b", Title: "2. 核心链路", Ownership: "auto", Required: true, IRFacets: []string{"symbols"}},
+		{SlotID: "slot_c", Title: "3. 约束说明", Ownership: "hybrid", Required: false, IRFacets: []string{"deps"}},
+	}
+
+	boundTpl := "# 系统架构\n\n## 1. 模块边界\n<!-- slot:slot_a -->\n\n## 2. 核心链路\n<!-- slot:slot_b -->\n\n## 3. 约束说明\n<!-- slot:slot_c -->\n"
+	latestTpl := "# 系统架构\n\n## 1. 系统职责与模块分层边界\n<!-- slot:slot_a -->\n\n## 2. 核心链路\n<!-- slot:slot_b -->\n\n## 3. 约束说明\n<!-- slot:slot_c -->\n"
+
+	items := drift.ComputeSpecDrift(boundSlots, latestSlots, "prompt_v1", "prompt_v1", boundTpl, latestTpl)
+	if len(items) != 1 {
+		t.Fatalf("预期仅 slot_a 触发漂移（兄弟槽位零误报），实际 %+v", items)
+	}
+	if items[0].SlotID != "slot_a" || items[0].Reason != "slot_modified" || items[0].ChangeKind != "modified" {
+		t.Fatalf("预期 slot_a 为 slot_modified，实际 %+v", items[0])
+	}
+}
+
+// TestSpecDriftAddRemoveSlotDoesNotTriggerSiblingPromptChanged 验证 T-ADR05-10：
+// 新增槽位 E、删除槽位 C 或仅重排槽位顺序（未改静态骨架）时，不触发兄弟槽位 prompt_changed 误报。
+func TestSpecDriftAddRemoveSlotDoesNotTriggerSiblingPromptChanged(t *testing.T) {
+	baseSlots := []drift.SpecSlotMeta{
+		{SlotID: "slot_a", Title: "1. 概览", Ownership: "auto", Required: true, IRFacets: []string{"tree"}},
+		{SlotID: "slot_b", Title: "2. 链路", Ownership: "auto", Required: true, IRFacets: []string{"symbols"}},
+		{SlotID: "slot_c", Title: "3. 排障", Ownership: "hybrid", Required: false, IRFacets: []string{"config_keys"}},
+	}
+	baseTpl := "# 文档主标题\n\n## 1. 概览\n<!-- slot:slot_a -->\n\n## 2. 链路\n<!-- slot:slot_b -->\n\n## 3. 排障\n<!-- slot:slot_c -->\n"
+
+	// 1. 新增槽位 E（同步新增绑定标题与占位标记）
+	addedSlots := append(append([]drift.SpecSlotMeta(nil), baseSlots...), drift.SpecSlotMeta{
+		SlotID: "slot_e", Title: "4. 扩展边界", Ownership: "auto", Required: true, IRFacets: []string{"deps"},
+	})
+	addedTpl := baseTpl + "\n## 4. 扩展边界\n<!-- slot:slot_e -->\n"
+	addedItems := drift.ComputeSpecDrift(baseSlots, addedSlots, "p1", "p1", baseTpl, addedTpl)
+	if len(addedItems) != 1 || addedItems[0].SlotID != "slot_e" || addedItems[0].Reason != "slot_added" {
+		t.Fatalf("新增槽位 E 预期仅返回 slot_e(slot_added)，实际 %+v", addedItems)
+	}
+
+	// 2. 删除槽位 C（同步移除绑定标题与占位标记）
+	removedSlots := []drift.SpecSlotMeta{baseSlots[0], baseSlots[1]}
+	removedTpl := "# 文档主标题\n\n## 1. 概览\n<!-- slot:slot_a -->\n\n## 2. 链路\n<!-- slot:slot_b -->\n"
+	removedItems := drift.ComputeSpecDrift(baseSlots, removedSlots, "p1", "p1", baseTpl, removedTpl)
+	if len(removedItems) != 1 || removedItems[0].SlotID != "slot_c" || removedItems[0].Reason != "slot_removed" {
+		t.Fatalf("删除槽位 C 预期仅返回 slot_c(slot_removed)，实际 %+v", removedItems)
+	}
+
+	// 3. 仅重排槽位顺序（未改静态骨架）
+	reorderedSlots := []drift.SpecSlotMeta{baseSlots[2], baseSlots[0], baseSlots[1]}
+	reorderedTpl := "# 文档主标题\n\n## 3. 排障\n<!-- slot:slot_c -->\n\n## 1. 概览\n<!-- slot:slot_a -->\n\n## 2. 链路\n<!-- slot:slot_b -->\n"
+	reorderedItems := drift.ComputeSpecDrift(baseSlots, reorderedSlots, "p1", "p1", baseTpl, reorderedTpl)
+	if len(reorderedItems) != 0 {
+		t.Fatalf("纯重排槽位顺序不应产生 Spec Drift，实际 %+v", reorderedItems)
+	}
+}
+
+// TestSpecDriftStaticSkeletonAndSourceToolsChange 验证 T-ADR05-11：
+// ① 修改文首 H1 / 静态导语或 PromptHash 时，非锁定槽位均标为 prompt_changed（locked 豁免）；
+// ② 仅开启槽位 B 的 enable_source_tools 或调整 max_tool_rounds 时，仅槽位 B 标为 slot_modified。
+func TestSpecDriftStaticSkeletonAndSourceToolsChange(t *testing.T) {
+	slots := []drift.SpecSlotMeta{
+		{SlotID: "slot_a", Title: "1. 概览", Ownership: "auto", Required: true, IRFacets: []string{"tree"}},
+		{SlotID: "slot_b", Title: "2. 并发", Ownership: "hybrid", Required: true, IRFacets: []string{"symbols"}, EnableSourceTools: false, MaxToolRounds: 0},
+		{SlotID: "slot_locked", Title: "3. 锁定说明", Ownership: "locked", Required: false, IRFacets: []string{"deps"}},
+	}
+	tplV1 := "# 架构文档\n\n> 静态导语 V1\n\n## 1. 概览\n<!-- slot:slot_a -->\n\n## 2. 并发\n<!-- slot:slot_b -->\n\n## 3. 锁定说明\n<!-- slot:slot_locked -->\n"
+	tplV2 := "# 架构文档 V2\n\n> 静态导语 V2\n\n## 1. 概览\n<!-- slot:slot_a -->\n\n## 2. 并发\n<!-- slot:slot_b -->\n\n## 3. 锁定说明\n<!-- slot:slot_locked -->\n"
+
+	// ① 静态骨架变更：非锁定槽位均标为 prompt_changed，locked 豁免
+	skelDrift := drift.ComputeSpecDrift(slots, slots, "p1", "p1", tplV1, tplV2)
+	if len(skelDrift) != 2 {
+		t.Fatalf("静态骨架变更预期触发 2 个非锁定槽位 prompt_changed，实际 %+v", skelDrift)
+	}
+	for _, it := range skelDrift {
+		if it.SlotID == "slot_locked" {
+			t.Fatalf("locked 槽位应豁免 prompt_changed: %+v", skelDrift)
+		}
+		if it.Reason != "prompt_changed" {
+			t.Fatalf("预期 reason=prompt_changed，实际 %+v", it)
+		}
+	}
+
+	// ①-b PromptHash 变更同样触发非锁定槽位 prompt_changed
+	promptDrift := drift.ComputeSpecDrift(slots, slots, "p1", "p2", tplV1, tplV1)
+	if len(promptDrift) != 2 || promptDrift[0].Reason != "prompt_changed" || promptDrift[1].Reason != "prompt_changed" {
+		t.Fatalf("PromptHash 变更预期触发 2 个非锁定槽位 prompt_changed，实际 %+v", promptDrift)
+	}
+
+	// ② 仅开启槽位 B 的 enable_source_tools=true（默认 4 轮）
+	slotsEnabledB := []drift.SpecSlotMeta{
+		slots[0],
+		{SlotID: "slot_b", Title: "2. 并发", Ownership: "hybrid", Required: true, IRFacets: []string{"symbols"}, EnableSourceTools: true, MaxToolRounds: 4},
+		slots[2],
+	}
+	toolEnableDrift := drift.ComputeSpecDrift(slots, slotsEnabledB, "p1", "p1", tplV1, tplV1)
+	if len(toolEnableDrift) != 1 || toolEnableDrift[0].SlotID != "slot_b" || toolEnableDrift[0].Reason != "slot_modified" {
+		t.Fatalf("开启 slot_b source_tools 预期仅 slot_b 为 slot_modified，实际 %+v", toolEnableDrift)
+	}
+
+	// ②-b 调整已开启源码工具槽位的 max_tool_rounds（4 -> 6）
+	slotsRounds6B := []drift.SpecSlotMeta{
+		slots[0],
+		{SlotID: "slot_b", Title: "2. 并发", Ownership: "hybrid", Required: true, IRFacets: []string{"symbols"}, EnableSourceTools: true, MaxToolRounds: 6},
+		slots[2],
+	}
+	roundsDrift := drift.ComputeSpecDrift(slotsEnabledB, slotsRounds6B, "p1", "p1", tplV1, tplV1)
+	if len(roundsDrift) != 1 || roundsDrift[0].SlotID != "slot_b" || roundsDrift[0].Reason != "slot_modified" {
+		t.Fatalf("修改 max_tool_rounds 预期仅 slot_b 为 slot_modified，实际 %+v", roundsDrift)
+	}
+
+	// ②-c 归一化等价验证：EnableSourceTools=false 时 MaxToolRounds 0 vs 4 不误报；EnableSourceTools=true 时 0 vs 4 不误报
+	slotsFalseWithRounds := []drift.SpecSlotMeta{
+		slots[0],
+		{SlotID: "slot_b", Title: "2. 并发", Ownership: "hybrid", Required: true, IRFacets: []string{"symbols"}, EnableSourceTools: false, MaxToolRounds: 4},
+		slots[2],
+	}
+	if got := drift.ComputeSpecDrift(slots, slotsFalseWithRounds, "p1", "p1", tplV1, tplV1); len(got) != 0 {
+		t.Fatalf("EnableSourceTools=false 时不同 MaxToolRounds 应归一化为 0 且零漂移，实际 %+v", got)
+	}
+	slotsTrueWithZeroRounds := []drift.SpecSlotMeta{
+		slots[0],
+		{SlotID: "slot_b", Title: "2. 并发", Ownership: "hybrid", Required: true, IRFacets: []string{"symbols"}, EnableSourceTools: true, MaxToolRounds: 0},
+		slots[2],
+	}
+	if got := drift.ComputeSpecDrift(slotsEnabledB, slotsTrueWithZeroRounds, "p1", "p1", tplV1, tplV1); len(got) != 0 {
+		t.Fatalf("EnableSourceTools=true 时 MaxToolRounds=0 应归一化为默认 4 且零漂移，实际 %+v", got)
+	}
+}

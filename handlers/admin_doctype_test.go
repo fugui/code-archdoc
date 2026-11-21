@@ -492,3 +492,129 @@ func TestDocTypeConcurrentWriteSerializedBySlugLock(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateDocTypeWithGovernancePoliciesAndSourceTools 验证 T-ADR05-12：
+// POST /api/admin/doc-types 携带 repo_ir_facets、context_inputs、module_digest_source、scope_profile、verify_policy
+// 及槽位 enable_source_tools=true, max_tool_rounds=4 创建并回读；传入非法 repo_ir_facets 返回 400 且无目录残留。
+func TestCreateDocTypeWithGovernancePoliciesAndSourceTools(t *testing.T) {
+	env := setupAdminDocTypeEnv(t)
+
+	validPayload := map[string]any{
+		"slug":            "governed-arch",
+		"display_name":    "治理增强架构文档",
+		"short_name":      "治理架构",
+		"category":        "架构设计",
+		"description":     "覆盖整仓裁剪、上下文输入与只读源码工具配置",
+		"is_active":       true,
+		"model_tier":      "flagship",
+		"timeout_seconds": 300,
+		"ir_facets":       []string{"tree", "deps", "symbols", "http_routes"},
+		"repo_ir_facets":  []string{"tree", "deps", "http_routes"},
+		"context_inputs":  []string{"code_ir", "module_context", "module_digests"},
+		"module_digest_source": map[string]any{
+			"doc_type_slug":  "governed-arch",
+			"slot_id":        "runtime_flow",
+			"max_chars":      600,
+			"fallback_order": []string{"approved", "draft"},
+		},
+		"scope_profile": map[string]any{
+			"include_globs":       []string{"src/**"},
+			"exclude_globs":       []string{"vendor/**"},
+			"max_depth":           8,
+			"include_tests":       true,
+			"include_legacy_docs": true,
+		},
+		"verify_policy": map[string]any{
+			"strict_symbol_check":  true,
+			"require_mermaid":      true,
+			"max_mermaid_nodes":    30,
+			"max_mermaid_edges":    50,
+			"block_on_secret_leak": true,
+		},
+		"slots": []map[string]any{
+			{
+				"slot_id":             "runtime_flow",
+				"title":               "1. 核心并发与源码调用链",
+				"ownership":           "auto",
+				"required":            true,
+				"ir_facets":           []string{"tree", "deps", "symbols", "http_routes"},
+				"token_budget":        10000,
+				"min_chars":           40,
+				"enable_source_tools": true,
+				"max_tool_rounds":     4,
+				"instruction_hint":    "调用只读源码工具核实关键链路。",
+			},
+		},
+		"template_md":          "# 治理增强架构文档\n\n## 1. 核心并发与源码调用链\n<!-- slot:runtime_flow -->\n",
+		"generation_prompt_md": "你是架构师。",
+		"refine_prompt_md":     "精修保持准确。",
+	}
+
+	wCreate := doAdminDocTypeReq(env.router, http.MethodPost, "/api/admin/doc-types", env.adminTok, validPayload)
+	if wCreate.Code != http.StatusCreated {
+		t.Fatalf("合法高级策略创建应返回 201，实际 %d: %s", wCreate.Code, wCreate.Body.String())
+	}
+
+	// 回读 GET /api/doc-types/:slug 校验 detail.slots、latest_revision.slots_snapshot 与 meta 高级策略无损保留
+	wDetail := doAdminDocTypeReq(env.router, http.MethodGet, "/api/doc-types/governed-arch", env.adminTok, nil)
+	if wDetail.Code != http.StatusOK {
+		t.Fatalf("GET 详情失败: %d %s", wDetail.Code, wDetail.Body.String())
+	}
+	var detail services.DocTypeDetailVO
+	if err := json.Unmarshal(wDetail.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("解析详情 JSON 失败: %v", err)
+	}
+	if len(detail.Slots) != 1 || !detail.Slots[0].EnableSourceTools || detail.Slots[0].MaxToolRounds != 4 {
+		t.Fatalf("detail.slots 丢失源码工具配置: %+v", detail.Slots)
+	}
+	if detail.LatestRevision == nil || len(detail.LatestRevision.SlotsSnapshot) != 1 ||
+		!detail.LatestRevision.SlotsSnapshot[0].EnableSourceTools || detail.LatestRevision.SlotsSnapshot[0].MaxToolRounds != 4 {
+		t.Fatalf("latest_revision.slots_snapshot 丢失源码工具配置: %+v", detail.LatestRevision)
+	}
+	if len(detail.Meta.RepoIRFacets) != 3 || len(detail.Meta.ContextInputs) != 3 {
+		t.Fatalf("meta.repo_ir_facets 或 context_inputs 未完整透传: repo=%+v ctx=%+v", detail.Meta.RepoIRFacets, detail.Meta.ContextInputs)
+	}
+	if detail.Meta.ModuleDigestSource == nil || detail.Meta.ModuleDigestSource.SlotID != "runtime_flow" || detail.Meta.ModuleDigestSource.MaxChars != 600 {
+		t.Fatalf("meta.module_digest_source 未完整透传: %+v", detail.Meta.ModuleDigestSource)
+	}
+	if detail.Meta.ScopeProfile == nil || detail.Meta.ScopeProfile.MaxDepth != 8 || !detail.Meta.ScopeProfile.IncludeTests || !detail.Meta.ScopeProfile.IncludeLegacyDocs {
+		t.Fatalf("meta.scope_profile 未完整透传: %+v", detail.Meta.ScopeProfile)
+	}
+	if detail.Meta.VerifyPolicy == nil || !detail.Meta.VerifyPolicy.StrictSymbolCheck || !detail.Meta.VerifyPolicy.RequireMermaid || detail.Meta.VerifyPolicy.MaxMermaidNodes != 30 {
+		t.Fatalf("meta.verify_policy 未完整透传: %+v", detail.Meta.VerifyPolicy)
+	}
+
+	// 核查磁盘 meta.json 落盘完整性
+	metaBytes, err := os.ReadFile(filepath.Join(env.docTypesDir, "governed-arch", "meta.json"))
+	if err != nil {
+		t.Fatalf("读取磁盘 meta.json 失败: %v", err)
+	}
+	var diskMeta doctype.Meta
+	if err := json.Unmarshal(metaBytes, &diskMeta); err != nil {
+		t.Fatalf("解析磁盘 meta.json 失败: %v", err)
+	}
+	if len(diskMeta.RepoIRFacets) != 3 || len(diskMeta.ContextInputs) != 3 || !diskMeta.Slots[0].EnableSourceTools || diskMeta.Slots[0].MaxToolRounds != 4 {
+		t.Fatalf("磁盘 meta.json 字段未完整保留: %+v", diskMeta)
+	}
+
+	// 非法 repo_ir_facets 请求应返回 400 且无磁盘目录残留
+	invalidPayload := map[string]any{
+		"slug":                 "invalid-repo-facet",
+		"display_name":         "非法分片测试",
+		"model_tier":           "fast",
+		"timeout_seconds":      300,
+		"ir_facets":            []string{"tree"},
+		"repo_ir_facets":       []string{"not_a_facet"},
+		"slots":                validPayload["slots"],
+		"template_md":          validPayload["template_md"],
+		"generation_prompt_md": "指令",
+		"refine_prompt_md":     "",
+	}
+	wBad := doAdminDocTypeReq(env.router, http.MethodPost, "/api/admin/doc-types", env.adminTok, invalidPayload)
+	if wBad.Code != http.StatusBadRequest {
+		t.Fatalf("非法 repo_ir_facets 应返回 400，实际 %d: %s", wBad.Code, wBad.Body.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(env.docTypesDir, "invalid-repo-facet")); !os.IsNotExist(statErr) {
+		t.Fatalf("非法请求不应残留磁盘目录，实际 stat err=%v", statErr)
+	}
+}

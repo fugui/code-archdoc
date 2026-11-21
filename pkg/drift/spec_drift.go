@@ -2,17 +2,26 @@ package drift
 
 import (
 	"reflect"
+	"regexp"
 	"sort"
+	"strings"
+)
+
+var (
+	slotMarkerLineRe   = regexp.MustCompile(`^\s*<!--\s*slot:([a-z][a-z0-9_]{1,48})\s*-->\s*$`)
+	boundHeadingLineRe = regexp.MustCompile(`^#{2,4}\s+.+$`)
 )
 
 // SpecSlotMeta 描述用于 Spec Drift 比对的槽位规范摘要（零数据库耦合）。
 type SpecSlotMeta struct {
-	SlotID          string
-	Title           string
-	Ownership       string
-	Required        bool
-	IRFacets        []string
-	InstructionHint string
+	SlotID            string
+	Title             string
+	Ownership         string
+	Required          bool
+	IRFacets          []string
+	InstructionHint   string
+	EnableSourceTools bool
+	MaxToolRounds     int
 }
 
 // SpecDriftSlotItem 描述单个受模板/指令变更影响的槽位明细。
@@ -103,7 +112,9 @@ func ComputeSpecDrift(
 		latestMap[s.SlotID] = s
 	}
 
-	globalPromptChanged := boundPromptHash != latestPromptHash || boundTemplateMD != latestTemplateMD
+	boundSkeleton := normalizeTemplateStaticSkeleton(boundTemplateMD, boundSlots)
+	latestSkeleton := normalizeTemplateStaticSkeleton(latestTemplateMD, latestSlots)
+	globalPromptChanged := boundPromptHash != latestPromptHash || boundSkeleton != latestSkeleton
 	var affected []SpecDriftSlotItem
 
 	// 1. 新增或修改的槽位（按新模板顺序）
@@ -156,8 +167,87 @@ func ComputeSpecDrift(
 	return affected
 }
 
+// normalizeTemplateStaticSkeleton 剥离绑定到已声明槽位的 <!-- slot:id --> 占位符及其紧邻 ##~#### 标题行，
+// 仅保留文档级静态骨架文本，避免局部槽位改名/增删/重排误触发兄弟槽位 prompt_changed。
+func normalizeTemplateStaticSkeleton(templateMD string, slots []SpecSlotMeta) string {
+	normalized := strings.ReplaceAll(templateMD, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+
+	declaredSlots := make(map[string]bool, len(slots))
+	for _, sl := range slots {
+		if sl.SlotID != "" {
+			declaredSlots[sl.SlotID] = true
+		}
+	}
+	seenSlots := make(map[string]bool, len(slots))
+	removed := make([]bool, len(lines))
+
+	for i, line := range lines {
+		m := slotMarkerLineRe.FindStringSubmatch(line)
+		if len(m) != 2 {
+			continue
+		}
+		slotID := m[1]
+		if !declaredSlots[slotID] || seenSlots[slotID] {
+			continue
+		}
+		seenSlots[slotID] = true
+		removed[i] = true
+
+		for j := i - 1; j >= 0; j-- {
+			if removed[j] {
+				break
+			}
+			if strings.TrimSpace(lines[j]) == "" {
+				continue
+			}
+			if boundHeadingLineRe.MatchString(lines[j]) {
+				removed[j] = true
+			}
+			break
+		}
+	}
+
+	var kept []string
+	prevBlank := false
+	for i, line := range lines {
+		if removed[i] {
+			continue
+		}
+		isBlank := strings.TrimSpace(line) == ""
+		if isBlank {
+			if prevBlank {
+				continue
+			}
+			prevBlank = true
+			kept = append(kept, "")
+		} else {
+			prevBlank = false
+			kept = append(kept, line)
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func normalizeMaxToolRounds(enabled bool, rounds int) int {
+	if !enabled {
+		return 0
+	}
+	if rounds <= 0 {
+		return 4
+	}
+	return rounds
+}
+
 func slotSpecChanged(a, b SpecSlotMeta) bool {
 	if a.Title != b.Title || a.Ownership != b.Ownership || a.Required != b.Required || a.InstructionHint != b.InstructionHint {
+		return true
+	}
+	if a.EnableSourceTools != b.EnableSourceTools {
+		return true
+	}
+	if normalizeMaxToolRounds(a.EnableSourceTools, a.MaxToolRounds) != normalizeMaxToolRounds(b.EnableSourceTools, b.MaxToolRounds) {
 		return true
 	}
 	af := append([]string(nil), a.IRFacets...)

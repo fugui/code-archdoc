@@ -14,6 +14,54 @@ export type FacetName =
   | 'runtime_primitives'
   | 'module_context';
 
+export type CanonicalFacetName = Exclude<FacetName, 'module_context'>;
+export type ContextInputName = 'code_ir' | 'module_context' | 'module_digests';
+
+export interface ScopeProfileConfig {
+  include_globs?: string[];
+  exclude_globs?: string[];
+  max_depth?: number;
+  include_tests: boolean;
+  include_legacy_docs?: boolean;
+}
+
+export interface VerifyPolicyConfig {
+  strict_symbol_check: boolean;
+  require_mermaid: boolean;
+  allowed_mermaid_types?: string[];
+  max_mermaid_nodes?: number;
+  max_mermaid_edges?: number;
+  block_on_secret_leak?: boolean;
+}
+
+export interface ModuleDigestSourceConfig {
+  doc_type_slug: string;
+  slot_id: string;
+  max_chars?: number;
+  fallback_order?: string[];
+}
+
+export interface DocTypeMeta {
+  name?: string;
+  display_name?: string;
+  short_name?: string;
+  category?: string;
+  description?: string;
+  is_active?: boolean;
+  is_builtin?: boolean;
+  model_tier?: ModelTier;
+  timeout_seconds?: number;
+  max_output_tokens?: number;
+  scope_profile?: ScopeProfileConfig;
+  ir_facets?: FacetName[];
+  context_inputs?: ContextInputName[];
+  repo_ir_facets?: CanonicalFacetName[];
+  module_digest_source?: ModuleDigestSourceConfig;
+  slots?: SlotDefinition[];
+  verify_policy?: VerifyPolicyConfig;
+  [extraKey: string]: unknown;
+}
+
 export type SectionOwnership = 'auto' | 'hybrid' | 'locked';
 export type DocumentStatus = 'draft' | 'approved';
 export type RevisionSource =
@@ -391,7 +439,7 @@ export interface DocTypeRevisionSummaryVO {
 }
 
 export interface DocTypeDetailVO extends DocTypeSummaryVO {
-  meta: Record<string, unknown>;
+  meta: DocTypeMeta;
   slots: SlotDefinition[];
   template_md: string;
   generation_prompt_md: string;

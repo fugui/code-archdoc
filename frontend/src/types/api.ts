@@ -1,13 +1,18 @@
 import type {
   ArchBindingFilter,
+  CanonicalFacetName,
+  ContextInputName,
   DriftFilterType,
   FacetName,
   ModelTier,
+  ModuleDigestSourceConfig,
   ModuleDiscoveryStrategy,
   RepoScopeFilter,
   RepoStatusFilter,
+  ScopeProfileConfig,
   SectionOwnership,
   SlotDefinition,
+  VerifyPolicyConfig,
 } from './domain';
 
 export type ArchdocErrorCode =
@@ -166,7 +171,12 @@ export interface CreateDocTypePayload {
   model_tier: ModelTier;
   timeout_seconds: number;
   max_output_tokens?: number;
+  scope_profile?: ScopeProfileConfig;
   ir_facets: FacetName[];
+  repo_ir_facets?: CanonicalFacetName[];
+  context_inputs?: ContextInputName[];
+  module_digest_source?: ModuleDigestSourceConfig;
+  verify_policy?: VerifyPolicyConfig;
   slots: SlotDefinition[];
   template_md: string;
   generation_prompt_md: string;

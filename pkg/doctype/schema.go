@@ -348,8 +348,8 @@ func (m *Meta) Validate(expectedSlug string) error {
 		}
 	}
 	for _, ci := range m.ContextInputs {
-		if ci != "module_context" && ci != "module_digests" {
-			return fmt.Errorf("%w: 非法 context_input %q（仅支持 module_context 或 module_digests）", ErrInvalidMeta, ci)
+		if ci != "code_ir" && ci != "module_context" && ci != "module_digests" {
+			return fmt.Errorf("%w: 非法 context_input %q（仅支持 code_ir、module_context 或 module_digests）", ErrInvalidMeta, ci)
 		}
 	}
 	if m.ModuleDigestSource != nil {
