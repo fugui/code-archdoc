@@ -10,6 +10,7 @@ import {
   setupFetchInterceptor,
   useTheme,
 } from '@code/common';
+import './index.css';
 import { apiRequest } from './api/client';
 import {
   MODULE_BASE_PATH,
@@ -26,7 +27,6 @@ import DriftRadarPage from './pages/DriftRadarPage';
 import QualityMetricsPage from './pages/QualityMetricsPage';
 import RepoCoveragePage from './pages/RepoCoveragePage';
 import type { CurrentUserProfile } from './types';
-import './index.css';
 
 // 在微前端嵌入模式下自动将 /api/* 重写为 /archdoc/api/* 并注入 Bearer Token
 setupFetchInterceptor({ appPrefix: MODULE_BASE_PATH });
