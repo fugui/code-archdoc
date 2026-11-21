@@ -133,6 +133,12 @@ func (h *AppHandlers) TriggerBatchGenerateTask(c *gin.Context) {
 
 // ListTasks 分页查询生成任务历史（GET /api/tasks）。
 func (h *AppHandlers) ListTasks(c *gin.Context) {
+	user, ok := CurrentUserFromContext(c)
+	if !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil {
 		page = 1
@@ -166,8 +172,39 @@ func (h *AppHandlers) ListTasks(c *gin.Context) {
 		}
 		filter.Subdirectory = &normSub
 	}
-	filter.Status = strings.TrimSpace(c.Query("status"))
-	if trigStr := strings.TrimSpace(c.Query("triggered_by")); trigStr != "" {
+
+	rawStatus := strings.ToLower(strings.TrimSpace(c.Query("status")))
+	switch rawStatus {
+	case "", "all":
+		filter.Status = ""
+	case "active", models.TaskStatusPending, models.TaskStatusExtracting, models.TaskStatusGenerating, models.TaskStatusVerifying, models.TaskStatusReady, models.TaskStatusFailed, models.TaskStatusCanceled:
+		filter.Status = rawStatus
+	default:
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "status 参数仅支持 all | active | pending | extracting | generating | verifying | ready | failed | canceled", nil)
+		return
+	}
+
+	rawTaskKind := strings.ToLower(strings.TrimSpace(c.Query("task_kind")))
+	switch rawTaskKind {
+	case "", "all":
+		filter.TaskKind = ""
+	case models.TaskKindGenerate, models.TaskKindRegenerate, models.TaskKindIncrementalRefresh, models.TaskKindBatch:
+		filter.TaskKind = rawTaskKind
+	default:
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "task_kind 参数仅支持 all | generate | regenerate | incremental_refresh | batch", nil)
+		return
+	}
+
+	rawTopLevel := strings.ToLower(strings.TrimSpace(c.Query("top_level_only")))
+	if rawTopLevel == "true" || rawTopLevel == "1" {
+		filter.TopLevelOnly = true
+	}
+
+	rawMine := strings.ToLower(strings.TrimSpace(c.Query("mine")))
+	if rawMine == "true" || rawMine == "1" {
+		uid := user.ID
+		filter.TriggeredBy = &uid
+	} else if trigStr := strings.TrimSpace(c.Query("triggered_by")); trigStr != "" {
 		v, pErr := strconv.ParseUint(trigStr, 10, 64)
 		if pErr != nil || v == 0 {
 			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "triggered_by 参数非法", nil)
@@ -177,7 +214,7 @@ func (h *AppHandlers) ListTasks(c *gin.Context) {
 		filter.TriggeredBy = &id
 	}
 
-	resp, err := h.genSvc.ListTasks(c.Request.Context(), filter, page, pageSize)
+	resp, err := h.genSvc.ListTasks(c.Request.Context(), user, filter, page, pageSize)
 	if err != nil {
 		log.Printf("[%s] 查询任务列表失败: %v", config.ServiceName, err)
 		WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "查询任务列表失败", nil)

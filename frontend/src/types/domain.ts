@@ -81,6 +81,8 @@ export type TaskStatus =
   | 'ready'
   | 'failed'
   | 'canceled';
+export type TaskStatusFilter = '' | 'all' | 'active' | TaskStatus;
+export type TaskKindFilter = '' | 'all' | TaskKind;
 
 export type SlotTaskStatus =
   | 'pending'
@@ -584,9 +586,23 @@ export interface GenTaskDetailVO {
   child_tasks?: GenTaskDetailVO[];
   batch_summary?: BatchSummaryVO | null;
   triggered_by: number;
+  triggered_by_name?: string;
+  can_write?: boolean;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+}
+
+export interface TaskSummaryVO {
+  total: number;
+  active: number;
+  ready: number;
+  failed: number;
+  canceled: number;
+}
+
+export interface TaskListResponse extends PaginatedResponse<GenTaskDetailVO> {
+  summary?: TaskSummaryVO;
 }
 
 export interface CancelTaskResponse {

@@ -1,5 +1,14 @@
-import React from 'react';
-import { Archive, BookOpen, FolderTree, Layers3, Loader2, Sparkles } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Archive,
+  BookOpen,
+  FolderTree,
+  Layers3,
+  Loader2,
+  MoreHorizontal,
+  Sparkles,
+} from 'lucide-react';
+import { useOutsideClick } from '@code/common';
 import type { RepoScopeCoverageVO } from '../../types';
 
 export interface CoverageActionButtonsProps {
@@ -14,6 +23,15 @@ export interface CoverageActionButtonsProps {
   onExportZip: () => void;
 }
 
+interface SecondaryActionItem {
+  key: string;
+  label: string;
+  title: string;
+  icon: React.ReactNode;
+  disabled: boolean;
+  onClick: () => void;
+}
+
 export const CoverageActionButtons: React.FC<CoverageActionButtonsProps> = ({
   row,
   exporting,
@@ -25,6 +43,26 @@ export const CoverageActionButtons: React.FC<CoverageActionButtonsProps> = ({
   onOpenModuleGovernance,
   onExportZip,
 }) => {
+  const [menuOpen, setMenuOpen] = useState<boolean>(false);
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+  }, []);
+
+  useOutsideClick(menuContainerRef, closeMenu);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [menuOpen]);
+
   const generateTip = row.can_write
     ? '触发 AI 设计文档反推生成'
     : '权限不足：仅仓库/子目录负责人或管理员可触发生成';
@@ -37,69 +75,116 @@ export const CoverageActionButtons: React.FC<CoverageActionButtonsProps> = ({
       ? `打包导出当前范围 ${approvedCount} 篇已发布文档 ZIP`
       : '当前范围暂无已发布定稿文档可导出';
 
+  const secondaryActions: SecondaryActionItem[] = [];
+  if (row.scope_type === 'repo' && onBatchGenerate) {
+    secondaryActions.push({
+      key: 'batch',
+      label: '批量生成子模块',
+      title: batchTip,
+      icon: <Layers3 size={14} />,
+      disabled: !row.can_write,
+      onClick: onBatchGenerate,
+    });
+  }
+  if (row.scope_type === 'repo' && onOpenModuleGovernance) {
+    secondaryActions.push({
+      key: 'governance',
+      label: '模块发现与目录迁移',
+      title: '配置模块发现策略、扫描子目录或迁移重命名文档',
+      icon: <FolderTree size={14} />,
+      disabled: false,
+      onClick: onOpenModuleGovernance,
+    });
+  }
+  secondaryActions.push({
+    key: 'export',
+    label: exporting ? '正在打包 ZIP...' : '导出已发布 ZIP',
+    title: exportTip,
+    icon: exporting ? <Loader2 size={14} className="code-archdoc-spin" /> : <Archive size={14} />,
+    disabled: approvedCount === 0 || exporting,
+    onClick: onExportZip,
+  });
+
+  const singleSecondary = secondaryActions.length === 1 ? secondaryActions[0] : null;
+
   return (
-    <div className="code-archdoc-icon-actions">
+    <div className="code-archdoc-row-actions">
       <button
         type="button"
-        className="code-archdoc-icon-btn code-archdoc-icon-btn--primary"
-        data-tooltip="进入 Canvas Studio 工作台"
-        data-tooltip-pos={tooltipPlacement}
-        aria-label="进入 Canvas Studio 工作台"
+        className="code-archdoc-row-btn code-archdoc-row-btn--primary"
+        title="进入 Canvas Studio 工作台"
         onClick={onOpenStudio}
       >
-        <BookOpen size={15} />
+        <BookOpen size={14} />
+        <span>工作台</span>
       </button>
 
       <button
         type="button"
-        className="code-archdoc-icon-btn"
+        className="code-archdoc-row-btn"
         disabled={!row.can_write}
-        data-tooltip={generateTip}
-        data-tooltip-pos={tooltipPlacement}
-        aria-label={generateTip}
+        title={generateTip}
         onClick={onTriggerGenerate}
       >
-        <Sparkles size={15} />
+        <Sparkles size={14} />
+        <span>生成</span>
       </button>
 
-      {row.scope_type === 'repo' && onBatchGenerate && (
+      {singleSecondary ? (
         <button
           type="button"
           className="code-archdoc-icon-btn"
-          disabled={!row.can_write}
-          data-tooltip={batchTip}
+          disabled={singleSecondary.disabled}
+          data-tooltip={singleSecondary.title}
           data-tooltip-pos={tooltipPlacement}
-          aria-label={batchTip}
-          onClick={onBatchGenerate}
+          aria-label={singleSecondary.title}
+          onClick={singleSecondary.onClick}
         >
-          <Layers3 size={15} />
+          {singleSecondary.icon}
         </button>
-      )}
+      ) : (
+        <div className="code-archdoc-action-menu-wrap" ref={menuContainerRef}>
+          <button
+            type="button"
+            className={`code-archdoc-icon-btn ${menuOpen ? 'code-archdoc-icon-btn--active' : ''}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="更多操作"
+            title="更多操作（批量生成、模块治理与导出）"
+            onClick={() => setMenuOpen((prev) => !prev)}
+          >
+            <MoreHorizontal size={15} />
+          </button>
 
-      {row.scope_type === 'repo' && onOpenModuleGovernance && (
-        <button
-          type="button"
-          className="code-archdoc-icon-btn"
-          data-tooltip="模块发现策略、子目录扫描与文档迁移治理"
-          data-tooltip-pos={tooltipPlacement}
-          aria-label="模块发现策略、子目录扫描与文档迁移治理"
-          onClick={onOpenModuleGovernance}
-        >
-          <FolderTree size={15} />
-        </button>
+          {menuOpen && (
+            <div
+              className={`code-archdoc-action-menu ${
+                tooltipPlacement === 'bottom' ? 'code-archdoc-action-menu--down' : ''
+              }`}
+              role="menu"
+              aria-label="仓库更多操作"
+            >
+              {secondaryActions.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  role="menuitem"
+                  className="code-archdoc-action-menu-item"
+                  disabled={item.disabled}
+                  title={item.title}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    item.onClick();
+                  }}
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
-
-      <button
-        type="button"
-        className="code-archdoc-icon-btn"
-        disabled={approvedCount === 0 || exporting}
-        data-tooltip={exportTip}
-        data-tooltip-pos={tooltipPlacement}
-        aria-label={exportTip}
-        onClick={onExportZip}
-      >
-        {exporting ? <Loader2 size={15} className="code-archdoc-spin" /> : <Archive size={15} />}
-      </button>
     </div>
   );
 };

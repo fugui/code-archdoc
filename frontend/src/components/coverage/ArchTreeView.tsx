@@ -26,17 +26,17 @@ export interface ArchTreeViewProps {
   docTypes: DocTypeSummaryVO[];
   focusedDocTypeSlug?: string;
   expandedDocRowKeys: Set<string>;
-  discoveringRepoId: number | null;
-  exportingKey: string | null;
+  discoveringRepoId?: number | null;
+  exportingKey?: string | null;
   hasActiveFilters: boolean;
   onResetFilters: () => void;
   onToggleDocRowExpand: (rowKey: string) => void;
-  onDiscoverModules: (row: RepoScopeCoverageVO) => void;
-  onOpenModuleGovernance: (row: RepoScopeCoverageVO) => void;
+  onDiscoverModules?: (row: RepoScopeCoverageVO) => void;
+  onOpenModuleGovernance?: (row: RepoScopeCoverageVO) => void;
   onOpenActiveTask: (row: RepoScopeCoverageVO) => void;
   onOpenStudio: (repoId: number, docId?: number, subdirectory?: string) => void;
   onTriggerGenerate: (row: RepoScopeCoverageVO, docTypeSlug?: string) => void;
-  onBatchGenerate: (row: RepoScopeCoverageVO) => void;
+  onBatchGenerate?: (row: RepoScopeCoverageVO) => void;
   onExportZip: (row: RepoScopeCoverageVO) => void;
 }
 
@@ -93,8 +93,8 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
   docTypes,
   focusedDocTypeSlug,
   expandedDocRowKeys,
-  discoveringRepoId,
-  exportingKey,
+  discoveringRepoId = null,
+  exportingKey = null,
   hasActiveFilters,
   onResetFilters,
   onToggleDocRowExpand,

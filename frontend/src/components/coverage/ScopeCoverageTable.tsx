@@ -19,14 +19,17 @@ export interface ScopeCoverageTableProps {
   discoveringRepoId?: number | null;
   exportingKey?: string | null;
   compact?: boolean;
+  subdirCountsByRepo?: Map<number, number>;
+  expandedSubdirRepos?: Set<number>;
+  onToggleSubdirRepo?: (repoId: number) => void;
   onToggleExpandRow: (rowKey: string) => void;
   onToggleSelectSubdir?: (row: RepoScopeCoverageVO) => void;
-  onDiscoverModules: (row: RepoScopeCoverageVO) => void;
-  onOpenModuleGovernance: (row: RepoScopeCoverageVO) => void;
+  onDiscoverModules?: (row: RepoScopeCoverageVO) => void;
+  onOpenModuleGovernance?: (row: RepoScopeCoverageVO) => void;
   onOpenActiveTask: (row: RepoScopeCoverageVO) => void;
   onOpenStudio: (repoId: number, docId?: number, subdirectory?: string) => void;
   onTriggerGenerate: (row: RepoScopeCoverageVO, docTypeSlug?: string) => void;
-  onBatchGenerate: (row: RepoScopeCoverageVO) => void;
+  onBatchGenerate?: (row: RepoScopeCoverageVO) => void;
   onExportZip: (row: RepoScopeCoverageVO) => void;
 }
 
@@ -42,6 +45,9 @@ export const ScopeCoverageTable: React.FC<ScopeCoverageTableProps> = ({
   discoveringRepoId = null,
   exportingKey = null,
   compact = false,
+  subdirCountsByRepo,
+  expandedSubdirRepos,
+  onToggleSubdirRepo,
   onToggleExpandRow,
   onToggleSelectSubdir,
   onDiscoverModules,
@@ -88,11 +94,25 @@ export const ScopeCoverageTable: React.FC<ScopeCoverageTableProps> = ({
                     showSelection={showSelection}
                     isSelected={isRowChecked}
                     isDiscovering={discoveringRepoId === row.repo_id}
+                    subdirCount={
+                      row.scope_type === 'repo' ? subdirCountsByRepo?.get(row.repo_id) : undefined
+                    }
+                    subdirsExpanded={
+                      row.scope_type === 'repo'
+                        ? Boolean(expandedSubdirRepos?.has(row.repo_id))
+                        : false
+                    }
+                    onToggleSubdirs={
+                      row.scope_type === 'repo' && onToggleSubdirRepo
+                        ? () => onToggleSubdirRepo(row.repo_id)
+                        : undefined
+                    }
                     onToggleSelect={
                       onToggleSelectSubdir ? () => onToggleSelectSubdir(row) : undefined
                     }
-                    onDiscoverModules={() => onDiscoverModules(row)}
-                    onOpenModuleGovernance={() => onOpenModuleGovernance(row)}
+                    onDiscoverModules={
+                      onDiscoverModules ? () => onDiscoverModules(row) : undefined
+                    }
                     onOpenActiveTask={() => onOpenActiveTask(row)}
                   />
                 </td>
@@ -137,8 +157,10 @@ export const ScopeCoverageTable: React.FC<ScopeCoverageTableProps> = ({
                       onOpenStudio(row.repo_id, firstDoc?.document_id, row.subdirectory)
                     }
                     onTriggerGenerate={() => onTriggerGenerate(row)}
-                    onBatchGenerate={() => onBatchGenerate(row)}
-                    onOpenModuleGovernance={() => onOpenModuleGovernance(row)}
+                    onBatchGenerate={onBatchGenerate ? () => onBatchGenerate(row) : undefined}
+                    onOpenModuleGovernance={
+                      onOpenModuleGovernance ? () => onOpenModuleGovernance(row) : undefined
+                    }
                     onExportZip={() => onExportZip(row)}
                   />
                 </td>

@@ -50,6 +50,7 @@ export interface GenerateTaskModalProps {
   onTaskCompleted?: () => void;
   onModulesRefreshed?: () => void;
   onOpenStudio?: (repoId: number, docId?: number, subdirectory?: string) => void;
+  onOpenTaskCenter?: () => void;
 }
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(['ready', 'failed', 'canceled']);
@@ -116,6 +117,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   onTaskCompleted,
   onModulesRefreshed,
   onOpenStudio,
+  onOpenTaskCenter,
 }) => {
   const { showToast } = useToast();
   const confirm = useConfirm();
@@ -401,6 +403,29 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           )}
 
           <div className="code-archdoc-modal-footer-right">
+            {taskDetail && onOpenTaskCenter && (
+              <button
+                type="button"
+                className="btn btn-text btn-small"
+                onClick={() => {
+                  onClose();
+                  onOpenTaskCenter();
+                }}
+              >
+                前往任务中心
+              </button>
+            )}
+
+            {taskDetail?.parent_task_id && (
+              <button
+                type="button"
+                className="btn btn-text btn-small"
+                onClick={() => void refreshTask(taskDetail.parent_task_id!)}
+              >
+                返回批量父任务 #{taskDetail.parent_task_id}
+              </button>
+            )}
+
             <button type="button" className="btn btn-secondary" onClick={onClose}>
               {taskDetail && !isTerminal ? '后台运行并关闭' : '关闭'}
             </button>

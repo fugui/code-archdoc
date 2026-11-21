@@ -785,3 +785,122 @@ func TestGenerateTaskRBACAndParamValidation(t *testing.T) {
 		t.Fatalf("不存在的 DocType 期望 400 DOC_TYPE_INACTIVE，实际 %d (%s)", rec3.Code, rec3.Body.String())
 	}
 }
+
+func TestListTasksFilterSummaryAndEnrichment(t *testing.T) {
+	env := setupM2TestEnv(t, 2)
+
+	// 1. 构造父批量任务、子任务、成功/失败/运行中任务，覆盖多用户与不同任务类型
+	parentTask := models.GenTask{
+		RepoID:       env.repo.ID,
+		Subdirectory: "",
+		RefName:      "master",
+		TaskKind:     models.TaskKindBatch,
+		Priority:     models.TaskPriorityBatch,
+		DocTypesJSON: []byte(`["system-architecture"]`),
+		Status:       models.TaskStatusGenerating,
+		TriggeredBy:  env.owner.ID,
+	}
+	if err := env.db.Create(&parentTask).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	childTask := models.GenTask{
+		ParentTaskID: &parentTask.ID,
+		RepoID:       env.repo.ID,
+		Subdirectory: "services/order",
+		RefName:      "master",
+		TaskKind:     models.TaskKindGenerate,
+		Priority:     models.TaskPriorityBatch,
+		DocTypesJSON: []byte(`["system-architecture"]`),
+		Status:       models.TaskStatusReady,
+		TriggeredBy:  env.owner.ID,
+	}
+	failedTask := models.GenTask{
+		RepoID:       env.repo.ID,
+		Subdirectory: "",
+		RefName:      "master",
+		TaskKind:     models.TaskKindRegenerate,
+		Priority:     models.TaskPriorityInteractive,
+		DocTypesJSON: []byte(`["code-walkthrough"]`),
+		Status:       models.TaskStatusFailed,
+		ErrorCode:    "LLM_TIMEOUT",
+		ErrorMessage: "上游推理超时",
+		TriggeredBy:  env.otherUser.ID,
+	}
+	for _, item := range []*models.GenTask{&childTask, &failedTask} {
+		if err := env.db.Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	doList := func(tok, query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/tasks"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 2. owner 查询 top_level_only=true&status=active：仅返回父批量任务且富化 repo_name/triggered_by_name/can_write/batch_summary/summary
+	recActive := doList(env.ownerTok, "?top_level_only=true&status=active")
+	if recActive.Code != http.StatusOK {
+		t.Fatalf("GET /api/tasks?top_level_only=true&status=active 期望 200，实际 %d (%s)", recActive.Code, recActive.Body.String())
+	}
+	var activeResp services.TaskListResponse
+	if err := json.Unmarshal(recActive.Body.Bytes(), &activeResp); err != nil {
+		t.Fatal(err)
+	}
+	if activeResp.Total != 1 || len(activeResp.Items) != 1 {
+		t.Fatalf("期望 active 顶层任务 1 条，实际 total=%d items=%d", activeResp.Total, len(activeResp.Items))
+	}
+	if activeResp.Summary == nil || activeResp.Summary.Total != 2 || activeResp.Summary.Active != 1 || activeResp.Summary.Failed != 1 {
+		t.Fatalf("Summary 统计不准确: %+v", activeResp.Summary)
+	}
+	item := activeResp.Items[0]
+	if item.ID != parentTask.ID || item.RepoName != env.repo.Name || item.TriggeredByName != env.owner.Name || !item.CanWrite {
+		t.Fatalf("任务富化字段不符合预期: %+v", item)
+	}
+	if item.BatchSummary == nil || item.BatchSummary.TotalChildren != 1 || item.BatchSummary.CompletedChildren != 1 {
+		t.Fatalf("批量子任务摘要未聚合: %+v", item.BatchSummary)
+	}
+
+	// 3. 非负责人 otherUser 查询 mine=true：仅返回由自己触发的 failedTask，且 can_write 为 false
+	recMine := doList(env.otherTok, "?mine=true")
+	if recMine.Code != http.StatusOK {
+		t.Fatalf("GET /api/tasks?mine=true 期望 200，实际 %d (%s)", recMine.Code, recMine.Body.String())
+	}
+	var mineResp services.TaskListResponse
+	if err := json.Unmarshal(recMine.Body.Bytes(), &mineResp); err != nil {
+		t.Fatal(err)
+	}
+	if mineResp.Total != 1 || len(mineResp.Items) != 1 || mineResp.Items[0].ID != failedTask.ID {
+		t.Fatalf("mine=true 过滤结果不符合预期: %+v", mineResp)
+	}
+	if mineResp.Items[0].CanWrite {
+		t.Fatalf("非负责人查看整仓任务 can_write 应为 false")
+	}
+	if mineResp.Items[0].TriggeredByName != env.otherUser.Name {
+		t.Fatalf("期望 triggered_by_name=%s，实际 %s", env.otherUser.Name, mineResp.Items[0].TriggeredByName)
+	}
+
+	// 4. task_kind 过滤
+	recKind := doList(env.ownerTok, "?task_kind=regenerate")
+	if recKind.Code != http.StatusOK {
+		t.Fatalf("GET /api/tasks?task_kind=regenerate 期望 200，实际 %d", recKind.Code)
+	}
+	var kindResp services.TaskListResponse
+	if err := json.Unmarshal(recKind.Body.Bytes(), &kindResp); err != nil {
+		t.Fatal(err)
+	}
+	if kindResp.Total != 1 || kindResp.Items[0].ID != failedTask.ID {
+		t.Fatalf("task_kind=regenerate 过滤结果不符合预期: %+v", kindResp)
+	}
+
+	// 5. 非法 status / task_kind 白名单拦截返回 400 INVALID_PARAM
+	for _, badQuery := range []string{"?status=bogus", "?task_kind=unknown_kind"} {
+		recBad := doList(env.ownerTok, badQuery)
+		if recBad.Code != http.StatusBadRequest || !strings.Contains(recBad.Body.String(), handlers.ErrCodeInvalidParam) {
+			t.Fatalf("非法查询 %s 期望 400 INVALID_PARAM，实际 %d (%s)", badQuery, recBad.Code, recBad.Body.String())
+		}
+	}
+}

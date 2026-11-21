@@ -4,6 +4,8 @@ import type {
   DriftFilterType,
   RepoScopeFilter,
   RepoStatusFilter,
+  TaskKindFilter,
+  TaskStatusFilter,
 } from '../types';
 
 export const ALLOWED_PAGE_SIZES = [15, 25, 50, 100] as const;
@@ -20,6 +22,23 @@ export interface RepoFilterState {
   view: CoverageViewMode;
   subsystemId: string;
   archBinding: ArchBindingFilter;
+}
+
+export interface ArchTreeFilterState {
+  search: string;
+  subsystemId: string;
+  docType: string;
+  status: RepoStatusFilter;
+}
+
+export interface TaskCenterFilterState {
+  page: number;
+  pageSize: number;
+  repoId: string;
+  status: TaskStatusFilter;
+  taskKind: TaskKindFilter;
+  mine: boolean;
+  includeChildren: boolean;
 }
 
 export interface DriftFilterState {
@@ -44,6 +63,24 @@ const VALID_STATUS_SET = new Set<string>(['all', 'approved', 'draft', 'drifted',
 const VALID_SCOPE_SET = new Set<string>(['all', 'repo', 'subdir']);
 const VALID_ARCH_BINDING_SET = new Set<string>(['all', 'bound', 'unbound']);
 const VALID_DRIFT_TYPE_SET = new Set<string>(['all', 'code', 'spec', 'both']);
+const VALID_TASK_STATUS_SET = new Set<string>([
+  'all',
+  'active',
+  'pending',
+  'extracting',
+  'generating',
+  'verifying',
+  'ready',
+  'failed',
+  'canceled',
+]);
+const VALID_TASK_KIND_SET = new Set<string>([
+  'all',
+  'generate',
+  'regenerate',
+  'incremental_refresh',
+  'batch',
+]);
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 /**
@@ -224,6 +261,130 @@ export function serializeDriftFilterParams(
 }
 
 /**
+ * 从 URLSearchParams 反序列化「架构文档全景」(/arch-tree) 筛选参数。
+ */
+export function parseArchTreeFilterParams(params: URLSearchParams): ArchTreeFilterState {
+  const search = (params.get('search') ?? '').trim();
+  const rawSubsys = (params.get('subsystem_id') ?? '').trim();
+  const subsystemId =
+    /^\d+$/.test(rawSubsys) && Number.parseInt(rawSubsys, 10) > 0 ? rawSubsys : '';
+  const docType = (params.get('doc_type') ?? '').trim();
+  const rawStatus = (params.get('status') ?? '').trim().toLowerCase();
+  const status: RepoStatusFilter = VALID_STATUS_SET.has(rawStatus)
+    ? (rawStatus as RepoStatusFilter)
+    : '';
+
+  return {
+    search,
+    subsystemId,
+    docType,
+    status,
+  };
+}
+
+/**
+ * 将「架构文档全景」筛选状态序列化回 URLSearchParams。
+ */
+export function serializeArchTreeFilterParams(
+  patch: Partial<ArchTreeFilterState>,
+  prev?: URLSearchParams,
+): URLSearchParams {
+  const current = parseArchTreeFilterParams(prev ?? new URLSearchParams());
+  const nextState: ArchTreeFilterState = {
+    ...current,
+    ...patch,
+  };
+
+  const out = new URLSearchParams();
+  if (nextState.search.trim()) {
+    out.set('search', nextState.search.trim());
+  }
+  if (nextState.subsystemId.trim()) {
+    out.set('subsystem_id', nextState.subsystemId.trim());
+  }
+  if (nextState.docType.trim()) {
+    out.set('doc_type', nextState.docType.trim());
+  }
+  if (nextState.status && nextState.status !== 'all') {
+    out.set('status', nextState.status);
+  }
+  return out;
+}
+
+/**
+ * 从 URLSearchParams 反序列化「反推任务中心」(/tasks) 分页与筛选参数。
+ */
+export function parseTaskFilterParams(params: URLSearchParams): TaskCenterFilterState {
+  const page = normalizePage(params.get('page'));
+  const pageSize = normalizePageSize(params.get('pageSize') ?? params.get('page_size'));
+
+  const rawRepo = (params.get('repo_id') ?? '').trim();
+  const repoId = /^\d+$/.test(rawRepo) && Number.parseInt(rawRepo, 10) > 0 ? rawRepo : '';
+
+  const rawStatus = (params.get('status') ?? '').trim().toLowerCase();
+  const status: TaskStatusFilter = VALID_TASK_STATUS_SET.has(rawStatus)
+    ? (rawStatus as TaskStatusFilter)
+    : '';
+
+  const rawKind = (params.get('task_kind') ?? '').trim().toLowerCase();
+  const taskKind: TaskKindFilter = VALID_TASK_KIND_SET.has(rawKind)
+    ? (rawKind as TaskKindFilter)
+    : '';
+
+  const rawMine = (params.get('mine') ?? '').trim().toLowerCase();
+  const mine = rawMine === 'true' || rawMine === '1';
+
+  const rawChildren = (params.get('include_children') ?? '').trim().toLowerCase();
+  const includeChildren = rawChildren === 'true' || rawChildren === '1';
+
+  return {
+    page,
+    pageSize,
+    repoId,
+    status,
+    taskKind,
+    mine,
+    includeChildren,
+  };
+}
+
+/**
+ * 将「反推任务中心」分页与筛选状态序列化回 URLSearchParams（支持浏览器前进/后退）。
+ */
+export function serializeTaskFilterParams(
+  patch: Partial<TaskCenterFilterState>,
+  prev?: URLSearchParams,
+): URLSearchParams {
+  const current = parseTaskFilterParams(prev ?? new URLSearchParams());
+  const nextState: TaskCenterFilterState = {
+    ...current,
+    ...patch,
+    page: normalizePage(patch.page !== undefined ? patch.page : current.page),
+    pageSize: normalizePageSize(patch.pageSize !== undefined ? patch.pageSize : current.pageSize),
+  };
+
+  const out = new URLSearchParams();
+  out.set('page', String(nextState.page));
+  out.set('pageSize', String(nextState.pageSize));
+  if (nextState.repoId.trim()) {
+    out.set('repo_id', nextState.repoId.trim());
+  }
+  if (nextState.status && nextState.status !== 'all') {
+    out.set('status', nextState.status);
+  }
+  if (nextState.taskKind && nextState.taskKind !== 'all') {
+    out.set('task_kind', nextState.taskKind);
+  }
+  if (nextState.mine) {
+    out.set('mine', 'true');
+  }
+  if (nextState.includeChildren) {
+    out.set('include_children', 'true');
+  }
+  return out;
+}
+
+/**
  * 解析 lines="142-188" 或 lines="142" 行号区间，非法/越界/负数安全兜底返回 undefined，反序自动归一化。
  */
 export function parseLineRange(raw: string | null | undefined): { lineStart: number; lineEnd: number } | undefined {
@@ -315,6 +476,14 @@ export function parseEvidenceHref(href: string): ({ docId: number } & EvidenceDe
 }
 
 /**
+ * 生成兼顾独立态与门户嵌入态的模块子路由路径。
+ */
+export function buildModulePath(isEmbedded: boolean, path: string): string {
+  const normPath = path.startsWith('/') ? path : `/${path}`;
+  return isEmbedded ? `/archdoc${normPath}` : normPath;
+}
+
+/**
  * 生成兼顾独立态与门户嵌入态的 Canvas Studio 路由路径。
  */
 export function buildStudioPath(
@@ -322,10 +491,10 @@ export function buildStudioPath(
   repoId: number,
   options?: { docId?: number; subdirectory?: string },
 ): string {
-  const prefix = isEmbedded ? '/archdoc' : '';
-  const base = options?.docId
-    ? `${prefix}/studio/${repoId}/docs/${options.docId}`
-    : `${prefix}/studio/${repoId}`;
+  const base = buildModulePath(
+    isEmbedded,
+    options?.docId ? `/studio/${repoId}/docs/${options.docId}` : `/studio/${repoId}`,
+  );
   const subdir = options?.subdirectory?.trim();
   if (subdir) {
     const qs = new URLSearchParams({ subdir });

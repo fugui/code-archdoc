@@ -24,9 +24,19 @@ type TaskListFilter struct {
 	RepoID       *uint
 	Subdirectory *string
 	Status       string
+	TaskKind     string
+	TopLevelOnly bool
 	TriggeredBy  *uint
 	Offset       int
 	Limit        int
+}
+
+type TaskSummaryRecord struct {
+	Total    int64
+	Active   int64
+	Ready    int64
+	Failed   int64
+	Canceled int64
 }
 
 type PollableRepoRecord struct {
@@ -627,7 +637,7 @@ func (s *TaskStore) GetTaskWithSlots(ctx context.Context, taskID uint) (*GenTask
 	return &task, slots, nil
 }
 
-func (s *TaskStore) ListTasks(ctx context.Context, filter TaskListFilter) ([]GenTask, int64, error) {
+func (s *TaskStore) applyTaskFilter(ctx context.Context, filter TaskListFilter, includeStatus bool) *gorm.DB {
 	q := s.db.WithContext(ctx).Model(&GenTask{})
 	if filter.RepoID != nil {
 		q = q.Where("repo_id = ?", *filter.RepoID)
@@ -635,12 +645,32 @@ func (s *TaskStore) ListTasks(ctx context.Context, filter TaskListFilter) ([]Gen
 	if filter.Subdirectory != nil {
 		q = q.Where("subdirectory = ?", *filter.Subdirectory)
 	}
-	if filter.Status != "" {
-		q = q.Where("status = ?", filter.Status)
+	if filter.TaskKind != "" {
+		q = q.Where("task_kind = ?", filter.TaskKind)
+	}
+	if filter.TopLevelOnly {
+		q = q.Where("parent_task_id IS NULL")
 	}
 	if filter.TriggeredBy != nil {
 		q = q.Where("triggered_by = ?", *filter.TriggeredBy)
 	}
+	if includeStatus && filter.Status != "" {
+		if filter.Status == "active" {
+			q = q.Where("status IN ?", []string{
+				TaskStatusPending,
+				TaskStatusExtracting,
+				TaskStatusGenerating,
+				TaskStatusVerifying,
+			})
+		} else {
+			q = q.Where("status = ?", filter.Status)
+		}
+	}
+	return q
+}
+
+func (s *TaskStore) ListTasks(ctx context.Context, filter TaskListFilter) ([]GenTask, int64, error) {
+	q := s.applyTaskFilter(ctx, filter, true)
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
@@ -656,6 +686,37 @@ func (s *TaskStore) ListTasks(ctx context.Context, filter TaskListFilter) ([]Gen
 		return nil, 0, err
 	}
 	return tasks, total, nil
+}
+
+// CountTaskSummary 按非状态筛选维度聚合统计各任务状态的分布数量。
+func (s *TaskStore) CountTaskSummary(ctx context.Context, filter TaskListFilter) (*TaskSummaryRecord, error) {
+	type statusCountRow struct {
+		Status string
+		Cnt    int64
+	}
+	var rows []statusCountRow
+	if err := s.applyTaskFilter(ctx, filter, false).
+		Select("status, COUNT(*) AS cnt").
+		Group("status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	summary := &TaskSummaryRecord{}
+	for _, row := range rows {
+		summary.Total += row.Cnt
+		switch row.Status {
+		case TaskStatusPending, TaskStatusExtracting, TaskStatusGenerating, TaskStatusVerifying:
+			summary.Active += row.Cnt
+		case TaskStatusReady:
+			summary.Ready += row.Cnt
+		case TaskStatusFailed:
+			summary.Failed += row.Cnt
+		case TaskStatusCanceled:
+			summary.Canceled += row.Cnt
+		}
+	}
+	return summary, nil
 }
 
 func (s *TaskStore) ListActiveTasksByRepos(ctx context.Context, repoIDs []uint) ([]GenTask, error) {

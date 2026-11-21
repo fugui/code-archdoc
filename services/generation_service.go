@@ -120,9 +120,20 @@ type GenTaskDetailVO struct {
 	ChildTasks       []GenTaskDetailVO    `json:"child_tasks,omitempty"`
 	BatchSummary     *BatchSummaryVO      `json:"batch_summary,omitempty"`
 	TriggeredBy      uint                 `json:"triggered_by"`
+	TriggeredByName  string               `json:"triggered_by_name,omitempty"`
+	CanWrite         bool                 `json:"can_write,omitempty"`
 	StartedAt        *time.Time           `json:"started_at"`
 	FinishedAt       *time.Time           `json:"finished_at"`
 	CreatedAt        time.Time            `json:"created_at"`
+}
+
+// TaskSummaryVO 汇总任务中心的各状态分布数量（受非状态筛选条件约束）。
+type TaskSummaryVO struct {
+	Total    int64 `json:"total"`
+	Active   int64 `json:"active"`
+	Ready    int64 `json:"ready"`
+	Failed   int64 `json:"failed"`
+	Canceled int64 `json:"canceled"`
 }
 
 // TaskListResponse 对应 GET /api/tasks 分页响应。
@@ -131,6 +142,7 @@ type TaskListResponse struct {
 	Total    int64             `json:"total"`
 	Page     int               `json:"page"`
 	PageSize int               `json:"page_size"`
+	Summary  *TaskSummaryVO    `json:"summary,omitempty"`
 }
 
 // CancelTaskVO 对应 POST /api/tasks/:task_id/cancel 响应。
@@ -539,6 +551,30 @@ func (o *GenerationOrchestrator) GetTaskScopesForCancel(ctx context.Context, tas
 	return task.RepoID, scopes, nil
 }
 
+func resolveUserDisplayName(u commonModels.User) string {
+	if name := strings.TrimSpace(u.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(u.Username)
+}
+
+func summarizeBatchChildren(children []models.GenTask) *BatchSummaryVO {
+	summary := &BatchSummaryVO{TotalChildren: len(children)}
+	for i := range children {
+		switch children[i].Status {
+		case models.TaskStatusReady:
+			summary.CompletedChildren++
+		case models.TaskStatusFailed:
+			summary.FailedChildren++
+		case models.TaskStatusCanceled:
+			summary.CanceledChildren++
+		default:
+			summary.RunningChildren++
+		}
+	}
+	return summary
+}
+
 // GetTaskDetail 获取主任务详情、预算熔断建议、全部槽位子任务状态及批量子任务列表。
 func (o *GenerationOrchestrator) GetTaskDetail(ctx context.Context, taskID uint) (*GenTaskDetailVO, error) {
 	task, slots, err := o.taskRepo.GetTaskWithSlots(ctx, taskID)
@@ -556,52 +592,130 @@ func (o *GenerationOrchestrator) GetTaskDetail(ctx context.Context, taskID uint)
 		}
 	}
 	vo := toGenTaskDetailVO(task, repoName, commitSHA, slots)
+	if task.TriggeredBy > 0 && o.masterRepo != nil {
+		if usersMap, uErr := o.masterRepo.GetUsersByIDs(ctx, []uint{task.TriggeredBy}); uErr == nil {
+			if u, exists := usersMap[task.TriggeredBy]; exists {
+				vo.TriggeredByName = resolveUserDisplayName(u)
+			}
+		}
+	}
 	if task.TaskKind == models.TaskKindBatch {
 		children, cErr := o.taskRepo.ListChildTasks(ctx, task.ID)
 		if cErr == nil {
 			childVOs := make([]GenTaskDetailVO, 0, len(children))
-			summary := &BatchSummaryVO{TotalChildren: len(children)}
 			for i := range children {
-				ch := &children[i]
-				childVOs = append(childVOs, toGenTaskDetailVO(ch, repoName, "", nil))
-				switch ch.Status {
-				case models.TaskStatusReady:
-					summary.CompletedChildren++
-				case models.TaskStatusFailed:
-					summary.FailedChildren++
-				case models.TaskStatusCanceled:
-					summary.CanceledChildren++
-				default:
-					summary.RunningChildren++
-				}
+				childVOs = append(childVOs, toGenTaskDetailVO(&children[i], repoName, "", nil))
 			}
 			vo.ChildTasks = childVOs
-			vo.BatchSummary = summary
+			vo.BatchSummary = summarizeBatchChildren(children)
 		}
 	}
 	return &vo, nil
 }
 
-// ListTasks 分页查询任务执行历史。
-func (o *GenerationOrchestrator) ListTasks(ctx context.Context, filter models.TaskListFilter, page, pageSize int) (*TaskListResponse, error) {
+// ListTasks 分页查询任务执行历史，并批量富化仓库名称、触发人姓名、批量摘要与作用域写权限。
+func (o *GenerationOrchestrator) ListTasks(
+	ctx context.Context,
+	user *commonModels.User,
+	filter models.TaskListFilter,
+	page, pageSize int,
+) (*TaskListResponse, error) {
 	p, ps := NormalizePagination(page, pageSize)
 	filter.Offset = (p - 1) * ps
 	filter.Limit = ps
+
+	summaryRec, err := o.taskRepo.CountTaskSummary(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
 
 	tasks, total, err := o.taskRepo.ListTasks(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
+
+	repoNameMap := make(map[uint]string)
+	userIDSet := make(map[uint]bool)
+	var userIDs []uint
+	if o.masterRepo != nil {
+		if repos, rErr := o.masterRepo.ListAllActiveRepositories(ctx, nil); rErr == nil {
+			for i := range repos {
+				repoNameMap[repos[i].ID] = repos[i].Name
+			}
+		}
+	}
+	for i := range tasks {
+		if _, ok := repoNameMap[tasks[i].RepoID]; !ok && o.masterRepo != nil {
+			if repo, rErr := o.masterRepo.GetRepository(ctx, tasks[i].RepoID); rErr == nil && repo != nil {
+				repoNameMap[tasks[i].RepoID] = repo.Name
+			}
+		}
+		uid := tasks[i].TriggeredBy
+		if uid > 0 && !userIDSet[uid] {
+			userIDSet[uid] = true
+			userIDs = append(userIDs, uid)
+		}
+	}
+
+	userNameMap := make(map[uint]string, len(userIDs))
+	if len(userIDs) > 0 && o.masterRepo != nil {
+		if usersMap, uErr := o.masterRepo.GetUsersByIDs(ctx, userIDs); uErr == nil {
+			for uid, u := range usersMap {
+				userNameMap[uid] = resolveUserDisplayName(u)
+			}
+		}
+	}
+
+	rbac := o.rbacSvc
+	if rbac == nil && o.masterRepo != nil {
+		rbac = NewRBACService(o.masterRepo)
+	}
+	type scopePermKey struct {
+		repoID uint
+		subdir string
+	}
+	permCache := make(map[scopePermKey]bool)
+
 	items := make([]GenTaskDetailVO, 0, len(tasks))
 	for i := range tasks {
-		vo := toGenTaskDetailVO(&tasks[i], "", "", nil)
+		t := &tasks[i]
+		vo := toGenTaskDetailVO(t, repoNameMap[t.RepoID], "", nil)
+		vo.TriggeredByName = userNameMap[t.TriggeredBy]
+		if t.TaskKind == models.TaskKindBatch {
+			if children, cErr := o.taskRepo.ListChildTasks(ctx, t.ID); cErr == nil {
+				vo.BatchSummary = summarizeBatchChildren(children)
+			}
+		}
+		if user != nil {
+			key := scopePermKey{repoID: t.RepoID, subdir: t.Subdirectory}
+			canWrite, cached := permCache[key]
+			if !cached {
+				if rbac != nil {
+					if allowed, permErr := rbac.CheckScopeWritePermission(ctx, user, t.RepoID, t.Subdirectory); permErr == nil {
+						canWrite = allowed
+					}
+				} else {
+					canWrite = user.HasRole(config.AdminRole)
+				}
+				permCache[key] = canWrite
+			}
+			vo.CanWrite = canWrite
+		}
 		items = append(items, vo)
 	}
+
 	return &TaskListResponse{
 		Items:    items,
 		Total:    total,
 		Page:     p,
 		PageSize: ps,
+		Summary: &TaskSummaryVO{
+			Total:    summaryRec.Total,
+			Active:   summaryRec.Active,
+			Ready:    summaryRec.Ready,
+			Failed:   summaryRec.Failed,
+			Canceled: summaryRec.Canceled,
+		},
 	}, nil
 }
 

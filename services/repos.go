@@ -53,6 +53,7 @@ type TaskRepo interface {
 	CreateTask(ctx context.Context, task *models.GenTask) error
 	GetTaskWithSlots(ctx context.Context, taskID uint) (*models.GenTask, []models.GenSlotTask, error)
 	ListTasks(ctx context.Context, filter models.TaskListFilter) ([]models.GenTask, int64, error)
+	CountTaskSummary(ctx context.Context, filter models.TaskListFilter) (*models.TaskSummaryRecord, error)
 	ListActiveTasksByRepos(ctx context.Context, repoIDs []uint) ([]models.GenTask, error)
 	TransitionTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error
 	TransitionBatchTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error

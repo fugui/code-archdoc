@@ -4,8 +4,8 @@ import type {
   GenSlotTaskVO,
   GenTaskDetailVO,
   GenerateTaskPayload,
-  PaginatedResponse,
   TaskListQuery,
+  TaskListResponse,
 } from '../types';
 import { apiRequest } from './client';
 
@@ -25,16 +25,19 @@ export async function triggerBatchGenerateTask(
   });
 }
 
-export async function listTasks(query: TaskListQuery = {}): Promise<PaginatedResponse<GenTaskDetailVO>> {
+export async function listTasks(query: TaskListQuery = {}): Promise<TaskListResponse> {
   const qs = new URLSearchParams();
   if (query.page) qs.set('page', String(query.page));
   if (query.pageSize) qs.set('page_size', String(query.pageSize));
   if (query.repoId) qs.set('repo_id', String(query.repoId));
   if (query.subdirectory !== undefined) qs.set('subdirectory', query.subdirectory);
-  if (query.status) qs.set('status', query.status);
+  if (query.status && query.status !== 'all') qs.set('status', query.status);
+  if (query.taskKind && query.taskKind !== 'all') qs.set('task_kind', query.taskKind);
+  if (query.mine) qs.set('mine', 'true');
+  if (query.topLevelOnly) qs.set('top_level_only', 'true');
 
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
-  return apiRequest<PaginatedResponse<GenTaskDetailVO>>(`/tasks${suffix}`);
+  return apiRequest<TaskListResponse>(`/tasks${suffix}`);
 }
 
 export async function getTaskDetail(taskId: number): Promise<GenTaskDetailVO> {

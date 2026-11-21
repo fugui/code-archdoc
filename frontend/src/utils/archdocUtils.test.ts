@@ -2,14 +2,19 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
+  buildModulePath,
   buildStudioPath,
+  parseArchTreeFilterParams,
   parseDriftFilterParams,
   parseEvidenceDeepLinkParams,
   parseEvidenceHref,
   parseLineRange,
   parseRepoFilterParams,
+  parseTaskFilterParams,
+  serializeArchTreeFilterParams,
   serializeDriftFilterParams,
   serializeRepoFilterParams,
+  serializeTaskFilterParams,
 } from './urlQuery.ts';
 import { ArchdocApiError, formatApiError, formatTaskErrorCode } from './errorMessages.ts';
 import { isSafeLinkHref, parseMarkdownBlocks } from './markdown.ts';
@@ -113,10 +118,82 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
     assert.equal(roundTrip.archBinding, 'unbound');
   });
 
-  it('生成 Studio 路径兼顾独立态与门户嵌入态', () => {
+  it('生成 Studio 与模块路由路径兼顾独立态与门户嵌入态', () => {
+    assert.equal(buildModulePath(false, '/arch-tree'), '/arch-tree');
+    assert.equal(buildModulePath(true, 'tasks'), '/archdoc/tasks');
     assert.equal(buildStudioPath(false, 101, { docId: 42 }), '/studio/101/docs/42');
     assert.equal(buildStudioPath(true, 101, { docId: 42 }), '/archdoc/studio/101/docs/42');
     assert.equal(buildStudioPath(false, 101, { subdirectory: 'svc/order' }), '/studio/101?subdir=svc%2Forder');
+  });
+
+  it('正确解析并双向序列化架构文档全景 (/arch-tree) 筛选参数', () => {
+    const empty = parseArchTreeFilterParams(new URLSearchParams());
+    assert.deepEqual(empty, {
+      search: '',
+      subsystemId: '',
+      docType: '',
+      status: '',
+    });
+
+    const qs = serializeArchTreeFilterParams({
+      search: 'gateway',
+      subsystemId: '5',
+      docType: 'system-architecture',
+      status: 'drifted',
+    });
+    assert.deepEqual(parseArchTreeFilterParams(qs), {
+      search: 'gateway',
+      subsystemId: '5',
+      docType: 'system-architecture',
+      status: 'drifted',
+    });
+
+    const invalid = parseArchTreeFilterParams(
+      new URLSearchParams('subsystem_id=abc&status=invalid'),
+    );
+    assert.equal(invalid.subsystemId, '');
+    assert.equal(invalid.status, '');
+  });
+
+  it('正确解析并双向序列化反推任务中心 (/tasks) 分页与筛选参数', () => {
+    const empty = parseTaskFilterParams(new URLSearchParams());
+    assert.deepEqual(empty, {
+      page: 1,
+      pageSize: 25,
+      repoId: '',
+      status: '',
+      taskKind: '',
+      mine: false,
+      includeChildren: false,
+    });
+
+    const qs = serializeTaskFilterParams({
+      page: 2,
+      pageSize: 50,
+      repoId: '18',
+      status: 'active',
+      taskKind: 'batch',
+      mine: true,
+      includeChildren: true,
+    });
+    assert.deepEqual(parseTaskFilterParams(qs), {
+      page: 2,
+      pageSize: 50,
+      repoId: '18',
+      status: 'active',
+      taskKind: 'batch',
+      mine: true,
+      includeChildren: true,
+    });
+
+    const invalid = parseTaskFilterParams(
+      new URLSearchParams('page=0&pageSize=12&repo_id=xyz&status=bad&task_kind=bad'),
+    );
+    assert.equal(invalid.page, 1);
+    assert.equal(invalid.pageSize, 25);
+    assert.equal(invalid.repoId, '');
+    assert.equal(invalid.status, '');
+    assert.equal(invalid.taskKind, '');
   });
 });
 

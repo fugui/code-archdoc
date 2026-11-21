@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, CornerDownRight, FolderTree, Loader2 } from 'lucide-react';
+import { Activity, ChevronDown, ChevronRight, CornerDownRight, FolderTree, Loader2 } from 'lucide-react';
 import type { RepoScopeCoverageVO } from '../../types';
 import { formatModuleSourceLabel } from '../../utils/moduleUtils';
 
@@ -8,9 +8,11 @@ export interface ScopeIdentityCellProps {
   showSelection?: boolean;
   isSelected?: boolean;
   isDiscovering?: boolean;
+  subdirCount?: number;
+  subdirsExpanded?: boolean;
+  onToggleSubdirs?: () => void;
   onToggleSelect?: () => void;
   onDiscoverModules?: () => void;
-  onOpenModuleGovernance?: () => void;
   onOpenActiveTask?: () => void;
 }
 
@@ -19,9 +21,11 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
   showSelection = false,
   isSelected = false,
   isDiscovering = false,
+  subdirCount,
+  subdirsExpanded = false,
+  onToggleSubdirs,
   onToggleSelect,
   onDiscoverModules,
-  onOpenModuleGovernance,
   onOpenActiveTask,
 }) => {
   const isSubdirRow = row.scope_type === 'subdir';
@@ -31,6 +35,7 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
   const sourceLabel = formatModuleSourceLabel(
     row.scope_status === 'orphan' ? 'orphan' : row.module_source,
   );
+  const effectiveSubdirCount = typeof subdirCount === 'number' ? subdirCount : activeModuleCount;
 
   return (
     <div
@@ -59,7 +64,25 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
           <>
             <span className="code-archdoc-coverage-repo-name">{row.repo_name}</span>
             <span className="code-badge code-badge--muted">整仓</span>
-            {!row.modules_scanned && activeModuleCount === 0 ? (
+
+            {typeof subdirCount === 'number' && subdirCount > 0 && onToggleSubdirs ? (
+              <button
+                type="button"
+                className={`code-archdoc-coverage-module-pill ${
+                  subdirsExpanded ? 'code-archdoc-coverage-module-pill--expanded' : ''
+                }`}
+                onClick={onToggleSubdirs}
+                aria-expanded={subdirsExpanded}
+                title={
+                  subdirsExpanded
+                    ? '点击收起该仓库下的一级子目录行'
+                    : `点击展开该仓库下的 ${subdirCount} 个子目录覆盖行`
+                }
+              >
+                {subdirsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span>{subdirCount} 个子模块</span>
+              </button>
+            ) : !row.modules_scanned && activeModuleCount === 0 ? (
               row.can_write && onDiscoverModules ? (
                 <button
                   type="button"
@@ -75,32 +98,12 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
                   )}
                   <span>{isDiscovering ? '扫描中...' : '发现一级目录'}</span>
                 </button>
-              ) : (
-                onOpenModuleGovernance && (
-                  <button
-                    type="button"
-                    className="code-archdoc-coverage-module-pill"
-                    onClick={onOpenModuleGovernance}
-                    title="查看仓库模块发现索引"
-                  >
-                    <FolderTree size={12} />
-                    <span>查看模块</span>
-                  </button>
-                )
-              )
+              ) : null
             ) : (
-              onOpenModuleGovernance && (
-                <button
-                  type="button"
-                  className="code-archdoc-coverage-module-pill"
-                  onClick={onOpenModuleGovernance}
-                  title="点击打开模块发现与子目录治理弹窗"
-                >
-                  <FolderTree size={12} />
-                  <span>
-                    {activeModuleCount > 0 ? `${activeModuleCount} 个子模块` : '单仓 · 模块治理'}
-                  </span>
-                </button>
+              effectiveSubdirCount > 0 && (
+                <span className="code-badge code-badge--purple">
+                  {effectiveSubdirCount} 个子模块
+                </span>
               )
             )}
           </>
@@ -109,7 +112,7 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
         {row.scope_status === 'missing' && (
           <span
             className="code-badge code-badge--warning"
-            title="该子目录在最近提交中已缺失，可在模块治理中迁移文档"
+            title="该子目录在最近提交中已缺失，可在仓库更多操作「模块发现与目录迁移」中处理"
           >
             目录已缺失
           </span>
@@ -118,7 +121,7 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
         {row.scope_status === 'orphan' && (
           <span
             className="code-badge code-badge--warning"
-            title="历史遗留子目录文档范围（未在当前模块索引中），建议在模块治理中迁移"
+            title="历史遗留子目录文档范围（未在当前模块索引中），建议在模块发现与目录迁移中处理"
           >
             孤立范围
           </span>

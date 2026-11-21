@@ -1,6 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { BarChart3, Cpu, FileText, FolderGit2, LogOut, Moon, Radar, Sun } from 'lucide-react';
+import {
+  BarChart3,
+  Cpu,
+  FileText,
+  FolderGit2,
+  ListChecks,
+  ListTree,
+  LogOut,
+  Moon,
+  Radar,
+  Sun,
+} from 'lucide-react';
 import {
   AUTH_TOKEN_KEY,
   ConfirmProvider,
@@ -22,10 +33,12 @@ import {
 import { ModuleUserProvider, useModuleUser } from './context/ModuleUserContext';
 import AdminDocTypesPage from './pages/AdminDocTypesPage';
 import AdminLLMConfigPage from './pages/AdminLLMConfigPage';
+import ArchTreeCoveragePage from './pages/ArchTreeCoveragePage';
 import CanvasStudioPage from './pages/CanvasStudioPage';
 import DriftRadarPage from './pages/DriftRadarPage';
 import QualityMetricsPage from './pages/QualityMetricsPage';
 import RepoCoveragePage from './pages/RepoCoveragePage';
+import TaskCenterPage from './pages/TaskCenterPage';
 import type { CurrentUserProfile } from './types';
 
 // 在微前端嵌入模式下自动将 /api/* 重写为 /archdoc/api/* 并注入 Bearer Token
@@ -49,6 +62,12 @@ const EmbeddedRoutes: React.FC = () => {
 
       <Route path="/repos" element={<RepoCoveragePage />} />
       <Route path={`${MODULE_BASE_PATH}/repos`} element={<RepoCoveragePage />} />
+
+      <Route path="/arch-tree" element={<ArchTreeCoveragePage />} />
+      <Route path={`${MODULE_BASE_PATH}/arch-tree`} element={<ArchTreeCoveragePage />} />
+
+      <Route path="/tasks" element={<TaskCenterPage />} />
+      <Route path={`${MODULE_BASE_PATH}/tasks`} element={<TaskCenterPage />} />
 
       <Route path="/drift" element={<DriftRadarPage />} />
       <Route path={`${MODULE_BASE_PATH}/drift`} element={<DriftRadarPage />} />
@@ -109,6 +128,8 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   const pathname = location.pathname;
   const isRepos = pathname === '/' || pathname.startsWith('/repos');
+  const isArchTree = pathname.startsWith('/arch-tree');
+  const isTasks = pathname.startsWith('/tasks');
   const isStudio = pathname.startsWith('/studio') || pathname.startsWith('/docs/');
   const isDrift = pathname.startsWith('/drift');
   const isMetrics = pathname.startsWith('/metrics');
@@ -119,13 +140,17 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     ? '文档类型管理 (DocType 注册表)'
     : isAdminLLM
       ? 'LLM 模型配置与探活'
-      : isDrift
-        ? '章节级双维漂移雷达'
-        : isMetrics
-          ? '生成质量度量与修订纵向对比'
-          : isStudio
-            ? 'Canvas Studio 协同审校工作台'
-            : '仓库与文档覆盖矩阵';
+      : isTasks
+        ? '反推任务中心'
+        : isArchTree
+          ? '架构文档全景'
+          : isDrift
+            ? '章节级双维漂移雷达'
+            : isMetrics
+              ? '生成质量度量与修订纵向对比'
+              : isStudio
+                ? 'Canvas Studio 协同审校工作台'
+                : '仓库文档覆盖';
 
   return (
     <div className="code-archdoc-shell">
@@ -140,7 +165,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
         <nav className="code-archdoc-nav">
           <div className="code-archdoc-nav-group">
-            <div className="code-archdoc-nav-group-title">核心业务</div>
+            <div className="code-archdoc-nav-group-title">文档全景</div>
             <Link
               to="/repos"
               className={`code-archdoc-nav-link ${
@@ -148,7 +173,29 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               }`}
             >
               <FolderGit2 size={17} />
-              <span>仓库与文档覆盖</span>
+              <span>仓库文档覆盖</span>
+            </Link>
+            <Link
+              to="/arch-tree"
+              className={`code-archdoc-nav-link ${
+                isArchTree ? 'code-archdoc-nav-link--active' : ''
+              }`}
+            >
+              <ListTree size={17} />
+              <span>架构文档全景</span>
+            </Link>
+          </div>
+
+          <div className="code-archdoc-nav-group">
+            <div className="code-archdoc-nav-group-title">生产与保鲜</div>
+            <Link
+              to="/tasks"
+              className={`code-archdoc-nav-link ${
+                isTasks ? 'code-archdoc-nav-link--active' : ''
+              }`}
+            >
+              <ListChecks size={17} />
+              <span>反推任务中心</span>
             </Link>
             <Link
               to="/drift"
@@ -225,6 +272,8 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           <Routes>
             <Route path="/" element={<Navigate to="/repos" replace />} />
             <Route path="/repos" element={<RepoCoveragePage />} />
+            <Route path="/arch-tree" element={<ArchTreeCoveragePage />} />
+            <Route path="/tasks" element={<TaskCenterPage />} />
             <Route path="/drift" element={<DriftRadarPage />} />
             <Route path="/metrics" element={<QualityMetricsPage />} />
             <Route path="/studio/:repoId" element={<CanvasStudioPage />} />

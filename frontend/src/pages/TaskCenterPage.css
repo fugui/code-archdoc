@@ -1,0 +1,267 @@
+/* ==========================================================================
+   TaskCenterPage 样式（Flat BEM .code-archdoc-task-*，全量 --color-* Token）
+   ========================================================================== */
+
+.code-archdoc-task-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.code-archdoc-task-kpi-btn {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.code-archdoc-task-kpi-btn:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-task-kpi-btn--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-task-toolbar {
+  padding: 0.9rem 1.15rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-task-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.code-archdoc-task-select {
+  min-width: 150px;
+  max-width: 220px;
+}
+
+.code-archdoc-task-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.38rem 0.65rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-muted);
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-task-toggle:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-task-live-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.76rem;
+  color: var(--color-primary);
+  white-space: nowrap;
+}
+
+.code-archdoc-task-table-card {
+  overflow: hidden;
+}
+
+.code-archdoc-task-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.code-archdoc-task-id-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  align-items: flex-start;
+}
+
+.code-archdoc-task-id-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-task-scope-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.code-archdoc-task-repo-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+}
+
+.code-archdoc-task-scope-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-task-doctypes {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  max-width: 240px;
+}
+
+.code-archdoc-task-status-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+  min-width: 165px;
+}
+
+.code-archdoc-task-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-task-progress-track {
+  width: 84px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.code-archdoc-task-progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  transition: width 0.2s ease;
+}
+
+.code-archdoc-task-progress-fill--ready {
+  background: var(--color-success);
+}
+
+.code-archdoc-task-progress-fill--failed {
+  background: var(--color-danger);
+}
+
+.code-archdoc-task-progress-fill--canceled {
+  background: var(--color-text-muted);
+}
+
+.code-archdoc-task-err-snippet {
+  font-size: 0.72rem;
+  color: var(--color-danger);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-archdoc-task-batch-snippet {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-task-meta-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  font-size: 0.78rem;
+}
+
+.code-archdoc-task-trigger-user {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-task-pagination {
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-task-launch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.code-archdoc-task-launch-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.code-archdoc-task-launch-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-task-launch-mode:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-task-launch-mode--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.code-archdoc-task-launch-mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.code-archdoc-task-launch-mode-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-task-launch-mode-desc {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
+@media (max-width: 1080px) {
+  .code-archdoc-task-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .code-archdoc-task-kpis,
+  .code-archdoc-task-launch-modes {
+    grid-template-columns: 1fr;
+  }
+}

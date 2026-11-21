@@ -12,6 +12,8 @@ import type {
   ScopeProfileConfig,
   SectionOwnership,
   SlotDefinition,
+  TaskKindFilter,
+  TaskStatusFilter,
   VerifyPolicyConfig,
 } from './domain';
 
@@ -96,7 +98,10 @@ export interface TaskListQuery {
   pageSize?: number;
   repoId?: number;
   subdirectory?: string;
-  status?: string;
+  status?: TaskStatusFilter;
+  taskKind?: TaskKindFilter;
+  mine?: boolean;
+  topLevelOnly?: boolean;
 }
 
 export interface UpdateSectionPayload {

@@ -3,13 +3,14 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   FolderGit2,
   Layers,
   Layers3,
-  ListTree,
   RefreshCw,
   RotateCcw,
-  Table2,
+  SlidersHorizontal,
   X,
 } from 'lucide-react';
 import {
@@ -21,7 +22,6 @@ import {
 } from '@code/common';
 import { exportDocumentsZip } from '../api/documents';
 import {
-  getArchTree,
   listDepartments,
   listDocTypes,
   listRepos,
@@ -31,14 +31,11 @@ import GenerateTaskModal, { type GenerateTaskScope } from '../components/Generat
 import ModuleGovernanceModal, {
   type ModuleGovernanceTarget,
 } from '../components/ModuleGovernanceModal';
-import ArchTreeView from '../components/coverage/ArchTreeView';
 import ScopeCoverageTable from '../components/coverage/ScopeCoverageTable';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
   ArchBindingFilter,
   ArchSubsystemOptionVO,
-  ArchTreeResponse,
-  CoverageViewMode,
   DepartmentVO,
   DocTypeSummaryVO,
   RepoCoverageSummaryVO,
@@ -50,8 +47,10 @@ import { groupDocTypesByCategory } from '../utils/docTypeUtils';
 import { formatApiError } from '../utils/errorMessages';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
+  buildModulePath,
   buildStudioPath,
   parseRepoFilterParams,
+  serializeArchTreeFilterParams,
   serializeRepoFilterParams,
   shortSha,
 } from '../utils/urlQuery';
@@ -80,14 +79,21 @@ export const RepoCoveragePage: React.FC = () => {
   const { page, pageSize } = usePagination({ defaultPageSize: DEFAULT_ARCHDOC_PAGE_SIZE });
   const filterState = useMemo(() => parseRepoFilterParams(searchParams), [searchParams]);
 
+  const advancedFilterCount = useMemo(
+    () =>
+      [filterState.subsystemId, filterState.archBinding, filterState.scopeType].filter(Boolean)
+        .length,
+    [filterState.subsystemId, filterState.archBinding, filterState.scopeType],
+  );
+
   const [searchInput, setSearchInput] = useState<string>(filterState.search);
   const debouncedSearch = useDebounce(searchInput, 300);
+  const [advancedOpen, setAdvancedOpen] = useState<boolean>(() => advancedFilterCount > 0);
 
   const [departments, setDepartments] = useState<DepartmentVO[]>([]);
   const [subsystems, setSubsystems] = useState<ArchSubsystemOptionVO[]>([]);
   const [docTypes, setDocTypes] = useState<DocTypeSummaryVO[]>([]);
   const [rows, setRows] = useState<RepoScopeCoverageVO[]>([]);
-  const [archTreeData, setArchTreeData] = useState<ArchTreeResponse | null>(null);
   const [total, setTotal] = useState<number>(0);
   const [summary, setSummary] = useState<RepoCoverageSummaryVO>({
     total_scopes: 0,
@@ -102,6 +108,7 @@ export const RepoCoveragePage: React.FC = () => {
   const [selectedRepoName, setSelectedRepoName] = useState<string>('');
   const [selectedSubdirs, setSelectedSubdirs] = useState<string[]>([]);
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
+  const [expandedSubdirRepos, setExpandedSubdirRepos] = useState<Set<number>>(new Set());
 
   const [taskModal, setTaskModal] = useState<ModalLaunchState>({
     open: false,
@@ -113,19 +120,48 @@ export const RepoCoveragePage: React.FC = () => {
     target: null,
   });
 
-  // 浏览器前进/后退时同步搜索输入框
+  // 兼容历史链接 /repos?view=arch：自动重定向至独立页面「架构文档全景」(/arch-tree)
+  useEffect(() => {
+    if (filterState.view !== 'arch') return;
+    const qs = serializeArchTreeFilterParams({
+      search: filterState.search,
+      subsystemId: filterState.subsystemId,
+      docType: filterState.docType,
+      status: filterState.status,
+    });
+    const base = buildModulePath(isEmbedded, '/arch-tree');
+    const target = qs.toString() ? `${base}?${qs.toString()}` : base;
+    navigate(target, { replace: true });
+  }, [
+    filterState.view,
+    filterState.search,
+    filterState.subsystemId,
+    filterState.docType,
+    filterState.status,
+    isEmbedded,
+    navigate,
+  ]);
+
+  // 浏览器前进/后退时同步搜索输入框与高级筛选折叠态
   useEffect(() => {
     setSearchInput(filterState.search);
   }, [filterState.search]);
 
+  useEffect(() => {
+    if (advancedFilterCount > 0) {
+      setAdvancedOpen(true);
+    }
+  }, [advancedFilterCount]);
+
   // 防抖搜索词回写 URL 并重置第 1 页
   useEffect(() => {
+    if (filterState.view === 'arch') return;
     if (debouncedSearch.trim() === filterState.search) return;
     setSearchParams(
       (prev) => serializeRepoFilterParams({ search: debouncedSearch.trim(), page: 1 }, prev),
       { replace: true },
     );
-  }, [debouncedSearch, filterState.search, setSearchParams]);
+  }, [debouncedSearch, filterState.search, filterState.view, setSearchParams]);
 
   // 拉取部门与启用中的 DocType 主数据
   useEffect(() => {
@@ -148,28 +184,9 @@ export const RepoCoveragePage: React.FC = () => {
   const docTypeGroups = useMemo(() => groupDocTypesByCategory(docTypes), [docTypes]);
 
   const fetchCoverage = useCallback(async () => {
+    if (filterState.view === 'arch') return;
     setLoading(true);
     try {
-      if (filterState.view === 'arch') {
-        const res = await getArchTree({
-          search: filterState.search,
-          departmentId: filterState.departmentId,
-          docType: filterState.docType,
-          status: filterState.status,
-          scopeType: filterState.scopeType,
-          subsystemId: filterState.subsystemId,
-          archBinding: filterState.archBinding,
-        });
-        setArchTreeData(res);
-        if (res.summary) {
-          setSummary(res.summary);
-        }
-        if (Array.isArray(res.subsystems)) {
-          setSubsystems(res.subsystems);
-        }
-        return;
-      }
-
       const res = await listRepos({
         page,
         pageSize,
@@ -241,7 +258,6 @@ export const RepoCoveragePage: React.FC = () => {
   }, []);
 
   const updateFilter = (patch: {
-    view?: CoverageViewMode;
     departmentId?: string;
     docType?: string;
     status?: RepoStatusFilter;
@@ -249,9 +265,6 @@ export const RepoCoveragePage: React.FC = () => {
     subsystemId?: string;
     archBinding?: ArchBindingFilter;
   }) => {
-    if (patch.view && patch.view !== filterState.view) {
-      clearSubdirSelection();
-    }
     setSearchParams((prev) => serializeRepoFilterParams({ ...patch, page: 1 }, prev));
   };
 
@@ -281,6 +294,18 @@ export const RepoCoveragePage: React.FC = () => {
         next.delete(rowKey);
       } else {
         next.add(rowKey);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleSubdirRepo = useCallback((repoId: number) => {
+    setExpandedSubdirRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(repoId)) {
+        next.delete(repoId);
+      } else {
+        next.add(repoId);
       }
       return next;
     });
@@ -339,6 +364,11 @@ export const RepoCoveragePage: React.FC = () => {
       try {
         const res = await refreshRepoModules(row.repo_id);
         if (res.active_count > 0) {
+          setExpandedSubdirRepos((prev) => {
+            const next = new Set(prev);
+            next.add(row.repo_id);
+            return next;
+          });
           showToast(
             `已完成仓库 ${row.repo_name} 一级目录扫描（${shortSha(res.commit_sha)}），发现 ${res.active_count} 个子模块`,
             'success',
@@ -430,13 +460,68 @@ export const RepoCoveragePage: React.FC = () => {
       filterState.archBinding,
   );
 
+  // 当前页中存在整仓父行的仓库 ID 集合，以及按仓库聚合的子目录行数
+  const repoRowIds = useMemo(
+    () => new Set(rows.filter((r) => r.scope_type === 'repo').map((r) => r.repo_id)),
+    [rows],
+  );
+
+  const subdirCountsByRepo = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const r of rows) {
+      if (r.scope_type === 'subdir' && repoRowIds.has(r.repo_id)) {
+        counts.set(r.repo_id, (counts.get(r.repo_id) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [rows, repoRowIds]);
+
+  const visibleRows = useMemo(() => {
+    if (hasActiveFilters) {
+      return rows;
+    }
+    return rows.filter(
+      (r) =>
+        !(
+          r.scope_type === 'subdir' &&
+          repoRowIds.has(r.repo_id) &&
+          !expandedSubdirRepos.has(r.repo_id)
+        ),
+    );
+  }, [rows, hasActiveFilters, repoRowIds, expandedSubdirRepos]);
+
+  const collapsibleRepoIds = useMemo(() => Array.from(subdirCountsByRepo.keys()), [subdirCountsByRepo]);
+  const allPageSubdirsExpanded =
+    collapsibleRepoIds.length > 0 &&
+    collapsibleRepoIds.every((id) => expandedSubdirRepos.has(id));
+
+  const toggleAllPageSubdirs = () => {
+    if (allPageSubdirsExpanded) {
+      setExpandedSubdirRepos((prev) => {
+        const next = new Set(prev);
+        collapsibleRepoIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setExpandedSubdirRepos((prev) => {
+        const next = new Set(prev);
+        collapsibleRepoIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+  };
+
+  if (filterState.view === 'arch') {
+    return null;
+  }
+
   return (
     <div className="code-archdoc-workspace">
       <div className="code-archdoc-page-header">
         <div>
-          <h1 className="code-archdoc-page-title">仓库与文档覆盖矩阵</h1>
+          <h1 className="code-archdoc-page-title">仓库文档覆盖</h1>
           <p className="code-archdoc-page-subtitle">
-            按代码仓库、Monorepo 子目录与平台架构元素追踪各类设计文档的生成、审校、定稿发布与漂移状态。
+            按代码仓库与 Monorepo 子目录追踪设计文档覆盖率、生成进度与定稿状态。
           </p>
         </div>
         <div className="code-archdoc-page-actions">
@@ -492,13 +577,13 @@ export const RepoCoveragePage: React.FC = () => {
         </div>
       </div>
 
-      {/* URL 双向同步筛选与双视角切换工具栏 */}
-      <div className="code-card code-archdoc-coverage-toolbar">
+      {/* 单行高频筛选 + 可折叠更多筛选 */}
+      <div className="code-card code-archdoc-coverage-toolbar code-archdoc-coverage-toolbar-stack">
         <div className="code-archdoc-coverage-filters">
           <input
             type="text"
             className="code-input code-archdoc-coverage-search"
-            placeholder="搜索仓库名、子目录路径或架构元素名称..."
+            placeholder="搜索仓库名、子目录路径或架构元素..."
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             aria-label="仓库关键词搜索"
@@ -516,31 +601,6 @@ export const RepoCoveragePage: React.FC = () => {
                 {d.name}
               </option>
             ))}
-          </select>
-
-          <select
-            className="code-select code-archdoc-coverage-select"
-            value={filterState.subsystemId}
-            onChange={(e) => updateFilter({ subsystemId: e.target.value })}
-            aria-label="按架构子系统筛选"
-          >
-            <option value="">全部子系统</option>
-            {subsystems.map((sub) => (
-              <option key={sub.id} value={String(sub.id)}>
-                {sub.name_cn || sub.name_en || sub.identifier} ({sub.scope_count})
-              </option>
-            ))}
-          </select>
-
-          <select
-            className="code-select code-archdoc-coverage-select"
-            value={filterState.archBinding}
-            onChange={(e) => updateFilter({ archBinding: e.target.value as ArchBindingFilter })}
-            aria-label="按架构关联状态筛选"
-          >
-            <option value="">全部架构关联</option>
-            <option value="bound">已关联架构元素</option>
-            <option value="unbound">未关联架构元素</option>
           </select>
 
           <select
@@ -574,16 +634,21 @@ export const RepoCoveragePage: React.FC = () => {
             <option value="missing">未生成</option>
           </select>
 
-          <select
-            className="code-select code-archdoc-coverage-select"
-            value={filterState.scopeType}
-            onChange={(e) => updateFilter({ scopeType: e.target.value as RepoScopeFilter })}
-            aria-label="按范围粒度筛选"
+          <button
+            type="button"
+            className={`code-archdoc-ghost-btn ${
+              advancedOpen || advancedFilterCount > 0 ? 'code-archdoc-ghost-btn--active' : ''
+            }`}
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((prev) => !prev)}
           >
-            <option value="">全部粒度</option>
-            <option value="repo">整仓</option>
-            <option value="subdir">Monorepo 子目录</option>
-          </select>
+            <SlidersHorizontal size={13} />
+            <span>更多筛选</span>
+            {advancedFilterCount > 0 && (
+              <span className="code-archdoc-filter-badge">{advancedFilterCount}</span>
+            )}
+            {advancedOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
 
           {hasActiveFilters && (
             <button type="button" className="code-archdoc-ghost-btn" onClick={resetFilters}>
@@ -593,36 +658,49 @@ export const RepoCoveragePage: React.FC = () => {
           )}
         </div>
 
-        <div className="code-archdoc-view-switcher" role="tablist" aria-label="覆盖矩阵浏览视角">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={filterState.view === 'repo'}
-            className={`code-archdoc-view-tab ${
-              filterState.view === 'repo' ? 'code-archdoc-view-tab--active' : ''
-            }`}
-            onClick={() => updateFilter({ view: 'repo' })}
-          >
-            <Table2 size={14} />
-            <span>仓库视角</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={filterState.view === 'arch'}
-            className={`code-archdoc-view-tab ${
-              filterState.view === 'arch' ? 'code-archdoc-view-tab--active' : ''
-            }`}
-            onClick={() => updateFilter({ view: 'arch' })}
-          >
-            <ListTree size={14} />
-            <span>架构树视角</span>
-          </button>
-        </div>
+        {advancedOpen && (
+          <div className="code-archdoc-coverage-advanced-filters">
+            <select
+              className="code-select code-archdoc-coverage-select"
+              value={filterState.subsystemId}
+              onChange={(e) => updateFilter({ subsystemId: e.target.value })}
+              aria-label="按架构子系统筛选"
+            >
+              <option value="">全部子系统</option>
+              {subsystems.map((sub) => (
+                <option key={sub.id} value={String(sub.id)}>
+                  {sub.name_cn || sub.name_en || sub.identifier} ({sub.scope_count})
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="code-select code-archdoc-coverage-select"
+              value={filterState.archBinding}
+              onChange={(e) => updateFilter({ archBinding: e.target.value as ArchBindingFilter })}
+              aria-label="按架构关联状态筛选"
+            >
+              <option value="">全部架构关联</option>
+              <option value="bound">已关联架构元素</option>
+              <option value="unbound">未关联架构元素</option>
+            </select>
+
+            <select
+              className="code-select code-archdoc-coverage-select"
+              value={filterState.scopeType}
+              onChange={(e) => updateFilter({ scopeType: e.target.value as RepoScopeFilter })}
+              aria-label="按范围粒度筛选"
+            >
+              <option value="">全部粒度</option>
+              <option value="repo">整仓</option>
+              <option value="subdir">Monorepo 子目录</option>
+            </select>
+          </div>
+        )}
       </div>
 
-      {/* 同仓多选一级目录批量生成操作条（仓库视角） */}
-      {filterState.view === 'repo' && selectedRepoId !== null && selectedSubdirs.length > 0 && (
+      {/* 同仓多选一级目录批量生成操作条 */}
+      {selectedRepoId !== null && selectedSubdirs.length > 0 && (
         <div className="code-archdoc-coverage-selection-bar">
           <div className="code-archdoc-coverage-selection-info">
             <Layers3 size={15} />
@@ -652,127 +730,122 @@ export const RepoCoveragePage: React.FC = () => {
         </div>
       )}
 
-      {/* 主视图区域：仓库视角 / 架构树视角 */}
-      {filterState.view === 'arch' ? (
-        <ArchTreeView
-          data={archTreeData}
-          loading={loading}
-          docTypes={docTypes}
-          focusedDocTypeSlug={filterState.docType}
-          expandedDocRowKeys={expandedRowKeys}
-          discoveringRepoId={discoveringRepoId}
-          exportingKey={exportingKey}
-          hasActiveFilters={hasActiveFilters}
-          onResetFilters={resetFilters}
-          onToggleDocRowExpand={toggleExpandRow}
-          onDiscoverModules={(r) => void handleDiscoverRepoModules(r)}
-          onOpenModuleGovernance={openModuleGovernanceModal}
-          onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
-          onOpenStudio={openStudio}
-          onTriggerGenerate={(r, slug) =>
-            openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
-          }
-          onBatchGenerate={(r) => openGenerateModal(r, { batchMode: true })}
-          onExportZip={(r) => void handleExportRowZip(r)}
-        />
-      ) : (
-        <div className="code-card code-archdoc-coverage-table-card">
-          {loading ? (
-            <table className="code-table">
-              <thead>
-                <tr>
-                  <th>仓库 / 子目录范围</th>
-                  <th>所属架构元素</th>
-                  <th>负责人与提交</th>
-                  <th>文档覆盖（{docTypes.length} 类）</th>
-                  <th className="code-archdoc-coverage-actions-col">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <EmptyState
-                  inTable
-                  colSpan={5}
-                  compact
-                  title="正在加载仓库覆盖矩阵..."
-                  description="正在汇总各仓库与子目录的文档状态"
-                />
-              </tbody>
-            </table>
-          ) : rows.length === 0 ? (
-            <table className="code-table">
-              <thead>
-                <tr>
-                  <th>仓库 / 子目录范围</th>
-                  <th>所属架构元素</th>
-                  <th>负责人与提交</th>
-                  <th>文档覆盖（{docTypes.length} 类）</th>
-                  <th className="code-archdoc-coverage-actions-col">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <EmptyState
-                  inTable
-                  colSpan={5}
-                  type={hasActiveFilters ? 'search' : 'data'}
-                  title={hasActiveFilters ? '未找到匹配当前筛选条件的范围' : '暂无可用代码仓库'}
-                  description={
-                    hasActiveFilters
-                      ? '请调整搜索词或点击“重置筛选”查看全部仓库'
-                      : '请先在平台中纳管代码仓库或架构元素'
-                  }
-                  action={
-                    hasActiveFilters ? (
-                      <button
-                        type="button"
-                        className="code-archdoc-ghost-btn"
-                        onClick={resetFilters}
-                      >
-                        重置筛选
-                      </button>
-                    ) : undefined
-                  }
-                />
-              </tbody>
-            </table>
-          ) : (
-            <div className="code-archdoc-coverage-table-wrap">
-              <ScopeCoverageTable
-                rows={rows}
-                docTypes={docTypes}
-                focusedDocTypeSlug={filterState.docType}
-                expandedRowKeys={expandedRowKeys}
-                showArchColumn
-                showSelection
-                selectedRepoId={selectedRepoId}
-                selectedSubdirs={selectedSubdirs}
-                discoveringRepoId={discoveringRepoId}
-                exportingKey={exportingKey}
-                onToggleExpandRow={toggleExpandRow}
-                onToggleSelectSubdir={toggleSubdirRowSelection}
-                onDiscoverModules={(r) => void handleDiscoverRepoModules(r)}
-                onOpenModuleGovernance={openModuleGovernanceModal}
-                onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
-                onOpenStudio={openStudio}
-                onTriggerGenerate={(r, slug) =>
-                  openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
-                }
-                onBatchGenerate={(r) => openGenerateModal(r, { batchMode: true })}
-                onExportZip={(r) => void handleExportRowZip(r)}
-              />
-            </div>
-          )}
+      {/* 主表格区 */}
+      <div className="code-card code-archdoc-coverage-table-card">
+        {!loading && !hasActiveFilters && collapsibleRepoIds.length > 0 && (
+          <div className="code-archdoc-coverage-table-bar">
+            <span className="text-secondary">
+              当前页含 {collapsibleRepoIds.length} 个多模块仓库，默认按仓库折叠子目录（点击「N 个子模块」即可展开）。
+            </span>
+            <button
+              type="button"
+              className="code-archdoc-ghost-btn"
+              onClick={toggleAllPageSubdirs}
+            >
+              {allPageSubdirsExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              <span>{allPageSubdirsExpanded ? '收起当前页子目录' : '展开当前页子目录'}</span>
+            </button>
+          </div>
+        )}
 
-          {total > 0 && (
-            <div className="code-archdoc-coverage-pagination">
-              <Pagination
-                totalItems={total}
-                defaultPageSize={DEFAULT_ARCHDOC_PAGE_SIZE}
-                pageSizeOptions={[15, 25, 50, 100]}
+        {loading ? (
+          <table className="code-table">
+            <thead>
+              <tr>
+                <th>仓库 / 子目录范围</th>
+                <th>所属架构元素</th>
+                <th>负责人与提交</th>
+                <th>文档覆盖（{docTypes.length} 类）</th>
+                <th className="code-archdoc-coverage-actions-col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <EmptyState
+                inTable
+                colSpan={5}
+                compact
+                title="正在加载仓库覆盖矩阵..."
+                description="正在汇总各仓库与子目录的文档状态"
               />
-            </div>
-          )}
-        </div>
-      )}
+            </tbody>
+          </table>
+        ) : visibleRows.length === 0 ? (
+          <table className="code-table">
+            <thead>
+              <tr>
+                <th>仓库 / 子目录范围</th>
+                <th>所属架构元素</th>
+                <th>负责人与提交</th>
+                <th>文档覆盖（{docTypes.length} 类）</th>
+                <th className="code-archdoc-coverage-actions-col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <EmptyState
+                inTable
+                colSpan={5}
+                type={hasActiveFilters ? 'search' : 'data'}
+                title={hasActiveFilters ? '未找到匹配当前筛选条件的范围' : '暂无可用代码仓库'}
+                description={
+                  hasActiveFilters
+                    ? '请调整搜索词或点击“重置筛选”查看全部仓库'
+                    : '请先在平台中纳管代码仓库或架构元素'
+                }
+                action={
+                  hasActiveFilters ? (
+                    <button
+                      type="button"
+                      className="code-archdoc-ghost-btn"
+                      onClick={resetFilters}
+                    >
+                      重置筛选
+                    </button>
+                  ) : undefined
+                }
+              />
+            </tbody>
+          </table>
+        ) : (
+          <div className="code-archdoc-coverage-table-wrap">
+            <ScopeCoverageTable
+              rows={visibleRows}
+              docTypes={docTypes}
+              focusedDocTypeSlug={filterState.docType}
+              expandedRowKeys={expandedRowKeys}
+              showArchColumn
+              showSelection
+              selectedRepoId={selectedRepoId}
+              selectedSubdirs={selectedSubdirs}
+              discoveringRepoId={discoveringRepoId}
+              exportingKey={exportingKey}
+              subdirCountsByRepo={hasActiveFilters ? undefined : subdirCountsByRepo}
+              expandedSubdirRepos={hasActiveFilters ? undefined : expandedSubdirRepos}
+              onToggleSubdirRepo={hasActiveFilters ? undefined : toggleSubdirRepo}
+              onToggleExpandRow={toggleExpandRow}
+              onToggleSelectSubdir={toggleSubdirRowSelection}
+              onDiscoverModules={(r) => void handleDiscoverRepoModules(r)}
+              onOpenModuleGovernance={openModuleGovernanceModal}
+              onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
+              onOpenStudio={openStudio}
+              onTriggerGenerate={(r, slug) =>
+                openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
+              }
+              onBatchGenerate={(r) => openGenerateModal(r, { batchMode: true })}
+              onExportZip={(r) => void handleExportRowZip(r)}
+            />
+          </div>
+        )}
+
+        {total > 0 && (
+          <div className="code-archdoc-coverage-pagination">
+            <Pagination
+              totalItems={total}
+              defaultPageSize={DEFAULT_ARCHDOC_PAGE_SIZE}
+              pageSizeOptions={[15, 25, 50, 100]}
+            />
+          </div>
+        )}
+      </div>
 
       {/* 生成任务触发与实时进度监控弹窗（兼容单范围与批量分层编排） */}
       <GenerateTaskModal
@@ -787,6 +860,7 @@ export const RepoCoveragePage: React.FC = () => {
         onTaskCompleted={() => void fetchCoverage()}
         onModulesRefreshed={() => void fetchCoverage()}
         onOpenStudio={openStudio}
+        onOpenTaskCenter={() => navigate(buildModulePath(isEmbedded, '/tasks'))}
       />
 
       {/* 仓库模块发现与子目录迁移治理弹窗 */}
