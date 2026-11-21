@@ -585,12 +585,18 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
         repoName={doc?.repo_name || repoMeta?.repoName}
         subdirectory={effectiveSubdir}
         drawerOpen={drawerOpen}
+        activeDrawerTab={drawerTab}
+        activeChatSubTab={chatSubTab}
         pendingReviewCount={pendingReviewCount}
         publishing={publishing}
         unpublishing={unpublishing}
         exporting={exporting}
         onBackToRepos={handleBackToRepos}
         onToggleDrawer={() => setDrawerOpen((prev) => !prev)}
+        onOpenEvidence={() => {
+          setDrawerTab('evidence');
+          setDrawerOpen(true);
+        }}
         onOpenHistory={() => {
           setDrawerTab('history');
           setDrawerOpen(true);
@@ -772,7 +778,6 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
             reviewDraftContext={reviewDraftContext}
             wideDrawer={wideDrawer}
             onToggleWide={() => setWideDrawer((w) => !w)}
-            onChangeTab={setDrawerTab}
             onChangeChatSubTab={setChatSubTab}
             onClose={() => setDrawerOpen(false)}
             onRolledBack={(updatedDoc) => setDoc(updatedDoc)}

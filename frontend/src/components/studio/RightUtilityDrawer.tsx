@@ -1,5 +1,5 @@
 import React from 'react';
-import { Code2, History, Maximize2, MessageSquareText, Minimize2, X } from 'lucide-react';
+import { Code2, History, ListChecks, Maximize2, MessageSquareText, Minimize2, X } from 'lucide-react';
 import type {
   ChatIntentMode,
   DocumentDetailVO,
@@ -26,7 +26,6 @@ export interface RightUtilityDrawerProps {
   reviewDraftContext?: ReviewDraftContext | null;
   wideDrawer?: boolean;
   onToggleWide?: () => void;
-  onChangeTab: (tab: RightDrawerTab) => void;
   onChangeChatSubTab?: (sub: 'basket' | 'chat') => void;
   onClose: () => void;
   onRolledBack: (updatedDoc: DocumentDetailVO) => void;
@@ -35,6 +34,43 @@ export interface RightUtilityDrawerProps {
   onSelectCommentOnCanvas?: (comment: ReviewCommentVO) => void;
   onClearDraftContext?: () => void;
   onAppliedProposal?: (appliedSlots: string[], commentIds: number[]) => void;
+}
+
+function renderDrawerTitle(
+  activeTab: RightDrawerTab,
+  chatSubTab: 'basket' | 'chat' | undefined,
+  openCount: number,
+) {
+  if (activeTab === 'evidence') {
+    return (
+      <>
+        <Code2 size={14} />
+        <span>源码证据溯源</span>
+      </>
+    );
+  }
+  if (activeTab === 'history') {
+    return (
+      <>
+        <History size={14} />
+        <span>修订历史与版本 Diff</span>
+      </>
+    );
+  }
+  if (chatSubTab === 'basket') {
+    return (
+      <>
+        <ListChecks size={14} />
+        <span>审阅批注篮{openCount > 0 ? ` (${openCount})` : ''}</span>
+      </>
+    );
+  }
+  return (
+    <>
+      <MessageSquareText size={14} />
+      <span>AI 精修 &amp; 问答</span>
+    </>
+  );
 }
 
 export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
@@ -50,7 +86,6 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
   reviewDraftContext,
   wideDrawer = false,
   onToggleWide,
-  onChangeTab,
   onChangeChatSubTab,
   onClose,
   onRolledBack,
@@ -65,45 +100,8 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
   return (
     <aside className="code-archdoc-studio-right">
       <div className="code-archdoc-right-header">
-        <div className="code-archdoc-right-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'evidence'}
-            className={`code-archdoc-right-tab ${
-              activeTab === 'evidence' ? 'code-archdoc-right-tab--active' : ''
-            }`}
-            onClick={() => onChangeTab('evidence')}
-          >
-            <Code2 size={14} />
-            <span>源码证据</span>
-          </button>
-
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'history'}
-            className={`code-archdoc-right-tab ${
-              activeTab === 'history' ? 'code-archdoc-right-tab--active' : ''
-            }`}
-            onClick={() => onChangeTab('history')}
-          >
-            <History size={14} />
-            <span>修订历史</span>
-          </button>
-
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'chat'}
-            className={`code-archdoc-right-tab ${
-              activeTab === 'chat' ? 'code-archdoc-right-tab--active' : ''
-            }`}
-            onClick={() => onChangeTab('chat')}
-          >
-            <MessageSquareText size={14} />
-            <span>审阅 &amp; 精修{openCount > 0 ? ` (${openCount})` : ''}</span>
-          </button>
+        <div className="code-archdoc-right-title">
+          {renderDrawerTitle(activeTab, chatSubTab, openCount)}
         </div>
 
         <div className="flex-center gap-xs">

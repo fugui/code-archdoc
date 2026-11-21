@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ListChecks, MessageSquareText } from 'lucide-react';
 import { useToast } from '@code/common';
 import {
   acceptChatProposal,
@@ -379,37 +378,8 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
     }
   };
 
-  const openCommentCount = reviewComments.filter((c) => c.status === 'open').length;
-
   return (
     <div className="code-archdoc-review-drawer-inner">
-      <div className="code-archdoc-review-subtabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={subTab === 'basket'}
-          className={`code-archdoc-review-subtab ${
-            subTab === 'basket' ? 'code-archdoc-review-subtab--active' : ''
-          }`}
-          onClick={() => switchSubTab('basket')}
-        >
-          <ListChecks size={13} />
-          <span>审阅批注篮 ({openCommentCount})</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={subTab === 'chat'}
-          className={`code-archdoc-review-subtab ${
-            subTab === 'chat' ? 'code-archdoc-review-subtab--active' : ''
-          }`}
-          onClick={() => switchSubTab('chat')}
-        >
-          <MessageSquareText size={13} />
-          <span>AI 精修 &amp; 问答</span>
-        </button>
-      </div>
-
       {subTab === 'basket' ? (
         <ReviewBasketPanel
           doc={doc}

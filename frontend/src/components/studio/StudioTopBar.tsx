@@ -2,11 +2,12 @@ import React from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
+  Code2,
   Download,
   History,
+  ListChecks,
+  Loader2,
   MessageSquareText,
-  PanelRightClose,
-  PanelRightOpen,
   RotateCcw,
   ShieldAlert,
   Sparkles,
@@ -15,6 +16,7 @@ import {
 import { StatusTag } from '@code/common';
 import type { DocumentDetailVO } from '../../types';
 import { shortSha } from '../../utils/urlQuery';
+import type { RightDrawerTab } from './RightUtilityDrawer';
 
 export interface StudioTopBarProps {
   doc: DocumentDetailVO | null;
@@ -22,12 +24,15 @@ export interface StudioTopBarProps {
   repoName?: string;
   subdirectory: string;
   drawerOpen: boolean;
+  activeDrawerTab?: RightDrawerTab;
+  activeChatSubTab?: 'basket' | 'chat';
   pendingReviewCount?: number;
   publishing: boolean;
   unpublishing: boolean;
   exporting: boolean;
   onBackToRepos: () => void;
   onToggleDrawer: () => void;
+  onOpenEvidence?: () => void;
   onOpenHistory: () => void;
   onOpenChatRefine: () => void;
   onOpenReviewBasket?: () => void;
@@ -59,12 +64,15 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   repoName,
   subdirectory,
   drawerOpen,
+  activeDrawerTab = 'evidence',
+  activeChatSubTab = 'chat',
   pendingReviewCount = 0,
   publishing,
   unpublishing,
   exporting,
   onBackToRepos,
   onToggleDrawer,
+  onOpenEvidence,
   onOpenHistory,
   onOpenChatRefine,
   onOpenReviewBasket,
@@ -76,6 +84,28 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   const publishDisabledReason = getPublishDisabledReason(doc);
   const canPublish = Boolean(doc && !publishDisabledReason && !publishing);
   const hasDrift = Boolean(doc?.drift?.code_drift?.has_drift || doc?.drift?.spec_drift?.has_drift);
+  const isViewingPublished = Boolean(
+    doc &&
+      doc.status === 'approved' &&
+      doc.published_revision_no === doc.viewing_revision.revision_no,
+  );
+
+  const isEvidenceActive = drawerOpen && activeDrawerTab === 'evidence';
+  const isBasketActive = drawerOpen && activeDrawerTab === 'chat' && activeChatSubTab === 'basket';
+  const isChatActive = drawerOpen && activeDrawerTab === 'chat' && activeChatSubTab !== 'basket';
+  const isHistoryActive = drawerOpen && activeDrawerTab === 'history';
+
+  const handleViewPillClick = (isActive: boolean, openView?: () => void) => {
+    if (isActive) {
+      onToggleDrawer();
+      return;
+    }
+    if (openView) {
+      openView();
+    } else {
+      onToggleDrawer();
+    }
+  };
 
   return (
     <header className="code-archdoc-studio-topbar">
@@ -153,98 +183,121 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
           {doc?.can_write && (
             <button
               type="button"
-              className="btn btn-secondary btn-small"
+              className="btn btn-secondary btn-small code-archdoc-topbar-icon-btn"
               onClick={onRegenerate}
               title="基于最新代码提交重新生成（自动豁免已锁定章节）"
+              aria-label="重新生成文档"
             >
               <Sparkles size={14} />
-              <span>重新生成</span>
             </button>
           )}
 
           {doc && (
             <button
               type="button"
-              className="btn btn-secondary btn-small"
+              className="btn btn-secondary btn-small code-archdoc-topbar-icon-btn"
               onClick={onExportMarkdown}
               disabled={exporting}
-              title="下载包含 YAML Frontmatter 与源码深链的 Markdown 文件"
+              title={
+                exporting
+                  ? '正在导出 Markdown...'
+                  : '下载包含 YAML Frontmatter 与源码深链的 Markdown 文件'
+              }
+              aria-label="下载 Markdown"
             >
-              <Download size={14} />
-              <span>{exporting ? '导出中...' : '下载 MD'}</span>
+              {exporting ? <Loader2 size={14} className="code-archdoc-spin" /> : <Download size={14} />}
             </button>
           )}
 
-          {doc?.can_write && doc.status === 'approved' && (
+          {doc?.can_write &&
+            (isViewingPublished ? (
+              <button
+                type="button"
+                className="btn btn-secondary btn-small code-archdoc-publish-btn code-archdoc-publish-btn--unpublish"
+                onClick={onUnpublish}
+                disabled={unpublishing}
+                title="撤回已发布文档并清理发布目录落盘文件"
+              >
+                <Undo2 size={13} />
+                <span>{unpublishing ? '撤回中' : '撤回'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-secondary btn-small code-archdoc-publish-btn"
+                onClick={onPublish}
+                disabled={!canPublish}
+                title={publishDisabledReason || '审批定稿并原子落盘至发布目录'}
+              >
+                <CheckCircle2 size={13} />
+                <span>{publishing ? '发布中' : '发布'}</span>
+              </button>
+            ))}
+
+          {doc && <span className="code-archdoc-topbar-divider" aria-hidden="true" />}
+
+          <div className="code-archdoc-view-switcher" role="group" aria-label="右侧辅助视图">
             <button
               type="button"
-              className="btn btn-outline btn-small"
-              onClick={onUnpublish}
-              disabled={unpublishing}
-              title="撤回已发布文档并清理发布目录落盘文件"
+              aria-pressed={isEvidenceActive}
+              className={`code-archdoc-view-pill ${
+                isEvidenceActive ? 'code-archdoc-view-pill--active' : ''
+              }`}
+              onClick={() => handleViewPillClick(isEvidenceActive, onOpenEvidence)}
+              title={isEvidenceActive ? '收起源码证据面板' : '打开源码证据溯源面板'}
             >
-              <Undo2 size={14} />
-              <span>{unpublishing ? '撤回中...' : '撤回发布'}</span>
+              <Code2 size={13} />
+              <span>证据</span>
             </button>
-          )}
 
-          {doc?.can_write && (
-            <button
-              type="button"
-              className="btn btn-primary btn-small"
-              onClick={onPublish}
-              disabled={!canPublish}
-              title={publishDisabledReason || '审批定稿并原子落盘至发布目录'}
-            >
-              <CheckCircle2 size={14} />
-              <span>{publishing ? '发布中...' : '审批发布'}</span>
-            </button>
-          )}
+            {doc?.can_write && onOpenReviewBasket && (
+              <button
+                type="button"
+                aria-pressed={isBasketActive}
+                className={`code-archdoc-view-pill ${
+                  isBasketActive ? 'code-archdoc-view-pill--active' : ''
+                }`}
+                onClick={() => handleViewPillClick(isBasketActive, onOpenReviewBasket)}
+                title={isBasketActive ? '收起审阅批注篮' : '打开审阅批注篮，集中管理划词/段落批注并批量精修'}
+              >
+                <ListChecks size={13} />
+                <span>批注</span>
+                {pendingReviewCount > 0 && (
+                  <span className="code-archdoc-view-pill-badge">{pendingReviewCount}</span>
+                )}
+              </button>
+            )}
 
-          {doc?.can_write && onOpenReviewBasket && (
-            <button
-              type="button"
-              className="btn btn-secondary btn-small"
-              onClick={onOpenReviewBasket}
-              title="打开右侧审阅批注篮，集中管理划词/段落批注并批量精修"
-            >
-              <MessageSquareText size={14} />
-              <span>审阅批注{pendingReviewCount > 0 ? ` (${pendingReviewCount})` : ''}</span>
-            </button>
-          )}
+            {doc?.can_write && (
+              <button
+                type="button"
+                aria-pressed={isChatActive}
+                className={`code-archdoc-view-pill ${
+                  isChatActive ? 'code-archdoc-view-pill--active' : ''
+                }`}
+                onClick={() => handleViewPillClick(isChatActive, onOpenChatRefine)}
+                title={isChatActive ? '收起 AI 精修面板' : '打开 SSE Chat 局部精修与问答面板'}
+              >
+                <MessageSquareText size={13} />
+                <span>精修</span>
+              </button>
+            )}
 
-          {doc?.can_write && (
-            <button
-              type="button"
-              className="btn btn-secondary btn-small"
-              onClick={onOpenChatRefine}
-              title="打开右侧 SSE Chat 局部精修与问答面板"
-            >
-              <MessageSquareText size={14} />
-              <span>AI 精修</span>
-            </button>
-          )}
-
-          {doc && (
-            <button
-              type="button"
-              className="btn btn-secondary btn-small"
-              onClick={onOpenHistory}
-              title="打开修订历史与版本 Diff 面板"
-            >
-              <History size={14} />
-              <span>修订</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            className="btn btn-secondary btn-small"
-            onClick={onToggleDrawer}
-            title={drawerOpen ? '折叠右侧辅助面板' : '展开右侧辅助面板（源码证据 / 修订历史）'}
-          >
-            {drawerOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-          </button>
+            {doc && (
+              <button
+                type="button"
+                aria-pressed={isHistoryActive}
+                className={`code-archdoc-view-pill ${
+                  isHistoryActive ? 'code-archdoc-view-pill--active' : ''
+                }`}
+                onClick={() => handleViewPillClick(isHistoryActive, onOpenHistory)}
+                title={isHistoryActive ? '收起修订历史面板' : '打开修订历史与版本 Diff 面板'}
+              >
+                <History size={13} />
+                <span>修订</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </header>
