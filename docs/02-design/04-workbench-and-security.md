@@ -1,10 +1,10 @@
 # Canvas Studio 微前端工作台、双轨修订与 RBAC 审计设计
 
 - **文档编号**：`04-workbench-and-security.md`
-- **文档版本**：v1.1.0 (ADR-05 DocTypeEditorDrawer 三 Tab 蓝图双模融合编辑器架构)
+- **文档版本**：v1.2.0 (ADR-06 Canvas Studio 审阅批注篮、多槽位综合精修与画布原地审阅工作台)
 - **编制日期**：2026-11-21
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-26`, `F-32`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
+- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
 
 ---
 
@@ -87,16 +87,21 @@ CanvasStudioPage
 │   │   └── SlotOutlineTOC (当前文档章节槽位大纲，带 auto/hybrid/locked 图标与漂移红点)
 │   ├── CenterDocumentCanvas
 │   │   ├── VerifierBanner (展开查看 unverified 符号、Mermaid 告警、凭据拦截详情)
+│   │   ├── SelectionReviewPopover (划词浮动气泡：添加批注 / AI 立即修正 / 查证源码，跨章节选区自动降级 global)
 │   │   ├── SectionCardList (按 slot_id 渲染每个章节)
 │   │   │   └── SectionCard
-│   │   │       ├── SectionHeader (标题、slot_id、所有权切换器 auto/hybrid/locked、直编/Chat 精修/重试按钮)
-│   │   │       ├── SectionMarkdownRenderer (自定义 Markdown、表格、可点击证据徽标、MermaidZoomViewer [支持滚轮缩放与拖拽平移])
-│   │   │       └── SectionInlineEditor (W1: 章节级 Markdown 源码/预览双栏手工直编 + 保存/取消)
+│   │   │       ├── SectionHeader (标题、slot_id、所有权切换器 auto/hybrid/locked、直编/审校精修入口)
+│   │   │       ├── DetachedCommentsBar (失锚待核批注 #N 聚合条，支持编辑/转全局/已解决)
+│   │   │       ├── SectionReviewOverlay (存在 pending ChatProposalItem 时原地展开：红绿 Diff / 渲染态对比 / 微调正文[暂存或立即采纳] / 拒绝本节)
+│   │   │       ├── SectionMarkdownRenderer (自定义 Markdown + 块级 startLine/endLine + 悬停 + 批注按钮 + 跨行内节点 <mark>/#N 投影高亮 + MermaidZoomViewer)
+│   │   │       └── SectionInlineEditor (W1 手工直编 + M12 提案微调复用：支持 initialMarkdown / proposal_tweak 模式)
 │   │   └── OrphanSectionsZone (仅当存在 is_orphan=true 章节时展示：支持复制合并或显式确认删除)
-│   └── RightUtilityDrawer (可折叠多标签右侧面板)
+│   └── RightUtilityDrawer (可折叠且支持 440px <-> 680px 展宽切换的多标签右侧面板)
 │       ├── EvidenceSourceTab (W1: 只读源码查看器，基于 commit_sha + file + lines 精确高亮，顶部显示 fq_symbol 与锚点状态)
 │       ├── RevisionHistoryTab (W1: 不可变修订时间线，支持任意两版本章节 Diff 对比与一键回滚)
-│       └── ChatRefineTab (W2: 绑定整篇或目标 slot_id 的 SSE 流式对话面板 + 结构化章节 Diff 审阅卡片 [Accept / Reject])
+│       └── ChatRefineTab (M12 升级为「审校精修」双视图工作台，带待处理数字徽标)
+│           ├── ReviewBasketPanel (主视图：全局评论与持久约束[+添全局] + 局部指点清单[#N/分类/定位/勾选] + 一键综合精修 CTA + ProposalGroupCard 汇总采纳)
+│           └── ChatRefineThreadPanel (辅视图：紧凑会话历史下拉 + 作用域胶囊[全文/指定章节] + 划词引用 + [仅查证源码 Ask]/[发送精修] + 折叠工具轨迹)
 ```
 
 ### 2.3 双维漂移雷达与质量度量看板 (`DriftRadarPage` & `QualityMetricsPage`，`W2`)
@@ -153,34 +158,41 @@ AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
 
 ## 3. 章节级双轨修订状态流与 SSE 精修协议（`F-09`）
 
-### 3.1 统一双轨修订管线（手工直编 W1 + Chat 精修 W2）
+### 3.1 统一双轨修订管线（手工直编 W1 + 多槽位协同精修 M12）
 
-两条修订轨道在后端收口至同一个 `services.RevisionService.ApplySectionChange()` 事务入口，确保一致的不变量：
+两条修订轨道在后端收口至统一的 `services.RevisionService.ApplyMultiSectionChanges()` 事务入口（单槽位 `ApplySectionChange()` 直接委托调用），确保一致的不变量：
 
-1. **严格单槽位边界隔离**：修改提交时仅替换目标 `slot_id` 对应的章节正文；服务端从 `base_revision` 的结构化章节数组按原顺序拷贝其余所有章节，**确保非目标章节字节级（Byte-for-Byte）绝对不变**（满足 `F-09` 验收指标 1）。
+1. **严格槽位边界隔离与非内联证据无损保留**：修改提交时仅替换本次选中的目标 `slot_id` 集合正文；服务端从 `base_revision` 的结构化章节数组按原顺序拷贝其余所有未选中及 `locked` 章节，**确保非目标章节字节级（Byte-for-Byte）绝对不变**（满足 `F-09` 验收指标 1）。重跑 `Verifier` 时，未修改槽位从上一修订 `SectionEvidence` 提取已有锚点作为 `CitedAnchors` 兜底保留，修改槽位使用持久化 `CitedAnchors`，彻底杜绝 `module_doc`/`proto_rpc`/`http_route`/`config_key` 锚点丢失。
 2. **乐观并发锁**：请求体强制携带 `base_revision_no`。事务内校验 `archdoc_documents.current_revision_no == base_revision_no`，若期间已被他人修改或重生成，返回 **`409 Conflict`** 并附最新版本号，杜绝静默覆盖。
-3. **不可变修订与强制 Verifier 重跑**：
-   - 合并完整 Markdown 并重跑 `verifier.Verify()`（更新符号校验、Mermaid 校验、凭据拦截与证据锚点）；
-   - 插入新的不可变行至 `archdoc_document_revisions`（`revision_no = base + 1`，`source` 取值 `manual_edit` | `chat_refine` | `rollback` | `ai_generate` | `incremental_refresh`）；
-   - 同步更新 `archdoc_section_evidences` 与 `archdoc_documents.current_revision_no`；
+3. **不可变修订、强制 Verifier 重跑与批注闭环**：
+   - 合并完整 Markdown 并重跑 `verifier.Verify()`（整仓文档开启 `module_digests` 时同步加载传入 `ModuleDigests`）；
+   - 单事务内仅插入 1 条不可变行至 `archdoc_document_revisions`（`revision_no = base + 1`，`source` 取值 `manual_edit` | `chat_refine` | `rollback` | `ai_generate` | `incremental_refresh`）；
+   - 同步更新 `archdoc_section_evidences`、`archdoc_documents.current_revision_no`，并将关联已采纳批注置为 `resolved`；若手工直编、新提案采纳、回滚或重生成导致旧 `pending` 提案被 `superseded`，自动将对应 `proposed` 批注回退为 `open`；
    - **一键回滚**：选择任意历史修订 `target_revision_no` 执行回滚时，并非删除历史，而是将历史修订内容作为新快照重跑 Verifier 并生成 `revision_no = current + 1`（`source = 'rollback'`），保证审计时间线完全不可变。
 
-### 3.2 Chat 局部精修 SSE 事件流协议（`W2`）
+### 3.2 审校精修 SSE 事件流与双段切分协议（`W2` → `M12`）
 
-前端通过 `fetch`（经 `setupFetchInterceptor` 自动带 JWT）发起 `POST /api/documents/:id/chat/refine`（`Accept: text/event-stream`），支持 `AbortController` 随时中止后端 LLM 调用。服务端输出标准 SSE 事件流：
+前端通过 `fetch`（经 `setupFetchInterceptor` 自动带 JWT）发起 `POST /api/documents/:id/chat/refine`（`Accept: text/event-stream`），支持 `AbortController` 随时中止后端 LLM 调用（中止后清理占位消息/未决提案项，并将 `proposed` 批注安全回退为 `open`）。请求支持三条执行路径：
+- **`mode = "ask"`（纯源码查证）**：放行含 `locked` 在内的任意章节及 `global` 作用域，开放 `SandboxSourceToolkit`（含 `ADR-04` `ExternalFileWhitelist`），不生成 `ChatProposalItem`、不触发 `EMPTY_PROPOSAL`；
+- **`mode = "revise"` + `scope_type = "slot" | "inline"`（单槽位快路径）**：跳过阶段 1 `Plan`，注入 `inline_anchor` 微创约束、`ModuleContext` 与 `ModuleDigests`；
+- **`mode = "revise"` + `scope_type = "global" | "review_batch"`（两阶段隔离精修）**：阶段 1 `Plan` 路由确定性补齐非锁定局部批注槽位（≤ 6 个）并将 `locked` 槽位强制移入 `advisory_locked`；阶段 2 按章节序串行隔离精修，外层加 `sync.Mutex` 写保护，每完成 1 槽位即落库 `ChatProposalItem` 并下发 `proposal_item`；后端通过 `StreamSplitFilter` 屏蔽 `<<<ARCHDOC_PAYLOAD_JSON>>>` 后的 JSON 字符（兼容旧版纯 JSON 自动静默缓存并补偿推送 `replyText`）。
 
 | SSE `event` 名称 | 载荷 JSON Schema | 语义与前端交互行为 |
 | :--- | :--- | :--- |
-| **`meta`** | `{"session_id": 12, "message_id": 88, "slot_id": "core_request_flows", "base_revision_no": 4, "model_tier": "flagship"}` | 首包返回会话与消息 ID，供后续 `Accept`/`Reject` 引用 |
-| **`delta`** | `{"text": "正在补充超时重试时序图..."}` | 模型流式思考/回复文本增量，实时渲染至 Chat 消息气泡 |
-| **`diff_proposal`** | `{"proposal_id": 88, "slot_id": "core_request_flows", "before_md": "...", "after_md": "...", "unified_diff": "@@ -12,4 +12,18 @@...", "cited_anchors": [...]}` | 完整生成后推送结构化章节级 Diff 提案，前端在右侧面板渲染红绿高亮 Diff 审阅卡片与 `Accept` / `Reject` 按钮 |
-| **`verifier_preview`** | `{"can_approve": true, "blocker_count": 0, "warning_count": 1, "issues": [...]}` | 对提案内容预先运行确定性 Verifier，让负责人在点击 `Accept` 前即预知是否存在未验证符号或 Mermaid/凭据告警 |
-| **`done`** | `{"message_id": 88, "prompt_tokens": 3200, "completion_tokens": 680, "latency_ms": 4120}` | 流式结束信号，解除前端加载态 |
+| **`meta`** | `{"session_id": 12, "message_id": 88, "slot_id": "...", "mode": "revise", "scope_type": "review_batch", "base_revision_no": 4, "model_tier": "flagship"}` | 首包返回会话、消息与执行模式元数据 |
+| **`plan`** | `{"target_slots": [...], "skipped_locked_slots": [...]}` | 阶段 1 路由结果与 `locked` 章节人工修改建议 |
+| **`stage`** | `{"stage": "planning\|refining_slot\|drafting_diff\|verifying", "slot_id": "...", "index": 1, "total": 2}` | 实时结构化阶段进度指示 |
+| **`tool_call`** | `{"round": 1, "tool_name": "read_file_lines", "summary": "...", "is_error": false, "duration_ms": 12, "slot_id": "..."}` | 只读源码工具轨迹（前端默认折叠展示） |
+| **`delta`** | `{"text": "已结合源码核实...", "slot_id": "..."}` | 净化后的人类可读中文说明增量，零 JSON 协议噪音 |
+| **`proposal_item`** | `ChatProposalItemVO`（含 `item_id`, `slot_id`, `before_md`, `after_md`, `unified_diff`, `cited_anchors`, `verifier_preview`, `addressed_comment_ids`, `status`） | 单个槽位完成即推送，前端可直接在画布原地审阅/微调 |
+| **`diff_proposal`** | `{"proposal_id": 88, "slot_id": "...", "before_md": "...", "after_md": "...", "unified_diff": "...", "cited_anchors": [...]}` | 仅产出 1 个槽位提案时同步下发，保持向后兼容 |
+| **`verifier_preview`** | `{"can_approve": true, "blocker_count": 0, "error_count": 0, "warning_count": 1, "issues": [...]}` | 合并全部受影响新槽位与其余未变槽位的全篇四重 Verifier 联合预检 |
+| **`done`** | `{"message_id": 88, "prompt_tokens": 3200, "cached_prompt_tokens": 1900, "completion_tokens": 680, "latency_ms": 4120}` | 流式结束信号，解除前端加载态 |
 | **`error`** | `{"code": "LLM_TIMEOUT", "message": "模型响应超时，请稍后重试"}` | 异常终止信号（不修改文档任何状态） |
 
 - **采纳与拒绝**：
-  - 点击 `Accept`：前端调用 `POST /api/documents/:id/chat/messages/:msg_id/accept`（携带 `base_revision_no`），走统一修订管线生成不可变 `Revision` 并计入 `F-26` 采纳指标；
-  - 点击 `Reject`：前端调用 `POST /api/documents/:id/chat/messages/:msg_id/reject`，仅标记提案状态为 `rejected` 并计入采纳率分母，文档零变更。
+  - 点击汇总卡「采纳所选提案」或画布「立即采纳本节」：调用 `POST /api/documents/:id/chat/messages/:msg_id/apply`（携带 `base_revision_no` 与所选 `{item_id, override_markdown}`），单事务合并生成 1 个不可变 `Revision` 并计入 `F-26` 指标（旧 `messages/:msg_id/accept` 委托至此）；
+  - 点击单项「拒绝本节」或整组拒绝：分别调用 `POST /api/documents/:id/chat/proposal-items/:item_id/reject` 或 `messages/:msg_id/reject`，仅置提案 `rejected` 并把关联 `proposed` 批注自动回退为 `open`，文档零变更。
 
 ---
 
@@ -253,7 +265,7 @@ func CheckScopeWritePermission(ctx context.Context, db *gorm.DB, user *commonMod
 | 业务操作 | `audit_action` | 风险等级 | `target_type` | `before` / `after` 审计记录与敏感字段脱敏规则 |
 | :--- | :---: | :---: | :--- | :--- |
 | 触发生成 / 增量刷新 / 取消任务 | `trigger` / `cancel` | `P1` | `gen_task` | 记录 `repo_id`, `subdir`, `doc_types`, `priority`, `status` |
-| 手工直编章节 / Chat Diff `Accept` | `update` | `P1` | `document_section` | 记录 `doc_id`, `slot_id`, `revision_no`, `before_hash`/`after_hash` 与修改摘要（避免超大正文撑爆审计表） |
+| 手工直编章节 / Chat Diff `Accept` / 多槽位提案 `Apply` | `update` | `P1` | `document_section` | 记录 `doc_id`, `slot_id`/`slot_ids`, `revision_no`, `before_hash`/`after_hash` 与修改摘要（避免超大正文撑爆审计表） |
 | 章节锁定 / 解锁 / 孤立章节处置 | `update` | `P1` | `document_section` | 记录 `slot_id` 的 `ownership` 变更前/后值（`auto` ↔ `hybrid` ↔ `locked`）或 `is_orphan` 处置结果 |
 | 版本回滚 | `rollback` | `P1` | `document` | 记录 `from_revision_no` → `to_revision_no` 与新产出的 `revision_no` |
 | 审批发布 / 一键撤回 | `publish` / `unpublish` | **`P0`** | `document` | 记录 `status` (`draft` ↔ `approved`)、`published_revision_id`、`published_rel_path`、`commit_sha` |

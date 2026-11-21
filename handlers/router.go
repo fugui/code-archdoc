@@ -21,6 +21,7 @@ type AppHandlers struct {
 	previewSvc *services.SourcePreviewService
 	publishSvc *services.PublishService
 	chatSvc    *services.ChatService
+	reviewSvc  *services.ReviewCommentService
 	driftSvc   *services.DriftOrchestrator
 	pollerSvc  *services.RemoteHeadPoller
 	metricsSvc *services.QualityMetricsService
@@ -59,6 +60,12 @@ func (h *AppHandlers) WithDocumentServices(
 // WithChatService 注入 SSE Chat 局部协同精修服务（M5）。
 func (h *AppHandlers) WithChatService(chatSvc *services.ChatService) *AppHandlers {
 	h.chatSvc = chatSvc
+	return h
+}
+
+// WithReviewCommentService 注入 Canvas Studio 审阅批注篮服务（M12）。
+func (h *AppHandlers) WithReviewCommentService(reviewSvc *services.ReviewCommentService) *AppHandlers {
+	h.reviewSvc = reviewSvc
 	return h
 }
 
@@ -155,12 +162,20 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.GET("/documents/:id/source-preview", h.GetSourcePreview)
 		}
 
-		// 域 5：SSE Chat 局部协同精修与 Accept/Reject 状态机 (F-09 W2)
+		// 域 5：SSE Chat 局部协同精修、审阅批注篮与多槽位提案组 (F-09 / F-33)
+		if h.revSvc != nil && h.reviewSvc != nil {
+			protected.GET("/documents/:id/review-comments", h.ListReviewComments)
+			protected.POST("/documents/:id/review-comments", h.CreateReviewComment)
+			protected.PATCH("/documents/:id/review-comments/:comment_id", h.UpdateReviewComment)
+			protected.DELETE("/documents/:id/review-comments/:comment_id", h.DeleteReviewComment)
+		}
 		if h.revSvc != nil && h.chatSvc != nil {
 			protected.GET("/documents/:id/chat/sessions", h.ListChatSessions)
 			protected.POST("/documents/:id/chat/refine", h.StreamChatRefine)
 			protected.POST("/documents/:id/chat/messages/:msg_id/accept", h.AcceptChatProposal)
 			protected.POST("/documents/:id/chat/messages/:msg_id/reject", h.RejectChatProposal)
+			protected.POST("/documents/:id/chat/messages/:msg_id/apply", h.ApplyChatProposalItems)
+			protected.POST("/documents/:id/chat/proposal-items/:item_id/reject", h.RejectChatProposalItem)
 		}
 
 		// 域 6：定稿发布、一键撤回与 Markdown/ZIP 导出 (F-11)

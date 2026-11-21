@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.1.0 (ADR-04 & ADR-05 Frozen Contract)
+- **文档版本**：v1.2.0 (ADR-04, ADR-05 & ADR-06 Frozen Contract)
 - **编制日期**：2026-11-21
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.0.1)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.2.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.2.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.3.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -694,4 +694,91 @@ export interface BlueprintDiagnostic {
   code: string;
   message: string;
 }
+```
+
+---
+
+## 9. ADR-06 契约增量（`M12`：审阅批注篮、多槽位提案组与 10 事件 SSE）
+
+### 9.1 新增表与索引不变量（18 → 20 张表）
+
+| # | 表名（强制 `archdoc_` 前缀） | 核心唯一键 (`UNIQUE`) | 高频查询索引 | 删除/保留策略 |
+| :-: | :--- | :--- | :--- | :--- |
+| 19 | `archdoc_review_comments` | `(document_id, comment_no)` | `(document_id, status)`, `(author_id)`, `(slot_id)`, `(persist_for_regen)`, `(proposal_group_msg_id)` | 仅限 `open`/`dismissed` 且 `resolved_revision_id IS NULL` 草稿可物理删；删除后 `Document.LastCommentNo` 单调高水位确保旧号永不复用 |
+| 20 | `archdoc_chat_proposal_items` | `(message_id, slot_id)` | `(document_id, slot_id, status)`, `(message_id)` | 不可变审阅记录，按 `pending -> accepted \| rejected \| superseded` 流转 |
+
+- `archdoc_documents`：新增 `last_comment_no`（`int, default 0, not null`）；
+- `archdoc_chat_messages`：新增 `intent`（`revise | ask`）、`scope_type`（`slot | inline | global | review_batch`）、`plan_summary_json`（`jsonb default '{}'`）、`context_refs_json`（`jsonb default '[]'`）。
+
+### 9.2 JSONB Schema、状态机与仓储接口契约
+
+1. **`ReviewCommentAnchor` (`archdoc_review_comments.anchor_json`)**：`{ block_index?, block_type?, quote?, prefix?, suffix?, source_line_start?, source_line_end? }`（`quote <= 500` 字符）。
+2. **`ReviewComment` 生命周期状态机**：
+   - `open -> proposed`（综合精修实际覆盖该批注所属槽位并产出 `ChatProposalItem` 后触发）；
+   - `proposed -> resolved`（对应提案项在 `/apply` 或 `/accept` 落盘生效时触发）；
+   - `proposed -> open`（对应提案项被 `/apply` 未勾选排除、单项或整组 `/reject`、客户端 SSE 中止回滚，或被手工直编/新提案采纳/回滚/重生成置为 `superseded` 时自动回退）；
+   - 手动流转：`open <-> resolved | dismissed`。
+3. **新增与扩展仓储接口 (`services/repos.go`)**：
+   - `ReviewCommentRepo`：`Create`（行锁 `Document` 分配单调 `comment_no`）、`ListByDocument`、`GetByID`、`ListByIDs`、`Update`、`DeleteDraft`、`MarkProposed`、`MarkResolved`、`RevertProposedByMessageID`、`RevertProposedByCommentIDs`、`ListPersistentByDocument`；
+   - `ChatRepo` 新增：`CreateProposalItem`、`ListProposalItemsByMessageIDs`、`ListProposalItemsByMessage`、`GetProposalItem`、`UpdateProposalItem`、`DeleteProposalItemsByMessage`、`SupersedePendingProposalsBySlots`。
+
+### 9.3 前端 TypeScript 类型与 10 事件 SSE 增量
+
+```typescript
+// frontend/src/types/domain.ts (ADR-06 增量)
+export type ReviewScopeType = 'inline' | 'section' | 'global';
+export type ReviewCategory = 'correction' | 'supplement' | 'concise' | 'global_rule' | 'question';
+export type ReviewCommentStatus = 'open' | 'proposed' | 'resolved' | 'dismissed';
+export type ChatIntentMode = 'revise' | 'ask';
+export type ChatScopeType = 'slot' | 'inline' | 'global' | 'review_batch';
+
+export interface ReviewCommentAnchor {
+  block_index?: number;
+  block_type?: string;
+  quote?: string;
+  prefix?: string;
+  suffix?: string;
+  source_line_start?: number;
+  source_line_end?: number;
+}
+
+export interface ReviewCommentVO {
+  id: number;
+  document_id: number;
+  comment_no: number;
+  base_revision_no: number;
+  author_id: number;
+  origin_role: 'owner' | 'reviewer';
+  scope_type: ReviewScopeType;
+  slot_id: string;
+  anchor: ReviewCommentAnchor;
+  category: ReviewCategory;
+  content: string;
+  persist_for_regen: boolean;
+  status: ReviewCommentStatus;
+  proposal_group_msg_id?: number | null;
+  resolved_revision_id?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatProposalItemVO {
+  item_id: number;
+  message_id: number;
+  slot_id: string;
+  slot_title?: string;
+  base_revision_no: number;
+  before_md: string;
+  after_md: string;
+  final_applied_md?: string;
+  unified_diff: string;
+  cited_anchors: EvidenceAnchor[];
+  verifier_preview?: ChatVerifierPreviewVO | null;
+  addressed_comment_ids: number[];
+  status: ProposalStatus;
+  applied_revision_id?: number | null;
+}
+
+// frontend/src/types/sse.ts (10 事件联合成员增量)
+// 新增 'plan' | 'stage' | 'proposal_item'；现有 'meta' / 'tool_call' / 'delta' / 'verifier_preview' 同步扩展可选字段。
 ```

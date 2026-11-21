@@ -12,14 +12,14 @@ export type MarkdownInlineNode =
   | { type: 'link'; href: string; label: string };
 
 export type MarkdownBlockNode =
-  | { type: 'heading'; level: number; children: MarkdownInlineNode[] }
-  | { type: 'paragraph'; children: MarkdownInlineNode[] }
-  | { type: 'code'; language: string; code: string }
-  | { type: 'mermaid'; chart: string }
-  | { type: 'blockquote'; blocks: MarkdownBlockNode[] }
-  | { type: 'list'; ordered: boolean; items: MarkdownInlineNode[][] }
-  | { type: 'table'; headers: MarkdownInlineNode[][]; rows: MarkdownInlineNode[][][] }
-  | { type: 'hr' };
+  | { type: 'heading'; level: number; children: MarkdownInlineNode[]; startLine?: number; endLine?: number }
+  | { type: 'paragraph'; children: MarkdownInlineNode[]; startLine?: number; endLine?: number }
+  | { type: 'code'; language: string; code: string; startLine?: number; endLine?: number }
+  | { type: 'mermaid'; chart: string; startLine?: number; endLine?: number }
+  | { type: 'blockquote'; blocks: MarkdownBlockNode[]; startLine?: number; endLine?: number }
+  | { type: 'list'; ordered: boolean; items: MarkdownInlineNode[][]; startLine?: number; endLine?: number }
+  | { type: 'table'; headers: MarkdownInlineNode[][]; rows: MarkdownInlineNode[][][]; startLine?: number; endLine?: number }
+  | { type: 'hr'; startLine?: number; endLine?: number };
 
 /**
  * 仅允许安全跳转协议或相对路径，彻底阻断 javascript:/data:/vbscript: XSS 向量。
@@ -142,7 +142,7 @@ function isBlockStarter(line: string, nextLine: string | undefined): boolean {
   return false;
 }
 
-export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
+export function parseMarkdownBlocks(markdown: string, baseLineOffset = 0): MarkdownBlockNode[] {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n');
   const blocks: MarkdownBlockNode[] = [];
   let idx = 0;
@@ -155,6 +155,8 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
       idx += 1;
       continue;
     }
+
+    const startIdx = idx;
 
     // 1. Fenced code block / mermaid
     const fenceMatch = /^```([^\s`]*)/.exec(trimmed);
@@ -169,11 +171,13 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
       if (idx < lines.length) {
         idx += 1;
       }
+      const endLine = baseLineOffset + Math.max(startIdx, idx - 1) + 1;
+      const startLine = baseLineOffset + startIdx + 1;
       const code = codeLines.join('\n');
       if (lang === 'mermaid') {
-        blocks.push({ type: 'mermaid', chart: code });
+        blocks.push({ type: 'mermaid', chart: code, startLine, endLine });
       } else {
-        blocks.push({ type: 'code', language: lang || 'text', code });
+        blocks.push({ type: 'code', language: lang || 'text', code, startLine, endLine });
       }
       continue;
     }
@@ -185,6 +189,8 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
         type: 'heading',
         level: headingMatch[1].length,
         children: parseInlineMarkdown(headingMatch[2].trim()),
+        startLine: baseLineOffset + startIdx + 1,
+        endLine: baseLineOffset + startIdx + 1,
       });
       idx += 1;
       continue;
@@ -192,7 +198,11 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
 
     // 3. Horizontal rule
     if (/^([-*_])\1{2,}$/.test(trimmed)) {
-      blocks.push({ type: 'hr' });
+      blocks.push({
+        type: 'hr',
+        startLine: baseLineOffset + startIdx + 1,
+        endLine: baseLineOffset + startIdx + 1,
+      });
       idx += 1;
       continue;
     }
@@ -207,12 +217,19 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
         rows.push(rowCells);
         idx += 1;
       }
-      blocks.push({ type: 'table', headers, rows });
+      blocks.push({
+        type: 'table',
+        headers,
+        rows,
+        startLine: baseLineOffset + startIdx + 1,
+        endLine: baseLineOffset + Math.max(startIdx, idx - 1) + 1,
+      });
       continue;
     }
 
     // 5. Blockquote
     if (/^>\s?/.test(trimmed)) {
+      const quoteStartIdx = idx;
       const quoteLines: string[] = [];
       while (idx < lines.length && /^>\s?/.test(lines[idx].trim())) {
         quoteLines.push(lines[idx].trim().replace(/^>\s?/, ''));
@@ -220,7 +237,9 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
       }
       blocks.push({
         type: 'blockquote',
-        blocks: parseMarkdownBlocks(quoteLines.join('\n')),
+        blocks: parseMarkdownBlocks(quoteLines.join('\n'), baseLineOffset + quoteStartIdx),
+        startLine: baseLineOffset + startIdx + 1,
+        endLine: baseLineOffset + Math.max(startIdx, idx - 1) + 1,
       });
       continue;
     }
@@ -238,7 +257,13 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
         items.push(parseInlineMarkdown(m[1]));
         idx += 1;
       }
-      blocks.push({ type: 'list', ordered, items });
+      blocks.push({
+        type: 'list',
+        ordered,
+        items,
+        startLine: baseLineOffset + startIdx + 1,
+        endLine: baseLineOffset + Math.max(startIdx, idx - 1) + 1,
+      });
       continue;
     }
 
@@ -252,6 +277,8 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlockNode[] {
     blocks.push({
       type: 'paragraph',
       children: parseInlineMarkdown(paraLines.join(' ')),
+      startLine: baseLineOffset + startIdx + 1,
+      endLine: baseLineOffset + Math.max(startIdx, idx - 1) + 1,
     });
   }
 

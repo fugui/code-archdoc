@@ -100,7 +100,7 @@ type ModuleRepo interface {
 	MarkSubdirMissing(ctx context.Context, repoID uint, subdir string) error
 }
 
-// ChatRepo 管理 archdoc_chat_sessions 与 archdoc_chat_messages (W2)
+// ChatRepo 管理 archdoc_chat_sessions、archdoc_chat_messages 与 archdoc_chat_proposal_items
 type ChatRepo interface {
 	GetOrCreateSession(ctx context.Context, docID uint, slotID string, userID uint, sessionID *uint) (*models.ChatSession, error)
 	ListSessionsWithMessages(ctx context.Context, docID uint) ([]models.ChatSession, map[uint][]models.ChatMessage, error)
@@ -111,6 +111,28 @@ type ChatRepo interface {
 	GetMessage(ctx context.Context, docID, msgID uint) (*models.ChatMessage, error)
 	UpdateProposalStatus(ctx context.Context, msgID uint, status string, appliedRevID *uint) error
 	SupersedePendingProposals(ctx context.Context, docID uint, slotID string, exceptMsgID uint) error
+	CreateProposalItem(ctx context.Context, item *models.ChatProposalItem) error
+	ListProposalItemsByMessageIDs(ctx context.Context, msgIDs []uint) (map[uint][]models.ChatProposalItem, error)
+	ListProposalItemsByMessage(ctx context.Context, docID, msgID uint) ([]models.ChatProposalItem, error)
+	GetProposalItem(ctx context.Context, docID, itemID uint) (*models.ChatProposalItem, error)
+	UpdateProposalItem(ctx context.Context, item *models.ChatProposalItem) error
+	DeleteProposalItemsByMessage(ctx context.Context, msgID uint) error
+	SupersedePendingProposalsBySlots(ctx context.Context, docID uint, slotIDs []string, exceptMsgID uint) ([]uint, error)
+}
+
+// ReviewCommentRepo 管理 archdoc_review_comments（第 19 张自有表）
+type ReviewCommentRepo interface {
+	Create(ctx context.Context, comment *models.ReviewComment) error
+	ListByDocument(ctx context.Context, docID uint, filter models.ReviewCommentFilter) ([]models.ReviewComment, error)
+	GetByID(ctx context.Context, docID, commentID uint) (*models.ReviewComment, error)
+	ListByIDs(ctx context.Context, docID uint, ids []uint) ([]models.ReviewComment, error)
+	Update(ctx context.Context, comment *models.ReviewComment) error
+	DeleteDraft(ctx context.Context, docID, commentID uint) error
+	MarkProposed(ctx context.Context, docID uint, commentIDs []uint, msgID uint) error
+	MarkResolved(ctx context.Context, docID uint, commentIDs []uint, revID uint) error
+	RevertProposedByMessageID(ctx context.Context, docID, msgID uint) error
+	RevertProposedByCommentIDs(ctx context.Context, docID uint, commentIDs []uint) error
+	ListPersistentByDocument(ctx context.Context, docID uint) ([]models.ReviewComment, error)
 }
 
 // DriftRepo 管理 archdoc_repo_remote_heads 与 archdoc_document_drifts

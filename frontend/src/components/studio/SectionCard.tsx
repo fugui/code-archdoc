@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   AlertTriangle,
   Check,
@@ -9,15 +9,26 @@ import {
   Sparkles,
   UserCog,
 } from 'lucide-react';
-import type { EvidenceAnchor, SectionOwnership, SectionVO } from '../../types';
+import type {
+  EvidenceAnchor,
+  ReviewCommentAnchor,
+  ReviewCommentVO,
+  SectionOwnership,
+  SectionVO,
+} from '../../types';
+import { buildInlineAnchorFromText } from '../../utils/reviewAnchor';
 import type { EvidenceDeepLinkParams } from '../../utils/urlQuery';
 import SectionInlineEditor from './SectionInlineEditor';
 import SectionMarkdownRenderer from './SectionMarkdownRenderer';
+import SectionReviewOverlay from './SectionReviewOverlay';
+import SelectionReviewPopover from './SelectionReviewPopover';
 
 export interface SectionCardProps {
   section: SectionVO;
   baseRevisionNo: number;
   canWrite: boolean;
+  reviewComments?: ReviewCommentVO[];
+  activeCommentId?: number | null;
   onSaveSection: (
     slotId: string,
     payload: { markdown: string; ownership: SectionOwnership; changeSummary: string },
@@ -31,6 +42,13 @@ export interface SectionCardProps {
   onInspectEvidence: (anchor: EvidenceAnchor) => void;
   onInspectEvidenceLink: (params: { docId: number } & EvidenceDeepLinkParams) => void;
   onOpenChatRefine?: (slotId: string) => void;
+  onAnnotateBlock?: (slotId: string, anchor: ReviewCommentAnchor) => void;
+  onSelectReviewComment?: (comment: ReviewCommentVO) => void;
+  onSelectionAction?: (
+    action: 'comment' | 'refine' | 'ask',
+    slotId: string,
+    anchor: ReviewCommentAnchor,
+  ) => void;
 }
 
 const OWNERSHIP_OPTIONS: Array<{ value: SectionOwnership; label: string; title: string }> = [
@@ -43,15 +61,76 @@ export const SectionCard: React.FC<SectionCardProps> = ({
   section,
   baseRevisionNo,
   canWrite,
+  reviewComments = [],
+  activeCommentId = null,
   onSaveSection,
   onChangeOwnership,
   onReloadDocument,
   onInspectEvidence,
   onInspectEvidenceLink,
   onOpenChatRefine,
+  onAnnotateBlock,
+  onSelectReviewComment,
+  onSelectionAction,
 }) => {
   const [editing, setEditing] = useState<boolean>(false);
   const [updatingOwn, setUpdatingOwn] = useState<boolean>(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [selPopover, setSelPopover] = useState<{
+    anchor: ReviewCommentAnchor;
+    position: { left: number; top: number };
+  } | null>(null);
+
+  const handleMouseUpSelection = () => {
+    if (!canWrite || editing || !onSelectionAction) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      setSelPopover(null);
+      return;
+    }
+    const quoteText = sel.toString().trim();
+    if (!quoteText) {
+      setSelPopover(null);
+      return;
+    }
+    const bodyEl = bodyRef.current;
+    if (!bodyEl) return;
+    const range = sel.getRangeAt(0);
+    const commonNode =
+      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? (range.commonAncestorContainer as Element)
+        : range.commonAncestorContainer.parentElement;
+    if (!commonNode || !bodyEl.contains(commonNode)) {
+      setSelPopover(null);
+      return;
+    }
+    const blockEl = commonNode.closest<HTMLElement>('.code-archdoc-md-block');
+    const blockIndex = blockEl ? Number.parseInt(blockEl.dataset.blockIndex || '0', 10) : 0;
+    const blockType = blockEl?.dataset.blockType || 'paragraph';
+    const lineStart = blockEl?.dataset.lineStart
+      ? Number.parseInt(blockEl.dataset.lineStart, 10)
+      : undefined;
+    const lineEnd = blockEl?.dataset.lineEnd
+      ? Number.parseInt(blockEl.dataset.lineEnd, 10)
+      : undefined;
+    const plain = (blockEl?.textContent || quoteText).replace(/\+\s*批注$/, '');
+    const foundIdx = plain.indexOf(quoteText);
+    const startOff = foundIdx >= 0 ? foundIdx : 0;
+    const anchor = buildInlineAnchorFromText(
+      plain,
+      startOff,
+      startOff + quoteText.length,
+      blockIndex,
+      blockType,
+      lineStart,
+      lineEnd,
+    );
+    const rect = range.getBoundingClientRect();
+    const bodyRect = bodyEl.getBoundingClientRect();
+    const left = Math.max(8, Math.min(rect.left - bodyRect.left, bodyRect.width - 280));
+    const top = Math.max(4, rect.top - bodyRect.top - 42);
+    setSelPopover({ anchor, position: { left, top } });
+  };
 
   const handleOwnershipClick = async (nextOwnership: SectionOwnership) => {
     if (!canWrite || nextOwnership === section.ownership || updatingOwn) return;
@@ -167,7 +246,19 @@ export const SectionCard: React.FC<SectionCardProps> = ({
         </div>
       </div>
 
-      <div className="code-archdoc-section-body">
+      <div
+        ref={bodyRef}
+        className="code-archdoc-section-body"
+        onMouseUp={handleMouseUpSelection}
+      >
+        {!editing && reviewComments.length > 0 && (
+          <SectionReviewOverlay
+            comments={reviewComments}
+            activeCommentId={activeCommentId}
+            onSelectComment={(cm) => onSelectReviewComment?.(cm)}
+          />
+        )}
+
         {editing ? (
           <SectionInlineEditor
             section={section}
@@ -185,7 +276,40 @@ export const SectionCard: React.FC<SectionCardProps> = ({
         ) : (
           <SectionMarkdownRenderer
             markdown={section.markdown}
+            canWrite={canWrite}
+            reviewComments={reviewComments}
+            activeCommentId={activeCommentId}
             onOpenEvidenceLink={onInspectEvidenceLink}
+            onAnnotateBlock={
+              onAnnotateBlock ? (anchor) => onAnnotateBlock(section.slot_id, anchor) : undefined
+            }
+            onSelectComment={onSelectReviewComment}
+          />
+        )}
+
+        {selPopover && onSelectionAction && (
+          <SelectionReviewPopover
+            visible={true}
+            position={selPopover.position}
+            quote={selPopover.anchor.quote || ''}
+            ownership={section.ownership}
+            canWrite={canWrite}
+            onAddComment={() => {
+              const a = selPopover.anchor;
+              setSelPopover(null);
+              onSelectionAction('comment', section.slot_id, a);
+            }}
+            onQuickRefine={() => {
+              const a = selPopover.anchor;
+              setSelPopover(null);
+              onSelectionAction('refine', section.slot_id, a);
+            }}
+            onAskAI={() => {
+              const a = selPopover.anchor;
+              setSelPopover(null);
+              onSelectionAction('ask', section.slot_id, a);
+            }}
+            onClose={() => setSelPopover(null)}
           />
         )}
       </div>

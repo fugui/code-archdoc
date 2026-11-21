@@ -22,7 +22,7 @@
 code-archdoc/
 ├── docs/                # SDD + TDD 规范文档库 (00-prompt ~ 06-ops)
 ├── config/              # 配置加载与模块常量定义
-├── models/              # 共享只读映射与 18 张 archdoc_* GORM 数据模型及仓储实现
+├── models/              # 共享只读映射与 20 张 archdoc_* GORM 数据模型及仓储实现
 ├── services/            # 领域编排与调度服务（持有仓储接口与纯引擎实例，禁用全局 models.DB）
 ├── pkg/                 # 纯领域引擎包（sandbox/codeir/doctype/llm/verifier/publisher/drift/security）
 ├── handlers/            # HTTP/SSE 控制器、三层 RBAC 守卫、审计 Diff 与 *_test.go 隔离单测

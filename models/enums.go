@@ -9,6 +9,7 @@ var (
 	ErrOptimisticLockConflict = errors.New("文档修订版本已过期，请刷新后重试")
 	ErrDocTypeInUse           = errors.New("该文档类型已被已发布文档引用，禁止物理删除")
 	ErrMigrationConflict      = errors.New("目标模块范围已存在同名文档或存在运行中任务，迁移已取消")
+	ErrReviewCommentConflict  = errors.New("当前批注已关联提案或已采纳解决，仅允许撤回或删除草稿态批注")
 )
 
 // ModelTier 枚举
@@ -175,21 +176,39 @@ func IsValidSlotTaskStatus(v string) bool {
 
 // ProposalStatus 枚举
 const (
-	ProposalStatusNone       = "none"
-	ProposalStatusPending    = "pending"
-	ProposalStatusAccepted   = "accepted"
-	ProposalStatusRejected   = "rejected"
-	ProposalStatusSuperseded = "superseded"
+	ProposalStatusNone            = "none"
+	ProposalStatusPending         = "pending"
+	ProposalStatusPartialAccepted = "partial_accepted"
+	ProposalStatusAccepted        = "accepted"
+	ProposalStatusRejected        = "rejected"
+	ProposalStatusSuperseded      = "superseded"
 )
 
 func IsValidProposalStatus(v string) bool {
 	switch v {
-	case ProposalStatusNone, ProposalStatusPending, ProposalStatusAccepted, ProposalStatusRejected, ProposalStatusSuperseded:
+	case ProposalStatusNone, ProposalStatusPending, ProposalStatusPartialAccepted,
+		ProposalStatusAccepted, ProposalStatusRejected, ProposalStatusSuperseded:
 		return true
 	default:
 		return false
 	}
 }
+
+// ChatRefineMode / ChatScopeType / ChatIntent 枚举
+const (
+	ChatModeRevise       = "revise"
+	ChatModeAsk          = "ask"
+	ChatIntentRevise     = "revise"
+	ChatIntentAsk        = "ask"
+	ChatIntentPlanRefine = "plan_refine"
+	ChatScopeSlot        = "slot"
+	ChatScopeInline      = "inline"
+	ChatScopeGlobal      = "global"
+	ChatScopeReviewBatch = "review_batch"
+)
+
+// ChatModeReviseCompat 返回默认精修模式标识（同时兼容旧前端/测试传入 refine）。
+func ChatModeReviseCompat() string { return ChatModeRevise }
 
 // DriftType 枚举
 const (

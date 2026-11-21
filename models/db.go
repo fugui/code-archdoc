@@ -15,7 +15,7 @@ import (
 // DB 模块全局 GORM 数据库连接句柄（仅限 main.go 与 handlers 认证/审计兼容使用；pkg/ 与 services/ 严禁直接访问）
 var DB *gorm.DB
 
-// AllOwnModels 按基础域到关联域的依赖顺序返回本模块全部 18 张自有 archdoc_* GORM 模型。
+// AllOwnModels 按基础域到关联域的依赖顺序返回本模块全部 20 张自有 archdoc_* GORM 模型。
 func AllOwnModels() []any {
 	return []any{
 		&DocType{},
@@ -29,8 +29,10 @@ func AllOwnModels() []any {
 		&Document{},
 		&DocumentRevision{},
 		&SectionEvidence{},
+		&ReviewComment{},
 		&ChatSession{},
 		&ChatMessage{},
+		&ChatProposalItem{},
 		&RepoRemoteHead{},
 		&DocumentDrift{},
 		&LLMConfig{},
@@ -52,7 +54,7 @@ func InitDB() error {
 	return SetupWithDB(db)
 }
 
-// SetupWithDB 使用外部注入的 *gorm.DB 仅迁移 16 张 archdoc_* 自有表，并幂等 Seed 默认 LLM 配置骨架行。
+// SetupWithDB 使用外部注入的 *gorm.DB 仅迁移 20 张 archdoc_* 自有表，并幂等 Seed 默认 LLM 配置骨架行。
 func SetupWithDB(db *gorm.DB) error {
 	DB = db
 

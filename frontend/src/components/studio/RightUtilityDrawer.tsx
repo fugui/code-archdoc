@@ -1,8 +1,14 @@
 import React from 'react';
-import { Code2, History, MessageSquareText, X } from 'lucide-react';
-import type { DocumentDetailVO } from '../../types';
+import { Code2, History, Maximize2, MessageSquareText, Minimize2, X } from 'lucide-react';
+import type {
+  ChatIntentMode,
+  DocumentDetailVO,
+  ReviewCommentAnchor,
+  ReviewCommentVO,
+} from '../../types';
 import ChatRefineTab from './ChatRefineTab';
 import EvidenceSourceTab, { type EvidenceInspectRequest } from './EvidenceSourceTab';
+import type { ReviewDraftContext } from './ReviewBasketPanel';
 import RevisionHistoryTab from './RevisionHistoryTab';
 
 export type RightDrawerTab = 'evidence' | 'history' | 'chat';
@@ -12,10 +18,23 @@ export interface RightUtilityDrawerProps {
   doc: DocumentDetailVO | null;
   evidenceRequest: EvidenceInspectRequest | null;
   chatTargetSlotId?: string;
+  chatSubTab?: 'basket' | 'chat';
+  chatMode?: ChatIntentMode;
+  chatInlineAnchor?: { slotId: string; anchor: ReviewCommentAnchor; nonce: number } | null;
+  reviewComments?: ReviewCommentVO[];
+  activeCommentId?: number | null;
+  reviewDraftContext?: ReviewDraftContext | null;
+  wideDrawer?: boolean;
+  onToggleWide?: () => void;
   onChangeTab: (tab: RightDrawerTab) => void;
+  onChangeChatSubTab?: (sub: 'basket' | 'chat') => void;
   onClose: () => void;
   onRolledBack: (updatedDoc: DocumentDetailVO) => void;
   onReloadDocument: () => Promise<void>;
+  onCommentsChanged?: () => Promise<void>;
+  onSelectCommentOnCanvas?: (comment: ReviewCommentVO) => void;
+  onClearDraftContext?: () => void;
+  onAppliedProposal?: (appliedSlots: string[], commentIds: number[]) => void;
 }
 
 export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
@@ -23,11 +42,26 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
   doc,
   evidenceRequest,
   chatTargetSlotId,
+  chatSubTab,
+  chatMode,
+  chatInlineAnchor,
+  reviewComments = [],
+  activeCommentId,
+  reviewDraftContext,
+  wideDrawer = false,
+  onToggleWide,
   onChangeTab,
+  onChangeChatSubTab,
   onClose,
   onRolledBack,
   onReloadDocument,
+  onCommentsChanged,
+  onSelectCommentOnCanvas,
+  onClearDraftContext,
+  onAppliedProposal,
 }) => {
+  const openCount = reviewComments.filter((c) => c.status === 'open').length;
+
   return (
     <aside className="code-archdoc-studio-right">
       <div className="code-archdoc-right-header">
@@ -68,19 +102,32 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
             onClick={() => onChangeTab('chat')}
           >
             <MessageSquareText size={14} />
-            <span>Chat 精修</span>
+            <span>审阅 &amp; 精修{openCount > 0 ? ` (${openCount})` : ''}</span>
           </button>
         </div>
 
-        <button
-          type="button"
-          className="btn btn-text btn-small"
-          onClick={onClose}
-          title="折叠右侧辅助面板"
-          aria-label="折叠右侧面板"
-        >
-          <X size={15} />
-        </button>
+        <div className="flex-center gap-xs">
+          {onToggleWide && (
+            <button
+              type="button"
+              className="btn btn-text btn-small"
+              onClick={onToggleWide}
+              title={wideDrawer ? '恢复标准抽屉宽度 (440px)' : '加宽至工作台宽屏视图 (680px)'}
+              aria-label="切换右侧抽屉宽度"
+            >
+              {wideDrawer ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-text btn-small"
+            onClick={onClose}
+            title="折叠右侧辅助面板"
+            aria-label="折叠右侧面板"
+          >
+            <X size={15} />
+          </button>
+        </div>
       </div>
 
       <div className="code-archdoc-right-body">
@@ -91,6 +138,17 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
             <ChatRefineTab
               doc={doc}
               initialSlotId={chatTargetSlotId}
+              initialSubTab={chatSubTab}
+              initialMode={chatMode}
+              initialInlineAnchor={chatInlineAnchor}
+              reviewComments={reviewComments}
+              activeCommentId={activeCommentId}
+              draftContext={reviewDraftContext}
+              onChangeSubTab={onChangeChatSubTab}
+              onCommentsChanged={onCommentsChanged}
+              onSelectCommentOnCanvas={onSelectCommentOnCanvas}
+              onClearDraftContext={onClearDraftContext}
+              onAppliedProposal={onAppliedProposal}
               onDocumentUpdated={onRolledBack}
               onReloadDocument={onReloadDocument}
             />

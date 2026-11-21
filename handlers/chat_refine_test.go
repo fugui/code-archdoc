@@ -128,11 +128,15 @@ func setupChatTestEnv(t *testing.T, llmBaseURL string) *chatTestEnv {
 	}
 
 	snapSvc := services.NewSnapshotService(snapStore, facetStore, agg, nil, filepath.Join(tmpDir, "sandbox_dir"), 1024*1024)
-	revSvc := services.NewRevisionService(docStore, dtStore, masterStore, driftStore, snapSvc)
+	reviewStore := models.NewReviewCommentStore(db)
+	revSvc := services.NewRevisionService(docStore, dtStore, masterStore, driftStore, snapSvc).
+		WithReviewHooks(chatStore, reviewStore)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, nil, agg, filepath.Join(tmpDir, "sandbox_dir"))
 	publishSvc := services.NewPublishService(docStore, dtStore, masterStore, govStore, publishSink)
 	llmClient := llm.NewClientWithOptions(&http.Client{}, 10*time.Millisecond)
-	chatSvc := services.NewChatService(chatStore, docStore, dtStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, cipher, llmClient)
+	chatSvc := services.NewChatService(chatStore, docStore, dtStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, cipher, llmClient).
+		WithReviewCommentRepo(reviewStore)
+	reviewSvc := services.NewReviewCommentService(reviewStore, docStore)
 
 	commonAudit.Init(db)
 	t.Cleanup(func() {
@@ -143,7 +147,8 @@ func setupChatTestEnv(t *testing.T, llmBaseURL string) *chatTestEnv {
 	router.Use(commonAudit.Middleware(config.ModuleKey))
 	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, nil).
 		WithDocumentServices(revSvc, previewSvc, publishSvc).
-		WithChatService(chatSvc)
+		WithChatService(chatSvc).
+		WithReviewCommentService(reviewSvc)
 	appHandlers.RegisterRoutes(router, db)
 
 	dept := commonModels.Department{Name: "架构研发部"}
@@ -370,14 +375,22 @@ func TestSSEChatRefineStreamAndAcceptPreservesOtherSlots(t *testing.T) {
 			sessionID = uint(ev.Data["session_id"].(float64))
 		}
 	}
-	// 断言严格按序收到 meta -> delta+ -> diff_proposal -> verifier_preview -> done
-	if len(eventNames) < 5 ||
+	// 断言严格按序收到 meta -> stage -> delta+（零 JSON 噪音） -> proposal_item -> diff_proposal -> verifier_preview -> done
+	if len(eventNames) < 7 ||
 		eventNames[0] != "meta" ||
-		eventNames[1] != "delta" ||
+		eventNames[1] != "stage" ||
+		eventNames[len(eventNames)-4] != "proposal_item" ||
 		eventNames[len(eventNames)-3] != "diff_proposal" ||
 		eventNames[len(eventNames)-2] != "verifier_preview" ||
 		eventNames[len(eventNames)-1] != "done" {
 		t.Fatalf("SSE 事件顺序不符契约: got %v (raw=%s)", eventNames, wSSE.Body.String())
+	}
+	for _, ev := range events {
+		if ev.Event == "delta" {
+			if txt, _ := ev.Data["text"].(string); strings.Contains(txt, `{"reply"`) {
+				t.Fatalf("delta 事件泄漏原始 JSON: %q", txt)
+			}
+		}
 	}
 	if msgID == 0 || sessionID == 0 {
 		t.Fatalf("meta 缺少有效 session_id/message_id: session=%d msg=%d", sessionID, msgID)
@@ -580,5 +593,102 @@ func TestSSEChatRefineClientAbortCancelsUpstream(t *testing.T) {
 	env.db.Model(&models.ChatMessage{}).Where("proposal_status = ?", models.ProposalStatusPending).Count(&pendingCount)
 	if pendingCount != 0 {
 		t.Fatalf("客户端中止后不应落库任何无效 pending 提案，实际 pending=%d", pendingCount)
+	}
+}
+
+// TestHTTPReviewBatchApplyAndAsk 验证 /review-comments -> /chat/refine(review_batch & ask) -> /apply -> /proposal-items/:item_id/reject 端到端链路。
+func TestHTTPReviewBatchApplyAndAsk(t *testing.T) {
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		stream, _ := body["stream"].(bool)
+		if !stream {
+			resp, _ := json.Marshal(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"content": `{"intent":"review_batch","summary":"批量精修","target_slots":[{"slot_id":"runtime_concurrency","action":"edit","comment_ids":[1]}]}`,
+					},
+				}},
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(resp)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta": map[string]any{"content": llm.MarkerReply + "\n已根据批注调整并发描述。\n" + llm.MarkerPayloadJSON + "\n{\"reply\":\"说明\",\"markdown\":\"精修后第2节正文\"}"},
+			}},
+		})
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+	}))
+	defer mockLLM.Close()
+
+	env := setupChatTestEnv(t, mockLLM.URL)
+	docURL := fmt.Sprintf("/api/documents/%d", env.doc.ID)
+
+	// 1. 新建批注
+	wCreate := doAdminDocTypeReq(env.router, http.MethodPost, docURL+"/review-comments", env.ownerTok, map[string]any{
+		"scope_type": "section",
+		"slot_id":    "runtime_concurrency",
+		"category":   models.ReviewCategorySupplement,
+		"content":    "补充读写锁说明",
+	})
+	if wCreate.Code != http.StatusCreated {
+		t.Fatalf("创建批注失败: %d %s", wCreate.Code, wCreate.Body.String())
+	}
+	var cm models.ReviewComment
+	_ = json.Unmarshal(wCreate.Body.Bytes(), &cm)
+
+	// 2. Ask 模式（全局提问）
+	wAsk := doAdminDocTypeReq(env.router, http.MethodPost, docURL+"/chat/refine", env.ownerTok, map[string]any{
+		"mode":             models.ChatModeAsk,
+		"scope_type":       models.ChatScopeGlobal,
+		"base_revision_no": 1,
+		"prompt":           "解释当前并发架构",
+	})
+	if wAsk.Code != http.StatusOK {
+		t.Fatalf("Ask 请求失败: %d %s", wAsk.Code, wAsk.Body.String())
+	}
+
+	// 3. review_batch 精修 + apply
+	wBatch := doAdminDocTypeReq(env.router, http.MethodPost, docURL+"/chat/refine", env.ownerTok, map[string]any{
+		"scope_type":       models.ChatScopeReviewBatch,
+		"base_revision_no": 1,
+		"comment_ids":      []uint{cm.ID},
+	})
+	if wBatch.Code != http.StatusOK {
+		t.Fatalf("review_batch 请求失败: %d %s", wBatch.Code, wBatch.Body.String())
+	}
+	evs := parseSSEStream(wBatch.Body.String())
+	var msgID, itemID uint
+	for _, ev := range evs {
+		if ev.Event == "meta" {
+			msgID = uint(ev.Data["message_id"].(float64))
+		}
+		if ev.Event == "proposal_item" {
+			itemID = uint(ev.Data["item_id"].(float64))
+		}
+	}
+	if msgID == 0 || itemID == 0 {
+		t.Fatalf("review_batch 缺少 message_id/item_id: %s", wBatch.Body.String())
+	}
+
+	wApply := doAdminDocTypeReq(env.router, http.MethodPost,
+		fmt.Sprintf("%s/chat/messages/%d/apply", docURL, msgID), env.ownerTok,
+		map[string]any{
+			"base_revision_no": 1,
+			"items": []map[string]any{{
+				"item_id":           itemID,
+				"override_markdown": "微调后第2节最终正文",
+			}},
+		})
+	if wApply.Code != http.StatusOK {
+		t.Fatalf("Apply 失败: %d %s", wApply.Code, wApply.Body.String())
+	}
+	var updated models.ReviewComment
+	_ = env.db.First(&updated, cm.ID).Error
+	if updated.Status != models.ReviewStatusResolved {
+		t.Fatalf("Apply 后关联批注应转为 resolved，实际 %s", updated.Status)
 	}
 }

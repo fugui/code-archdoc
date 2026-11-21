@@ -370,6 +370,28 @@ describe('SSE Chat 局部精修帧解析器 (T-M5-05)', () => {
     assert.equal(parseChatSSEBlock('event: unknown\ndata: {}'), null);
     assert.equal(parseChatSSEBlock('event: delta\ndata: not-json'), null);
   });
+
+  it('T-ADR06-13: 解析新增 plan / stage / proposal_item 等 10 类 SSE 事件帧', () => {
+    const planEv = parseChatSSEBlock(
+      'event: plan\ndata: {"target_slots":[{"slot_id":"runtime_concurrency","title":"并发模型","comment_ids":[1,2],"reason":"命中局部批注"}],"skipped_locked_slots":[{"slot_id":"adr_constraints_debt","title":"ADR","comment_ids":[3],"advice":"已锁定保留原文"}]}',
+    );
+    assert.ok(planEv && planEv.event === 'plan');
+    assert.equal(planEv.data.target_slots.length, 1);
+    assert.equal(planEv.data.skipped_locked_slots[0].slot_id, 'adr_constraints_debt');
+
+    const stageEv = parseChatSSEBlock(
+      'event: stage\ndata: {"stage":"refining_slot","slot_id":"runtime_concurrency","index":1,"total":2}',
+    );
+    assert.ok(stageEv && stageEv.event === 'stage');
+    assert.equal(stageEv.data.stage, 'refining_slot');
+
+    const itemEv = parseChatSSEBlock(
+      'event: proposal_item\ndata: {"item_id":99,"message_id":88,"slot_id":"runtime_concurrency","base_revision_no":4,"before_md":"old","after_md":"new","unified_diff":"@@ -1 +1 @@","cited_anchors":[],"addressed_comment_ids":[1,2],"status":"pending"}',
+    );
+    assert.ok(itemEv && itemEv.event === 'proposal_item');
+    assert.equal(itemEv.data.item_id, 99);
+    assert.deepEqual(itemEv.data.addressed_comment_ids, [1, 2]);
+  });
 });
 
 describe('双维漂移雷达 URL Search Params 分页与筛选同步 (T-M6-05)', () => {

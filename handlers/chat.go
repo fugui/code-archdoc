@@ -150,6 +150,68 @@ func (h *AppHandlers) RejectChatProposal(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
+// ApplyChatProposalItems 采纳提案组中选定的全部/部分章节及可选人工微调正文（POST /api/documents/:id/chat/messages/:msg_id/apply，需 ScopeWrite + P1 审计）。
+func (h *AppHandlers) ApplyChatProposalItems(c *gin.Context) {
+	doc, user, _, ok := h.resolveDocumentAccess(c, true, false)
+	if !ok {
+		return
+	}
+
+	msgIDVal, err := strconv.ParseUint(strings.TrimSpace(c.Param("msg_id")), 10, 64)
+	if err != nil || msgIDVal == 0 {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "msg_id 必须为正整数", nil)
+		return
+	}
+
+	var req services.ApplyChatProposalPayload
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "请求体 JSON 格式非法", nil)
+		return
+	}
+
+	detail, auditSnap, err := h.chatSvc.ApplyProposalItems(c.Request.Context(), doc.ID, uint(msgIDVal), req, user.ID)
+	if err != nil {
+		writeChatServiceError(c, err, "批量采纳精修提案失败")
+		return
+	}
+
+	commonAudit.SetAuditContext(
+		c,
+		config.ModuleKey,
+		"update",
+		commonModels.AuditLevelP1,
+		fmt.Sprintf("采纳 Chat 精修提案组 #%d 更新章节 [%s] (rev v%d -> v%d)", auditSnap.MessageID, auditSnap.SlotID, auditSnap.BaseRevisionNo, auditSnap.NewRevisionNo),
+		"document_section",
+		fmt.Sprintf("%d:%s", doc.ID, auditSnap.SlotID),
+		auditSnap.SlotID,
+		map[string]any{"revision_no": auditSnap.BaseRevisionNo, "content_sha256": auditSnap.BeforeHash},
+		map[string]any{"revision_no": auditSnap.NewRevisionNo, "content_sha256": auditSnap.AfterHash, "message_id": auditSnap.MessageID},
+	)
+
+	c.JSON(http.StatusOK, detail)
+}
+
+// RejectChatProposalItem 拒绝提案组内单个槽位提案项并退回关联批注（POST /api/documents/:id/chat/proposal-items/:item_id/reject，需 ScopeWrite）。
+func (h *AppHandlers) RejectChatProposalItem(c *gin.Context) {
+	doc, _, _, ok := h.resolveDocumentAccess(c, true, false)
+	if !ok {
+		return
+	}
+
+	itemIDVal, err := strconv.ParseUint(strings.TrimSpace(c.Param("item_id")), 10, 64)
+	if err != nil || itemIDVal == 0 {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "item_id 必须为正整数", nil)
+		return
+	}
+
+	res, err := h.chatSvc.RejectProposalItem(c.Request.Context(), doc.ID, uint(itemIDVal))
+	if err != nil {
+		writeChatServiceError(c, err, "拒绝单个精修提案项失败")
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
 func writeChatServiceError(c *gin.Context, err error, fallbackMsg string) {
 	var lockErr *services.OptimisticLockConflictError
 	if errors.As(err, &lockErr) {

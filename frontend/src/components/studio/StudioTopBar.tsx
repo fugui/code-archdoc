@@ -22,6 +22,7 @@ export interface StudioTopBarProps {
   repoName?: string;
   subdirectory: string;
   drawerOpen: boolean;
+  pendingReviewCount?: number;
   publishing: boolean;
   unpublishing: boolean;
   exporting: boolean;
@@ -29,6 +30,7 @@ export interface StudioTopBarProps {
   onToggleDrawer: () => void;
   onOpenHistory: () => void;
   onOpenChatRefine: () => void;
+  onOpenReviewBasket?: () => void;
   onRegenerate: () => void;
   onPublish: () => void;
   onUnpublish: () => void;
@@ -57,6 +59,7 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   repoName,
   subdirectory,
   drawerOpen,
+  pendingReviewCount = 0,
   publishing,
   unpublishing,
   exporting,
@@ -64,6 +67,7 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   onToggleDrawer,
   onOpenHistory,
   onOpenChatRefine,
+  onOpenReviewBasket,
   onRegenerate,
   onPublish,
   onUnpublish,
@@ -197,15 +201,27 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
             </button>
           )}
 
+          {doc?.can_write && onOpenReviewBasket && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-small"
+              onClick={onOpenReviewBasket}
+              title="打开右侧审阅批注篮，集中管理划词/段落批注并批量精修"
+            >
+              <MessageSquareText size={14} />
+              <span>审阅批注{pendingReviewCount > 0 ? ` (${pendingReviewCount})` : ''}</span>
+            </button>
+          )}
+
           {doc?.can_write && (
             <button
               type="button"
               className="btn btn-secondary btn-small"
               onClick={onOpenChatRefine}
-              title="打开右侧 SSE Chat 局部精修面板"
+              title="打开右侧 SSE Chat 局部精修与问答面板"
             >
               <MessageSquareText size={14} />
-              <span>Chat 精修</span>
+              <span>AI 精修</span>
             </button>
           )}
 

@@ -2,12 +2,14 @@ import { AUTH_TOKEN_KEY } from '@code/common';
 import type {
   AcceptChatProposalPayload,
   ApiErrorBody,
+  ApplyChatProposalPayload,
   ChatRefinePayload,
   ChatRefineSSEEvent,
   ChatRejectResultVO,
   ChatSessionWithMessagesVO,
   DocumentDetailVO,
   ItemsResponse,
+  RejectProposalItemResultVO,
 } from '../types';
 import { ArchdocApiError } from '../utils/errorMessages';
 import { parseChatSSEBlock } from '../utils/sseParser';
@@ -40,6 +42,27 @@ export async function rejectChatProposal(
   return apiRequest<ChatRejectResultVO>(`/documents/${docId}/chat/messages/${msgId}/reject`, {
     method: 'POST',
   });
+}
+
+export async function applyChatProposalItems(
+  docId: number,
+  msgId: number,
+  payload: ApplyChatProposalPayload,
+): Promise<DocumentDetailVO> {
+  return apiRequest<DocumentDetailVO>(`/documents/${docId}/chat/messages/${msgId}/apply`, {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
+export async function rejectChatProposalItem(
+  docId: number,
+  itemId: number,
+): Promise<RejectProposalItemResultVO> {
+  return apiRequest<RejectProposalItemResultVO>(
+    `/documents/${docId}/chat/proposal-items/${itemId}/reject`,
+    { method: 'POST' },
+  );
 }
 
 export interface StreamChatRefineOptions {

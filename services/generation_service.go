@@ -161,6 +161,7 @@ type GenerationOrchestrator struct {
 	docRepo           DocumentRepo
 	govRepo           GovernanceRepo
 	moduleRepo        ModuleRepo
+	reviewRepo        ReviewCommentRepo
 	moduleSvc         *ModuleService
 	rbacSvc           *RBACService
 	keyCipher         *security.Cipher
@@ -190,6 +191,12 @@ func (o *GenerationOrchestrator) WithModuleGovernance(moduleRepo ModuleRepo, mod
 	o.moduleRepo = moduleRepo
 	o.moduleSvc = moduleSvc
 	o.rbacSvc = rbacSvc
+	return o
+}
+
+// WithReviewCommentRepo 注入审阅批注仓储，使 L2 三路径生成自动携带 persist_for_regen 长期审阅指导（ADR-06 T-ADR06-12）。
+func (o *GenerationOrchestrator) WithReviewCommentRepo(reviewRepo ReviewCommentRepo) *GenerationOrchestrator {
+	o.reviewRepo = reviewRepo
 	return o
 }
 
@@ -875,6 +882,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		priorEvAnchors   map[string][]models.EvidenceAnchor
 		moduleDigests    []codeir.ModuleDigestInput
 		crossModuleGraph []codeir.CrossModuleEdge
+		reviewGuidance   map[string][]string
 	}
 
 	plans := make([]*docTypePlan, 0, len(slugs))
@@ -904,6 +912,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		// 检查已有文档的 locked 槽位（叠加 SectionEvidence 实时所有权）以便豁免覆盖并免计预算
 		if exDoc, exErr := o.docRepo.GetByScope(dbCtx, repo.ID, task.Subdirectory, snapReady.Snapshot.RefName, slug); exErr == nil && exDoc != nil {
 			plan.existingDoc = exDoc
+			plan.reviewGuidance = o.buildReviewGuidanceMap(dbCtx, exDoc.ID)
 			if exDoc.CurrentRevisionNo > 0 {
 				if prevRev, prevEvs, pErr := o.docRepo.GetRevisionWithSections(dbCtx, exDoc.ID, exDoc.CurrentRevisionNo); pErr == nil && prevRev != nil {
 					plan.priorCommitSHA = prevRev.CommitSHA
@@ -1122,6 +1131,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 					ModuleDigests:    planCopy.moduleDigests,
 					CrossModuleGraph: planCopy.crossModuleGraph,
 					PriorHybridMD:    priorHybrid,
+					ReviewGuidance:   guidanceForSlot(planCopy.reviewGuidance, slotSpec.SlotID),
 					Nonce:            batchNonce,
 					Endpoint:         epCfg,
 					MaxTokens:        maxOut,
@@ -1356,6 +1366,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	}
 
 	// 仅对目标非锁定槽位创建活跃子任务并调用 LLM
+	reviewGuidanceMap := o.buildReviewGuidanceMap(dbCtx, latestDoc.ID)
 	var slotTasks []models.GenSlotTask
 	docIDVal := latestDoc.ID
 	for _, sl := range asset.Meta.Slots {
@@ -1455,6 +1466,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 				ModuleDigests:    moduleDigests,
 				CrossModuleGraph: crossModuleGraph,
 				PriorHybridMD:    priorHybrid,
+				ReviewGuidance:   guidanceForSlot(reviewGuidanceMap, slotSpec.SlotID),
 				Nonce:            batchNonce,
 				Endpoint:         epCfg,
 			})
@@ -1765,6 +1777,11 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		modCtxForCall = modCtx
 	}
 
+	var retryGuidanceMap map[string][]string
+	if slotTask.DocumentID != nil {
+		retryGuidanceMap = o.buildReviewGuidanceMap(ctx, *slotTask.DocumentID)
+	}
+
 	o.llmSem <- struct{}{}
 	resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
 		RepoID:           task.RepoID,
@@ -1776,6 +1793,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		ModuleContext:    modCtxForCall,
 		ModuleDigests:    moduleDigests,
 		CrossModuleGraph: crossModuleGraph,
+		ReviewGuidance:   guidanceForSlot(retryGuidanceMap, targetSlot.SlotID),
 		Endpoint:         epCfg,
 	})
 	<-o.llmSem
@@ -2271,6 +2289,7 @@ type slotExecInput struct {
 	ModuleDigests    []codeir.ModuleDigestInput
 	CrossModuleGraph []codeir.CrossModuleEdge
 	PriorHybridMD    string
+	ReviewGuidance   []string
 	Nonce            string
 	Endpoint         llm.EndpointConfig
 	MaxTokens        int
@@ -2288,18 +2307,7 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 		if o.snapSvc != nil {
 			repoRoot, scopeRoot, _ = o.snapSvc.ResolveSandboxScope(in.RepoID, in.Subdirectory)
 		}
-		var extWhitelist map[string]bool
-		if in.ModuleContext != nil {
-			extWhitelist = make(map[string]bool, len(in.ModuleContext.ExternalFileWhitelist)+len(in.ModuleContext.ReferencedExtSymbols))
-			for _, wf := range in.ModuleContext.ExternalFileWhitelist {
-				extWhitelist[wf] = true
-			}
-			for _, es := range in.ModuleContext.ReferencedExtSymbols {
-				if es.FilePath != "" {
-					extWhitelist[es.FilePath] = true
-				}
-			}
-		}
+		extWhitelist := extractExternalFileWhitelist(in.ModuleContext)
 		tk := llm.NewSandboxSourceToolkit(llm.SandboxToolkitConfig{
 			ScopeRoot:             scopeRoot,
 			RepoRoot:              repoRoot,
@@ -2322,6 +2330,7 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 		ModuleDigests:     in.ModuleDigests,
 		CrossModuleGraph:  in.CrossModuleGraph,
 		PriorHybridMD:     in.PriorHybridMD,
+		ReviewGuidance:    in.ReviewGuidance,
 		Nonce:             in.Nonce,
 		EnableSourceTools: useTools,
 	})
@@ -2380,6 +2389,25 @@ func hasContextInput(inputs []string, target string) bool {
 	return false
 }
 
+// extractExternalFileWhitelist 从子模块跨模块上下文提取受控外部源码白名单（供 L2 生成与 Chat 精修共用）。
+func extractExternalFileWhitelist(modCtx *codeir.ModuleContextFacet) map[string]bool {
+	if modCtx == nil {
+		return nil
+	}
+	extWhitelist := make(map[string]bool, len(modCtx.ExternalFileWhitelist)+len(modCtx.ReferencedExtSymbols))
+	for _, wf := range modCtx.ExternalFileWhitelist {
+		if wf != "" {
+			extWhitelist[wf] = true
+		}
+	}
+	for _, es := range modCtx.ReferencedExtSymbols {
+		if es.FilePath != "" {
+			extWhitelist[es.FilePath] = true
+		}
+	}
+	return extWhitelist
+}
+
 // filterSlotSpecForScope 当整仓生成 (subdir == "") 且存在多模块摘要 (hasModuleDigests == true) 时，
 // 按 DocType.Meta.RepoIRFacets 裁剪槽位订阅的 IR 分片，避免把全量 symbols / runtime_primitives 塞进整仓汇总 Prompt；
 // 单模块小仓 (hasModuleDigests == false) 或子模块生成保持原 SlotSpec 不变（100% 兼容既有基线）。
@@ -2413,10 +2441,23 @@ func (o *GenerationOrchestrator) buildModuleDigestsForRepo(
 	asset *doctype.AssetBundle,
 	glossary *codeir.GlossaryCache,
 ) ([]codeir.ModuleDigestInput, []string) {
-	if o.moduleRepo == nil || asset == nil {
+	return buildModuleDigestsForRepo(ctx, o.moduleRepo, o.masterRepo, o.docRepo, repoID, refName, asset, glossary)
+}
+
+func buildModuleDigestsForRepo(
+	ctx context.Context,
+	moduleRepo ModuleRepo,
+	masterRepo SharedMasterRepo,
+	docRepo DocumentRepo,
+	repoID uint,
+	refName string,
+	asset *doctype.AssetBundle,
+	glossary *codeir.GlossaryCache,
+) ([]codeir.ModuleDigestInput, []string) {
+	if moduleRepo == nil || asset == nil {
 		return nil, nil
 	}
-	mods, err := o.moduleRepo.ListModulesByRepo(ctx, repoID)
+	mods, err := moduleRepo.ListModulesByRepo(ctx, repoID)
 	if err != nil || len(mods) == 0 {
 		return nil, nil
 	}
@@ -2432,8 +2473,8 @@ func (o *GenerationOrchestrator) buildModuleDigestsForRepo(
 
 	// 读取 architecture_elements 中文名映射
 	elemNameBySub := make(map[string]string)
-	if o.masterRepo != nil {
-		if elems, eErr := o.masterRepo.ListArchElementsByRepo(ctx, repoID); eErr == nil {
+	if masterRepo != nil {
+		if elems, eErr := masterRepo.ListArchElementsByRepo(ctx, repoID); eErr == nil {
 			for _, el := range elems {
 				if ns, nErr := sandbox.NormalizeSubdir(el.Subdirectory); nErr == nil && ns != "" {
 					name := el.NameCn
@@ -2484,20 +2525,20 @@ func (o *GenerationOrchestrator) buildModuleDigestsForRepo(
 		}
 
 		// 1. 优先尝试从子模块的同类型文档读取目标概览槽位（优先 approved 已发布修订，回退 draft 最新修订）
-		if o.docRepo != nil {
-			if modDoc, dErr := o.docRepo.GetByScope(ctx, repoID, sub, refName, srcSlug); dErr == nil && modDoc != nil {
+		if docRepo != nil {
+			if modDoc, dErr := docRepo.GetByScope(ctx, repoID, sub, refName, srcSlug); dErr == nil && modDoc != nil {
 				var (
 					targetRev *models.DocumentRevision
 					sourceTag string
 				)
 				if modDoc.Status == models.DocStatusApproved && modDoc.PublishedRevisionID != nil {
-					if rev, _, rErr := o.docRepo.GetRevisionByIDWithSections(ctx, modDoc.ID, *modDoc.PublishedRevisionID); rErr == nil && rev != nil {
+					if rev, _, rErr := docRepo.GetRevisionByIDWithSections(ctx, modDoc.ID, *modDoc.PublishedRevisionID); rErr == nil && rev != nil {
 						targetRev = rev
 						sourceTag = "approved"
 					}
 				}
 				if targetRev == nil && modDoc.CurrentRevisionNo > 0 {
-					if rev, _, rErr := o.docRepo.GetRevisionWithSections(ctx, modDoc.ID, modDoc.CurrentRevisionNo); rErr == nil && rev != nil {
+					if rev, _, rErr := docRepo.GetRevisionWithSections(ctx, modDoc.ID, modDoc.CurrentRevisionNo); rErr == nil && rev != nil {
 						targetRev = rev
 						sourceTag = "draft"
 					}
@@ -2571,4 +2612,42 @@ func truncateRunes(s string, maxRunes int) string {
 		return s
 	}
 	return string(r[:maxRunes])
+}
+
+func (o *GenerationOrchestrator) buildReviewGuidanceMap(ctx context.Context, docID uint) map[string][]string {
+	if o == nil || o.reviewRepo == nil || docID == 0 {
+		return nil
+	}
+	rows, err := o.reviewRepo.ListPersistentByDocument(ctx, docID)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	out := make(map[string][]string)
+	for _, r := range rows {
+		text := strings.TrimSpace(r.Content)
+		if text == "" {
+			continue
+		}
+		line := fmt.Sprintf("[%s #%d] %s", r.Category, r.CommentNo, text)
+		if r.ScopeType == models.ReviewScopeGlobal || strings.TrimSpace(r.SlotID) == "" {
+			out[""] = append(out[""], "[全局约束] "+line)
+		} else {
+			out[r.SlotID] = append(out[r.SlotID], line)
+		}
+	}
+	return out
+}
+
+func guidanceForSlot(m map[string][]string, slotID string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	var res []string
+	if globals := m[""]; len(globals) > 0 {
+		res = append(res, globals...)
+	}
+	if locals := m[slotID]; len(locals) > 0 {
+		res = append(res, locals...)
+	}
+	return res
 }

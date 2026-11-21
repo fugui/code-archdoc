@@ -2,7 +2,7 @@
 
 - **文档编号**：`06-document-review-and-refine-studio.md`
 - **日期**：2026-11-21
-- **状态**：提议中 (Proposed) —— 已基于代码基线完成深度检视与修正补充，待评审确认后同步更新阶段一~三 SDD 规范与 M12 作战卡（暂不实施）
+- **状态**：已采纳 (Accepted) —— 已同步更新阶段一~四 SDD 规范与 M12 作战卡，进入 TDD 实施阶段
 - **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-08`, `F-09`, `F-10`, `F-13`, `F-15`, `F-26`, `F-30`, `F-31`, `SC-05`, `SC-12`, `SC-13`, `Non-Goal 6`)；[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)；[`05-database-schema.md`](../02-design/05-database-schema.md)；[`01-http-api-contract.md`](../03-api/01-http-api-contract.md)；[`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；[`ADR-01`](./01-microfrontend-and-table-prefix-isolation.md)；[`ADR-03`](./03-evidence-anchor-and-publish-mount.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`ADR-05`](./05-doctype-blueprint-dual-mode-editor.md)
 
 ---

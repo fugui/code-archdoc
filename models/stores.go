@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -120,6 +121,13 @@ type SectionVerifierMetricRow struct {
 	SlotID              string
 	Title               string
 	VerifierSummaryJSON []byte
+}
+
+type ReviewCommentFilter struct {
+	Status          string
+	ScopeType       string
+	SlotID          string
+	PersistForRegen *bool
 }
 
 // ─── 1. SharedMasterStore ───
@@ -1326,13 +1334,346 @@ func (s *ChatStore) UpdateProposalStatus(ctx context.Context, msgID uint, status
 }
 
 func (s *ChatStore) SupersedePendingProposals(ctx context.Context, docID uint, slotID string, exceptMsgID uint) error {
-	subQuery := s.db.WithContext(ctx).Model(&ChatSession{}).Select("id").Where("document_id = ?", docID)
-	q := s.db.WithContext(ctx).Model(&ChatMessage{}).
-		Where("session_id IN (?) AND proposal_status = ? AND id <> ?", subQuery, ProposalStatusPending, exceptMsgID)
+	var slotIDs []string
 	if slotID != "" {
-		q = q.Where("target_slot_id = ?", slotID)
+		slotIDs = []string{slotID}
 	}
-	return q.Update("proposal_status", ProposalStatusSuperseded).Error
+	_, err := s.SupersedePendingProposalsBySlots(ctx, docID, slotIDs, exceptMsgID)
+	return err
+}
+
+func (s *ChatStore) CreateProposalItem(ctx context.Context, item *ChatProposalItem) error {
+	return s.db.WithContext(ctx).Create(item).Error
+}
+
+func (s *ChatStore) ListProposalItemsByMessageIDs(ctx context.Context, msgIDs []uint) (map[uint][]ChatProposalItem, error) {
+	out := make(map[uint][]ChatProposalItem, len(msgIDs))
+	if len(msgIDs) == 0 {
+		return out, nil
+	}
+	var items []ChatProposalItem
+	if err := s.db.WithContext(ctx).
+		Where("message_id IN ?", msgIDs).
+		Order("id ASC").
+		Find(&items).Error; err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		out[it.MessageID] = append(out[it.MessageID], it)
+	}
+	return out, nil
+}
+
+func (s *ChatStore) ListProposalItemsByMessage(ctx context.Context, docID, msgID uint) ([]ChatProposalItem, error) {
+	var items []ChatProposalItem
+	if err := s.db.WithContext(ctx).
+		Where("document_id = ? AND message_id = ?", docID, msgID).
+		Order("id ASC").
+		Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *ChatStore) GetProposalItem(ctx context.Context, docID, itemID uint) (*ChatProposalItem, error) {
+	var item ChatProposalItem
+	err := s.db.WithContext(ctx).
+		Where("document_id = ? AND id = ?", docID, itemID).
+		First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *ChatStore) UpdateProposalItem(ctx context.Context, item *ChatProposalItem) error {
+	return s.db.WithContext(ctx).Save(item).Error
+}
+
+func (s *ChatStore) DeleteProposalItemsByMessage(ctx context.Context, msgID uint) error {
+	return s.db.WithContext(ctx).Where("message_id = ?", msgID).Delete(&ChatProposalItem{}).Error
+}
+
+// SupersedePendingProposalsBySlots 将受影响槽位（slotIDs 为空表示整篇文档）上的旧 pending 提案项置为 superseded，
+// 收敛对应父消息 ProposalStatus，并返回被取代提案项所关联的去重审阅批注 ID 集合。
+func (s *ChatStore) SupersedePendingProposalsBySlots(ctx context.Context, docID uint, slotIDs []string, exceptMsgID uint) ([]uint, error) {
+	var affectedCommentIDs []uint
+	seenComments := make(map[uint]bool)
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		q := tx.Model(&ChatProposalItem{}).
+			Where("document_id = ? AND status = ?", docID, ProposalStatusPending)
+		if exceptMsgID > 0 {
+			q = q.Where("message_id <> ?", exceptMsgID)
+		}
+		if len(slotIDs) > 0 {
+			q = q.Where("slot_id IN ?", slotIDs)
+		}
+
+		var items []ChatProposalItem
+		if err := q.Find(&items).Error; err != nil {
+			return err
+		}
+
+		touchedMsgIDs := make(map[uint]bool)
+		itemIDs := make([]uint, 0, len(items))
+		for _, it := range items {
+			itemIDs = append(itemIDs, it.ID)
+			touchedMsgIDs[it.MessageID] = true
+			var cids []uint
+			if len(it.AddressedCommentIDsJSON) > 2 && json.Unmarshal(it.AddressedCommentIDsJSON, &cids) == nil {
+				for _, cid := range cids {
+					if cid > 0 && !seenComments[cid] {
+						seenComments[cid] = true
+						affectedCommentIDs = append(affectedCommentIDs, cid)
+					}
+				}
+			}
+		}
+
+		if len(itemIDs) > 0 {
+			if err := tx.Model(&ChatProposalItem{}).
+				Where("id IN ?", itemIDs).
+				Update("status", ProposalStatusSuperseded).Error; err != nil {
+				return err
+			}
+		}
+
+		// 兼容仅有 ChatMessage（无子表记录）的旧提案，同时收敛所有受影响父消息的状态
+		subQuery := tx.Model(&ChatSession{}).Select("id").Where("document_id = ?", docID)
+		msgQ := tx.Model(&ChatMessage{}).
+			Where("session_id IN (?) AND proposal_status = ?", subQuery, ProposalStatusPending)
+		if exceptMsgID > 0 {
+			msgQ = msgQ.Where("id <> ?", exceptMsgID)
+		}
+		if len(slotIDs) > 0 {
+			msgQ = msgQ.Where("target_slot_id IN ?", slotIDs)
+		}
+		var pendingMsgs []ChatMessage
+		if err := msgQ.Find(&pendingMsgs).Error; err != nil {
+			return err
+		}
+		for _, pm := range pendingMsgs {
+			touchedMsgIDs[pm.ID] = true
+		}
+
+		for msgID := range touchedMsgIDs {
+			var allItems []ChatProposalItem
+			if err := tx.Where("message_id = ?", msgID).Find(&allItems).Error; err != nil {
+				return err
+			}
+			if len(allItems) == 0 {
+				if err := tx.Model(&ChatMessage{}).
+					Where("id = ? AND proposal_status = ?", msgID, ProposalStatusPending).
+					Update("proposal_status", ProposalStatusSuperseded).Error; err != nil {
+					return err
+				}
+				continue
+			}
+
+			hasPending := false
+			hasAccepted := false
+			hasSuperseded := false
+			for _, it := range allItems {
+				switch it.Status {
+				case ProposalStatusPending:
+					hasPending = true
+				case ProposalStatusAccepted:
+					hasAccepted = true
+				case ProposalStatusSuperseded:
+					hasSuperseded = true
+				}
+			}
+			nextStatus := ProposalStatusRejected
+			if hasPending {
+				nextStatus = ProposalStatusPending
+			} else if hasAccepted {
+				nextStatus = ProposalStatusAccepted
+			} else if hasSuperseded {
+				nextStatus = ProposalStatusSuperseded
+			}
+			if err := tx.Model(&ChatMessage{}).
+				Where("id = ?", msgID).
+				Update("proposal_status", nextStatus).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return affectedCommentIDs, nil
+}
+
+// ─── 6b. ReviewCommentStore (ADR-06 第 19 张自有表) ───
+
+type ReviewCommentStore struct {
+	db *gorm.DB
+}
+
+func NewReviewCommentStore(db *gorm.DB) *ReviewCommentStore {
+	return &ReviewCommentStore{db: db}
+}
+
+func (s *ReviewCommentStore) Create(ctx context.Context, comment *ReviewComment) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var doc Document
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&doc, comment.DocumentID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		var maxNo int
+		if err := tx.Model(&ReviewComment{}).
+			Where("document_id = ?", comment.DocumentID).
+			Select("COALESCE(MAX(comment_no), 0)").
+			Scan(&maxNo).Error; err != nil {
+			return err
+		}
+		nextNo := doc.LastCommentNo
+		if maxNo > nextNo {
+			nextNo = maxNo
+		}
+		nextNo++
+		comment.CommentNo = nextNo
+		if err := tx.Create(comment).Error; err != nil {
+			return err
+		}
+		return tx.Model(&doc).Update("last_comment_no", nextNo).Error
+	})
+}
+
+func (s *ReviewCommentStore) ListByDocument(ctx context.Context, docID uint, filter ReviewCommentFilter) ([]ReviewComment, error) {
+	q := s.db.WithContext(ctx).Model(&ReviewComment{}).Where("document_id = ?", docID)
+	if filter.Status != "" {
+		q = q.Where("status = ?", filter.Status)
+	}
+	if filter.ScopeType != "" {
+		q = q.Where("scope_type = ?", filter.ScopeType)
+	}
+	if filter.SlotID != "" {
+		q = q.Where("slot_id = ?", filter.SlotID)
+	}
+	if filter.PersistForRegen != nil {
+		q = q.Where("persist_for_regen = ?", *filter.PersistForRegen)
+	}
+	var list []ReviewComment
+	if err := q.Order("comment_no ASC, id ASC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *ReviewCommentStore) GetByID(ctx context.Context, docID, commentID uint) (*ReviewComment, error) {
+	var rc ReviewComment
+	err := s.db.WithContext(ctx).
+		Where("document_id = ? AND id = ?", docID, commentID).
+		First(&rc).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rc, nil
+}
+
+func (s *ReviewCommentStore) ListByIDs(ctx context.Context, docID uint, ids []uint) ([]ReviewComment, error) {
+	if len(ids) == 0 {
+		return []ReviewComment{}, nil
+	}
+	var list []ReviewComment
+	if err := s.db.WithContext(ctx).
+		Where("document_id = ? AND id IN ?", docID, ids).
+		Order("comment_no ASC, id ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *ReviewCommentStore) Update(ctx context.Context, comment *ReviewComment) error {
+	return s.db.WithContext(ctx).Save(comment).Error
+}
+
+func (s *ReviewCommentStore) DeleteDraft(ctx context.Context, docID, commentID uint) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rc ReviewComment
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("document_id = ? AND id = ?", docID, commentID).
+			First(&rc).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if (rc.Status != ReviewStatusOpen && rc.Status != ReviewStatusDismissed) || rc.ResolvedRevisionID != nil {
+			return ErrReviewCommentConflict
+		}
+		return tx.Delete(&rc).Error
+	})
+}
+
+func (s *ReviewCommentStore) MarkProposed(ctx context.Context, docID uint, commentIDs []uint, msgID uint) error {
+	if len(commentIDs) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&ReviewComment{}).
+		Where("document_id = ? AND id IN ? AND status = ?", docID, commentIDs, ReviewStatusOpen).
+		Updates(map[string]any{
+			"status":                ReviewStatusProposed,
+			"proposal_group_msg_id": msgID,
+		}).Error
+}
+
+func (s *ReviewCommentStore) MarkResolved(ctx context.Context, docID uint, commentIDs []uint, revID uint) error {
+	if len(commentIDs) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&ReviewComment{}).
+		Where("document_id = ? AND id IN ? AND status IN ?", docID, commentIDs, []string{ReviewStatusOpen, ReviewStatusProposed}).
+		Updates(map[string]any{
+			"status":               ReviewStatusResolved,
+			"resolved_revision_id": revID,
+		}).Error
+}
+
+func (s *ReviewCommentStore) RevertProposedByMessageID(ctx context.Context, docID, msgID uint) error {
+	return s.db.WithContext(ctx).Model(&ReviewComment{}).
+		Where("document_id = ? AND proposal_group_msg_id = ? AND status = ?", docID, msgID, ReviewStatusProposed).
+		Updates(map[string]any{
+			"status":                ReviewStatusOpen,
+			"proposal_group_msg_id": nil,
+		}).Error
+}
+
+func (s *ReviewCommentStore) RevertProposedByCommentIDs(ctx context.Context, docID uint, commentIDs []uint) error {
+	if len(commentIDs) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&ReviewComment{}).
+		Where("document_id = ? AND id IN ? AND status = ?", docID, commentIDs, ReviewStatusProposed).
+		Updates(map[string]any{
+			"status":                ReviewStatusOpen,
+			"proposal_group_msg_id": nil,
+		}).Error
+}
+
+func (s *ReviewCommentStore) ListPersistentByDocument(ctx context.Context, docID uint) ([]ReviewComment, error) {
+	var list []ReviewComment
+	if err := s.db.WithContext(ctx).
+		Where("document_id = ? AND persist_for_regen = ? AND status <> ?", docID, true, ReviewStatusDismissed).
+		Order("comment_no ASC, id ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 // ─── 7. DriftStore ───

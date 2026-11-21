@@ -92,7 +92,19 @@ export type SlotTaskStatus =
   | 'skipped_locked'
   | 'canceled';
 
-export type ProposalStatus = 'none' | 'pending' | 'accepted' | 'rejected' | 'superseded';
+export type ProposalStatus =
+  | 'none'
+  | 'pending'
+  | 'partial_accepted'
+  | 'accepted'
+  | 'rejected'
+  | 'superseded';
+export type ReviewScopeType = 'inline' | 'section' | 'global';
+export type ReviewCategory = 'correction' | 'supplement' | 'concise' | 'global_rule' | 'question';
+export type ReviewCommentStatus = 'open' | 'proposed' | 'resolved' | 'dismissed';
+export type ReviewOriginRole = 'owner' | 'reviewer';
+export type ChatIntentMode = 'revise' | 'ask';
+export type ChatScopeType = 'slot' | 'inline' | 'global' | 'review_batch';
 export type DriftType = 'code' | 'spec';
 export type DriftPrecision = 'section_level' | 'repo_level';
 export type ScopeType = 'repo' | 'subdir';
@@ -479,10 +491,86 @@ export interface ChatVerifierPreviewVO {
   issues: ChatVerifierIssueVO[];
 }
 
+export interface ReviewCommentAnchor {
+  block_index?: number;
+  block_type?: string;
+  quote?: string;
+  prefix?: string;
+  suffix?: string;
+  source_line_start?: number;
+  source_line_end?: number;
+}
+
+export interface ReviewCommentVO {
+  id: number;
+  document_id: number;
+  comment_no: number;
+  base_revision_no: number;
+  author_id: number;
+  origin_role: ReviewOriginRole;
+  scope_type: ReviewScopeType;
+  slot_id: string;
+  anchor: ReviewCommentAnchor;
+  category: ReviewCategory;
+  content: string;
+  persist_for_regen: boolean;
+  status: ReviewCommentStatus;
+  proposal_group_msg_id?: number | null;
+  resolved_revision_id?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatPlanTargetSlotVO {
+  slot_id: string;
+  title: string;
+  comment_ids?: number[];
+  reason?: string;
+}
+
+export interface ChatPlanLockedAdviceVO {
+  slot_id: string;
+  title: string;
+  comment_ids?: number[];
+  advice: string;
+}
+
+export interface ChatPlanSummaryVO {
+  target_slots?: ChatPlanTargetSlotVO[];
+  skipped_locked_slots?: ChatPlanLockedAdviceVO[];
+  truncated_slots?: string[];
+}
+
+export interface ChatContextRefVO {
+  scope_type?: string;
+  slot_id?: string;
+  comment_ids?: number[];
+  inline_anchor?: ReviewCommentAnchor;
+}
+
+export interface ChatProposalItemVO {
+  item_id: number;
+  message_id: number;
+  slot_id: string;
+  slot_title?: string;
+  base_revision_no: number;
+  before_md: string;
+  after_md: string;
+  final_applied_md?: string;
+  unified_diff: string;
+  cited_anchors: EvidenceAnchor[];
+  verifier_preview?: ChatVerifierPreviewVO | null;
+  addressed_comment_ids: number[];
+  status: ProposalStatus;
+  applied_revision_id?: number | null;
+}
+
 export interface ChatMessageVO {
   id: number;
   session_id: number;
   role: 'user' | 'assistant';
+  intent?: ChatIntentMode | 'plan_refine';
+  scope_type?: ChatScopeType;
   content: string;
   target_slot_id: string;
   base_revision_no: number;
@@ -490,6 +578,9 @@ export interface ChatMessageVO {
   proposed_after_md: string;
   unified_diff: string;
   verifier_preview?: ChatVerifierPreviewVO | null;
+  plan_summary?: ChatPlanSummaryVO | null;
+  context_refs?: ChatContextRefVO[];
+  proposal_items?: ChatProposalItemVO[];
   proposal_status: ProposalStatus;
   applied_revision_id?: number | null;
   model_tier: string;

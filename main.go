@@ -91,6 +91,7 @@ func main() {
 	driftStore := models.NewDriftStore(models.DB)
 	govStore := models.NewGovernanceStore(models.DB)
 	chatStore := models.NewChatStore(models.DB)
+	reviewStore := models.NewReviewCommentStore(models.DB)
 	moduleStore := models.NewModuleStore(models.DB)
 
 	rbacSvc := services.NewRBACService(masterStore)
@@ -148,7 +149,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("[%s] 初始化发布目录 publish_dir 失败: %v", config.ServiceName, err)
 	}
-	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc)
+	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc).
+		WithModuleContext(moduleStore).
+		WithReviewHooks(chatStore, reviewStore)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, irAggregator, config.AppConfig.Storage.SandboxDir()).
 		WithLeaseManager(leaseMgr).
 		WithSnapshotService(snapSvc)
@@ -184,8 +187,12 @@ func main() {
 			log.Printf("[%s] 基础快照抽取后自动同步模块索引失败 (repo_id=%d): %v", config.ServiceName, repoID, syncErr)
 		}
 	})
-	genSvc.WithModuleGovernance(moduleStore, moduleSvc, rbacSvc)
-	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, keyCipher, llmClient)
+	genSvc.WithModuleGovernance(moduleStore, moduleSvc, rbacSvc).
+		WithReviewCommentRepo(reviewStore)
+	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, keyCipher, llmClient).
+		WithReviewCommentRepo(reviewStore).
+		WithModuleContext(moduleStore, masterStore)
+	reviewSvc := services.NewReviewCommentService(reviewStore, docStore)
 	metricsSvc := services.NewQualityMetricsService(govStore, docTypeStore)
 
 	reaperSvc := services.NewResourceReaper(services.ReaperConfig{
@@ -221,6 +228,7 @@ func main() {
 		WithModuleService(moduleSvc).
 		WithDocumentServices(revSvc, previewSvc, publishSvc).
 		WithChatService(chatSvc).
+		WithReviewCommentService(reviewSvc).
 		WithGovernanceServices(driftSvc, pollerSvc, metricsSvc, reaperSvc)
 
 	// 8. 基于 code-common/backend/server 启动服务（自动处理 /<ModuleKey> 网关前缀剥离与前端静态产物内嵌托管）

@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 工程实施路线图与 TDD 任务拆解总纲 (Roadmap)
 
 - **文档编号**：`01-roadmap.md`
-- **文档版本**：v1.2.0 (ADR-05 演进路线图：接续 M10，新增 M11-A / M11-B)
+- **文档版本**：v1.3.0 (ADR-06 演进路线图：接续 M11，新增 M12-A / M12-B / M12-C)
 - **编制日期**：2026-11-21
 - **归属阶段**：阶段三：契约冻结与 TDD 里程碑任务分解 (`04-tasks`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.5.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`docs/03-api/01-http-api-contract.md`](../03-api/01-http-api-contract.md)、[`docs/03-api/02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)、[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.6.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`docs/03-api/01-http-api-contract.md`](../03-api/01-http-api-contract.md)、[`docs/03-api/02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)、[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
 
 ---
 
@@ -61,7 +61,8 @@ flowchart TB
 | **M8** | **ADR-04** | [`09-m8-module-discovery-batch-and-worktree-lock.md`](./09-m8-module-discovery-batch-and-worktree-lock.md) | `F-28`, `F-29` | `SC-14`, `SC-15`, `SC-16`(锁) | 18 张表与 2 列演进；一层模块发现、孤儿可见与原子迁移；可降级工作区读写锁（P-5）；`generate-batch` 批次编排与预算熔断 | ✅ 已完成 |
 | **M9** | **ADR-04** | [`10-m9-base-slice-module-context-and-repo-anchors.md`](./10-m9-base-slice-module-context-and-repo-anchors.md) | `F-30` | `SC-16`(切片), `SC-17` | Code IR Schema `1.1` 整仓抽取与纯函数 `SliceByModule`；超大仓降级；`module_context` 分片、`scope=repo` 锚点、白名单校验与外部契约漂移 | ✅ 已完成 |
 | **M10** | **ADR-04** | [`11-m10-hierarchical-rollup-drift-and-navigation.md`](./11-m10-hierarchical-rollup-drift-and-navigation.md) | `F-31` | `SC-18` | 仓库级共享术语表；`module_digests` 声明式汇总与 `module_doc` 锚点；双源合并漂移联动；模块导航与动态 `parent_doc`；前端闭环 | ✅ 已完成 |
-| **M11** | **ADR-05** | [`12-m11-doctype-blueprint-editor.md`](./12-m11-doctype-blueprint-editor.md) | `F-03`, `F-12`, `F-32` | `SC-08`, `SC-19` | **M11-A**：`docTypeBlueprint.ts` 纯函数（`decompile`/`compile` + `DSL v1` 解析/序列化）、`Spec Drift` 静态骨架归一化、`SlotDefinition` 源码工具字段映射与 `CreateDocTypeRequest` 补齐（`T-ADR05-01`~`12`）；<br>**M11-B**：`DocTypeEditorDrawer` 三 Tab 融合蓝图重构（可视化编排 + 参数化源码 + 顶层 `ir_facets` 自动并集 + 高级策略面板 + 跨模式 `persistedSlotIds` 防误改门禁 + 宽屏切换） | ⏳ 待实施 |
+| **M11** | **ADR-05** | [`12-m11-doctype-blueprint-editor.md`](./12-m11-doctype-blueprint-editor.md) | `F-03`, `F-12`, `F-32` | `SC-08`, `SC-19` | **M11-A**：`docTypeBlueprint.ts` 纯函数（`decompile`/`compile` + `DSL v1` 解析/序列化）、`Spec Drift` 静态骨架归一化、`SlotDefinition` 源码工具字段映射与 `CreateDocTypeRequest` 补齐（`T-ADR05-01`~`12`）；<br>**M11-B**：`DocTypeEditorDrawer` 三 Tab 融合蓝图重构（可视化编排 + 参数化源码 + 顶层 `ir_facets` 自动并集 + 高级策略面板 + 跨模式 `persistedSlotIds` 防误改门禁 + 宽屏切换） | ✅ 已完成 |
+| **M12** | **ADR-06** | [`13-m12-review-and-refine-studio.md`](./13-m12-review-and-refine-studio.md) | `F-08`, `F-09`, `F-15`, `F-33` | `SC-05`, `SC-20` | **M12-A**：20 张表建模、批注篮 CRUD API、前端零依赖锚定纯函数、`StreamSplitFilter`、`Ask` 查证与多模块工具对齐；<br>**M12-B**：两阶段 `Plan -> Scoped Slot Refine`、多槽位提案组与 `ApplyMultiSectionChanges` 证据无损原子采纳、审校精修双视图与画布原地审阅；<br>**M12-C**：`persist_for_regen` 三路径 L2 尾部回流、快捷切 `hybrid` 与全量质量门禁收口（`T-ADR06-01`~`15`） | ✅ 已完成 |
 
 ---
 
@@ -89,6 +90,7 @@ flowchart TB
 | **`F-27`** (沙箱与任务资源治理) | W2 | **M6** | 活跃租约免回收 + LRU 配额清理 + 交互优先于批量队列 + 全局并发排队单测 |
 | **`F-28`~`F-31`** (ADR-04 模块发现/批次/切片/汇总) | ADR-04 | **M8** ~ **M10** | `T-ADR04-01`~`12` 全量物理隔离单测与 `SC-14`~`SC-18` 回归 |
 | **`F-32`** (ADR-05 蓝图双模融合编辑器与 `Spec Drift` 精化) | ADR-05 | **M11** (`M11-A` + `M11-B`) | `T-ADR05-01`~`12`（`node --test` 纯函数 8 项 + Go `pkg/drift`/`handlers` 4 项）与 `SC-19` |
+| **`F-33`** (ADR-06 审阅批注篮、多槽位精修与持久记忆) | ADR-06 | **M12** (`M12-A` + `M12-B` + `M12-C`) | `T-ADR06-01`~`15`（前端纯函数 3 项 + Go `pkg/llm`/`models`/`services`/`handlers` 10 项 + 门禁 2 项）与 `SC-20` |
 
 ---
 

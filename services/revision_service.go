@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -164,6 +165,26 @@ type ApplySectionChangeInput struct {
 	SourceRefID    *uint
 	CitedAnchors   []verifier.CitedAnchorCandidate
 	OperatorID     uint
+}
+
+// SectionChangeItem 描述多章节原子更新中的单个槽位变更载荷。
+type SectionChangeItem struct {
+	SlotID       string
+	Markdown     string
+	Ownership    string // 可选：不传则保持原值
+	CitedAnchors []verifier.CitedAnchorCandidate
+}
+
+// ApplyMultiSectionChangesInput 为单次 Revision 原子更新一个或多个章节的统一输入（手工直编 W1 + 单/批量 Chat 采纳 W2）。
+type ApplyMultiSectionChangesInput struct {
+	DocID                  uint
+	BaseRevisionNo         int
+	Changes                []SectionChangeItem
+	ChangeSummary          string
+	Source                 string // manual_edit | chat_refine
+	SourceRefID            *uint
+	SkipSupersedeMessageID uint // 可选：采纳本次提案消息自身时跳过将其标记为 superseded
+	OperatorID             uint
 }
 
 type ResolveOrphanInput struct {
@@ -361,7 +382,10 @@ type RevisionService struct {
 	docRepo     DocumentRepo
 	docTypeRepo DocTypeRepo
 	masterRepo  SharedMasterRepo
+	moduleRepo  ModuleRepo
 	driftRepo   DriftRepo
+	chatRepo    ChatRepo
+	reviewRepo  ReviewCommentRepo
 	snapSvc     *SnapshotService
 	verifier    *verifier.Verifier
 }
@@ -381,6 +405,19 @@ func NewRevisionService(
 		snapSvc:     snapSvc,
 		verifier:    verifier.New(),
 	}
+}
+
+// WithModuleContext 注入模块索引仓储，使整仓文档在单/多章节修订后重跑 Verifier 时具备 ModuleDigests（修复 P-7 ②）。
+func (s *RevisionService) WithModuleContext(moduleRepo ModuleRepo) *RevisionService {
+	s.moduleRepo = moduleRepo
+	return s
+}
+
+// WithReviewHooks 注入 Chat 与审阅批注仓储，使内容覆盖型修订自动将过期 pending 提案标记为 superseded 并退回批注状态。
+func (s *RevisionService) WithReviewHooks(chatRepo ChatRepo, reviewRepo ReviewCommentRepo) *RevisionService {
+	s.chatRepo = chatRepo
+	s.reviewRepo = reviewRepo
+	return s
 }
 
 // GetDocumentScope 返回文档所属 (repo_id, subdirectory)，供 Handler 在执行 RBAC 判定前查询。
@@ -606,16 +643,40 @@ func (s *RevisionService) GetRevisionDiff(ctx context.Context, docID uint, fromR
 }
 
 // ApplySectionChange 统一双轨单槽位编辑管线（手工直编 W1 + Chat Accept W2）：
-// 校验 base_revision_no 乐观锁 -> 仅替换目标 slot_id -> 其余章节字节级复制 -> 同步重跑 Verifier -> 原子追加不可变 Revision。
+// 内部委托给 ApplyMultiSectionChanges，确保单双轨统一逻辑与证据锚点不丢失。
 func (s *RevisionService) ApplySectionChange(ctx context.Context, req ApplySectionChangeInput) (*DocumentDetailVO, error) {
 	if req.SlotID == "" {
 		return nil, fmt.Errorf("%w: slot_id 不能为空", ErrInvalidRevisionParam)
 	}
+	var skipMsgID uint
+	if req.Source == models.RevSourceChatRefine && req.SourceRefID != nil {
+		skipMsgID = *req.SourceRefID
+	}
+	return s.ApplyMultiSectionChanges(ctx, ApplyMultiSectionChangesInput{
+		DocID:          req.DocID,
+		BaseRevisionNo: req.BaseRevisionNo,
+		Changes: []SectionChangeItem{{
+			SlotID:       req.SlotID,
+			Markdown:     req.Markdown,
+			Ownership:    req.Ownership,
+			CitedAnchors: req.CitedAnchors,
+		}},
+		ChangeSummary:          req.ChangeSummary,
+		Source:                 req.Source,
+		SourceRefID:            req.SourceRefID,
+		SkipSupersedeMessageID: skipMsgID,
+		OperatorID:             req.OperatorID,
+	})
+}
+
+// ApplyMultiSectionChanges 原子多章节编辑管线（单槽位编辑、批量审阅提案局部/全量采纳）：
+// 校验乐观锁 -> 锁定章节禁止 AI 写入 -> 仅更新变更槽位且未修改槽位复用 prevEvs 锚点 -> 重跑 Verifier -> 原子追加单次 Revision -> 失效同槽位旧提案。
+func (s *RevisionService) ApplyMultiSectionChanges(ctx context.Context, req ApplyMultiSectionChangesInput) (*DocumentDetailVO, error) {
 	if req.BaseRevisionNo <= 0 {
 		return nil, fmt.Errorf("%w: base_revision_no 必须为正整数", ErrInvalidRevisionParam)
 	}
-	if req.Ownership != "" && !models.IsValidSectionOwnership(req.Ownership) {
-		return nil, fmt.Errorf("%w: ownership 必须为 auto、hybrid 或 locked", ErrInvalidRevisionParam)
+	if len(req.Changes) == 0 {
+		return nil, fmt.Errorf("%w: changes 不能为空", ErrInvalidRevisionParam)
 	}
 	source := req.Source
 	if source == "" {
@@ -623,6 +684,26 @@ func (s *RevisionService) ApplySectionChange(ctx context.Context, req ApplySecti
 	}
 	if !models.IsValidRevisionSource(source) {
 		return nil, fmt.Errorf("%w: 非法修订来源 %q", ErrInvalidRevisionParam, source)
+	}
+
+	seenSlots := make(map[string]bool, len(req.Changes))
+	changeBySlot := make(map[string]SectionChangeItem, len(req.Changes))
+	changedSlotIDs := make([]string, 0, len(req.Changes))
+	for _, ch := range req.Changes {
+		sid := strings.TrimSpace(ch.SlotID)
+		if sid == "" {
+			return nil, fmt.Errorf("%w: changes 中存在空 slot_id", ErrInvalidRevisionParam)
+		}
+		if seenSlots[sid] {
+			return nil, fmt.Errorf("%w: changes 中存在重复 slot_id: %s", ErrInvalidRevisionParam, sid)
+		}
+		if ch.Ownership != "" && !models.IsValidSectionOwnership(ch.Ownership) {
+			return nil, fmt.Errorf("%w: ownership 必须为 auto、hybrid 或 locked", ErrInvalidRevisionParam)
+		}
+		seenSlots[sid] = true
+		ch.SlotID = sid
+		changeBySlot[sid] = ch
+		changedSlotIDs = append(changedSlotIDs, sid)
 	}
 
 	doc, err := s.docRepo.GetByID(ctx, req.DocID)
@@ -639,32 +720,42 @@ func (s *RevisionService) ApplySectionChange(ctx context.Context, req ApplySecti
 	}
 
 	snaps := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
-	targetIdx := -1
+	slotIndex := make(map[string]int, len(snaps))
 	for i := range snaps {
-		if snaps[i].SlotID == req.SlotID {
-			targetIdx = i
-			break
+		slotIndex[snaps[i].SlotID] = i
+	}
+	for _, sid := range changedSlotIDs {
+		idx, ok := slotIndex[sid]
+		if !ok {
+			return nil, models.ErrNotFound
+		}
+		if source == models.RevSourceChatRefine && snaps[idx].Ownership == models.OwnershipLocked {
+			return nil, ErrSlotLocked
 		}
 	}
-	if targetIdx < 0 {
-		return nil, models.ErrNotFound
-	}
 
-	// 严格单槽位边界隔离：仅修改 targetIdx，其余槽位 Markdown 与 ContentSHA256 逐字节不变
 	updatedSnaps := make([]models.DocumentSectionSnapshot, len(snaps))
 	copy(updatedSnaps, snaps)
-	updatedSnaps[targetIdx].Markdown = req.Markdown
-	updatedSnaps[targetIdx].ContentSHA256 = sha256Hex(req.Markdown)
-	updatedSnaps[targetIdx].ManuallyEdited = true
-	if req.Ownership != "" {
-		updatedSnaps[targetIdx].Ownership = req.Ownership
+	for _, sid := range changedSlotIDs {
+		idx := slotIndex[sid]
+		ch := changeBySlot[sid]
+		updatedSnaps[idx].Markdown = ch.Markdown
+		updatedSnaps[idx].ContentSHA256 = sha256Hex(ch.Markdown)
+		updatedSnaps[idx].ManuallyEdited = true
+		if ch.Ownership != "" {
+			updatedSnaps[idx].Ownership = ch.Ownership
+		}
 	}
 
+	prevAnchorsBySlot := parsePrevAnchorsBySlot(prevEvs)
 	secInputs := make([]verifier.SectionInput, 0, len(updatedSnaps))
-	for i, sn := range updatedSnaps {
+	for _, sn := range updatedSnaps {
 		var cited []verifier.CitedAnchorCandidate
-		if i == targetIdx && len(req.CitedAnchors) > 0 {
-			cited = req.CitedAnchors
+		if ch, modified := changeBySlot[sn.SlotID]; modified {
+			cited = ch.CitedAnchors
+		} else {
+			// P-7 ① 修复：未修改章节复用上版已对齐证据锚点（含 module_doc / proto_rpc / http_route 等非内联锚点）
+			cited = evidenceAnchorsToCandidates(prevAnchorsBySlot[sn.SlotID])
 		}
 		secInputs = append(secInputs, verifier.SectionInput{
 			SlotID:       sn.SlotID,
@@ -676,7 +767,11 @@ func (s *RevisionService) ApplySectionChange(ctx context.Context, req ApplySecti
 
 	summary := strings.TrimSpace(req.ChangeSummary)
 	if summary == "" {
-		summary = fmt.Sprintf("编辑章节 %s", req.SlotID)
+		if len(changedSlotIDs) == 1 {
+			summary = fmt.Sprintf("编辑章节 %s", changedSlotIDs[0])
+		} else {
+			summary = fmt.Sprintf("批量更新 %d 个章节 (%s)", len(changedSlotIDs), strings.Join(changedSlotIDs, ", "))
+		}
 	}
 
 	newRev, newEvs, err := s.verifyAndAppend(
@@ -686,6 +781,8 @@ func (s *RevisionService) ApplySectionChange(ctx context.Context, req ApplySecti
 	if err != nil {
 		return nil, err
 	}
+
+	s.afterContentRevisionHooks(ctx, doc.ID, changedSlotIDs, req.SkipSupersedeMessageID)
 	return s.buildDocumentDetailVO(ctx, doc, newRev, newEvs, true)
 }
 
@@ -877,6 +974,11 @@ func (s *RevisionService) RollbackRevision(ctx context.Context, req RollbackRevi
 	if err != nil {
 		return nil, err
 	}
+	allSlots := make([]string, 0, len(snaps))
+	for _, sn := range snaps {
+		allSlots = append(allSlots, sn.SlotID)
+	}
+	s.afterContentRevisionHooks(ctx, doc.ID, allSlots, 0)
 	return s.buildDocumentDetailVO(ctx, doc, newRev, newEvs, true)
 }
 
@@ -943,6 +1045,11 @@ func (s *RevisionService) RegenerateWithMerge(ctx context.Context, req Regenerat
 	if err != nil {
 		return nil, err
 	}
+	allSlots := make([]string, 0, len(merged.Sections))
+	for _, sn := range merged.Sections {
+		allSlots = append(allSlots, sn.SlotID)
+	}
+	s.afterContentRevisionHooks(ctx, doc.ID, allSlots, 0)
 	return s.buildDocumentDetailVO(ctx, doc, newRev, newEvs, true)
 }
 
@@ -972,13 +1079,20 @@ func (s *RevisionService) verifyAndAppend(
 	}
 
 	irBundle := providedIR
-	var modCtx *codeir.ModuleContextFacet
+	var (
+		modCtx        *codeir.ModuleContextFacet
+		moduleDigests []codeir.ModuleDigestInput
+	)
 	if s.snapSvc != nil && snapshotID > 0 {
 		if snap, loc, loadedIR, lErr := s.snapSvc.LoadIRBundleBySnapshotID(ctx, snapshotID); lErr == nil {
 			if irBundle == nil {
 				irBundle = loadedIR
 			}
 			modCtx = s.snapSvc.LoadModuleContext(ctx, snap, loc)
+			if doc.Subdirectory == "" && s.moduleRepo != nil {
+				glossary, _ := s.snapSvc.ReadCachedGlossary(ctx, snap, loc)
+				moduleDigests, _ = buildModuleDigestsForRepo(ctx, s.moduleRepo, s.masterRepo, s.docRepo, doc.RepoID, doc.RefName, asset, glossary)
+			}
 		}
 	}
 
@@ -986,6 +1100,7 @@ func (s *RevisionService) verifyAndAppend(
 		CommitSHA:     commitSHA,
 		IR:            irBundle,
 		ModuleContext: modCtx,
+		ModuleDigests: moduleDigests,
 		Slots:         asset.Meta.Slots,
 		Policy:        asset.Meta.VerifyPolicy,
 		Sections:      sectionInputs,
@@ -1024,7 +1139,7 @@ func (s *RevisionService) verifyAndAppend(
 		if len(evList) > 0 {
 			raw, _ := json.Marshal(evList)
 			evJSON = datatypes.JSON(raw)
-		} else if irBundle == nil && len(priorEvMap[sn.SlotID]) > 2 {
+		} else if len(priorEvMap[sn.SlotID]) > 2 {
 			evJSON = priorEvMap[sn.SlotID]
 		} else {
 			evJSON = datatypes.JSON("[]")
@@ -1056,6 +1171,52 @@ func (s *RevisionService) verifyAndAppend(
 	}
 
 	return rev, secEvidences, nil
+}
+
+func (s *RevisionService) afterContentRevisionHooks(ctx context.Context, docID uint, changedSlotIDs []string, skipMsgID uint) {
+	if s.chatRepo == nil || len(changedSlotIDs) == 0 {
+		return
+	}
+	affectedCommentIDs, err := s.chatRepo.SupersedePendingProposalsBySlots(ctx, docID, changedSlotIDs, skipMsgID)
+	if err != nil {
+		log.Printf("[Code-Archdoc] 标记同槽位过期 pending 提案失败 (doc_id=%d): %v", docID, err)
+		return
+	}
+	if s.reviewRepo != nil && len(affectedCommentIDs) > 0 {
+		if rErr := s.reviewRepo.RevertProposedByCommentIDs(ctx, docID, affectedCommentIDs); rErr != nil {
+			log.Printf("[Code-Archdoc] 退回失效提案关联批注状态失败 (doc_id=%d): %v", docID, rErr)
+		}
+	}
+}
+
+func parsePrevAnchorsBySlot(prevEvRows []models.SectionEvidence) map[string][]models.EvidenceAnchor {
+	out := make(map[string][]models.EvidenceAnchor, len(prevEvRows))
+	for _, pe := range prevEvRows {
+		if len(pe.EvidencesJSON) <= 2 {
+			continue
+		}
+		var list []models.EvidenceAnchor
+		if json.Unmarshal(pe.EvidencesJSON, &list) == nil && len(list) > 0 {
+			out[pe.SlotID] = list
+		}
+	}
+	return out
+}
+
+func evidenceAnchorsToCandidates(anchors []models.EvidenceAnchor) []verifier.CitedAnchorCandidate {
+	if len(anchors) == 0 {
+		return nil
+	}
+	out := make([]verifier.CitedAnchorCandidate, 0, len(anchors))
+	for _, a := range anchors {
+		out = append(out, verifier.CitedAnchorCandidate{
+			FilePath:   a.FilePath,
+			FQSymbol:   a.FQSymbol,
+			SymbolKind: a.SymbolKind,
+			Scope:      a.Scope,
+		})
+	}
+	return out
 }
 
 func (s *RevisionService) buildDocumentDetailVO(

@@ -20,12 +20,12 @@ docs/
 │   ├── 02-extraction-and-generation-engine.md  # 【核心引擎篇】Git 沙箱降噪、Code IR 多语言 SPI、L2 编排熔断、Verifier 与资源调度
 │   ├── 03-doctype-drift-and-publishing.md      # 【领域治理篇】DocType 目录 SSOT、章节锁定、publish_dir 落盘、双维漂移与质量度量
 │   ├── 04-workbench-and-security.md            # 【应用与安全篇】Canvas Studio 组件树、双轨修订与 SSE 协议、三层 RBAC 与审计
-│   └── 05-database-schema.md                   # 【数据模型篇】共享只读契约、全局 ER 图与 16 张 archdoc_* GORM 建模字典
+│   └── 05-database-schema.md                   # 【数据模型篇】共享只读契约、全局 ER 图与 20 张 archdoc_* GORM 建模字典
 ├── 03-api/          # 接口与数据契约：RESTful & SSE API 签名、JSONB Schema、仓储接口与 TS 类型字典
-│   ├── 01-http-api-contract.md            # 【API 契约】54 条 HTTP/SSE 接口字典、三层 RBAC 守卫、错误码与审计规范
-│   └── 02-data-model-and-dto-contract.md  # 【数据契约】16 表索引不变量、12 组 JSONB Schema、状态机、仓储接口与 TS 类型
+│   ├── 01-http-api-contract.md            # 【API 契约】HTTP/SSE 接口字典（含 ADR-04/05/06 增量）、三层 RBAC 守卫、错误码与审计规范
+│   └── 02-data-model-and-dto-contract.md  # 【数据契约】20 表索引不变量、JSONB Schema、状态机、仓储接口与 TS 类型
 ├── 04-tasks/        # TDD 实施规划与验收：Milestone 拆解、W1/W2 任务作战卡与自动化验收测试标准 (AC)
-│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) + ADR-04(M8~M10) + ADR-05(M11) DAG 与质量门禁
+│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) + ADR-04(M8~M10) + ADR-05(M11) + ADR-06(M12) DAG 与质量门禁
 │   ├── 02-m1-domain-model-and-api.md           # 【M1 作战卡】D-04 gitsync 底座、16 张领域模型、安全沙箱与 RBAC 基础 API
 │   ├── 03-m2-codeir-doctype-and-generation.md  # 【M2 作战卡】Golden Sample、L1 C/C++/Proto IR、DocType 种子与 L2/Verifier 引擎
 │   ├── 04-m3-revision-publish-and-bench-sync.md# 【M3 作战卡】手工直编、锁定/孤立保护、原子发布导出与 code-bench D-01~D-03
@@ -36,7 +36,8 @@ docs/
 │   ├── 09-m8-module-discovery-batch-and-worktree-lock.md # 【M8 作战卡】一层模块自动发现、范围迁移、批量生成与可降级工作区读写锁
 │   ├── 10-m9-base-slice-module-context-and-repo-anchors.md # 【M9 作战卡】整仓基线切片、module_context 分片、仓库级证据锚点与外部契约漂移
 │   ├── 11-m10-hierarchical-rollup-drift-and-navigation.md  # 【M10 作战卡】仓库级共享术语表、层级汇总 (module_digests)、双源漂移与模块导航
-│   └── 12-m11-doctype-blueprint-editor.md                  # 【M11 作战卡】DocType 蓝图化双模融合编辑器与 Spec Drift 模板判定精化
+│   ├── 12-m11-doctype-blueprint-editor.md                  # 【M11 作战卡】DocType 蓝图化双模融合编辑器与 Spec Drift 模板判定精化
+│   └── 13-m12-review-and-refine-studio.md                  # 【M12 作战卡】Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校记忆
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
 │   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型

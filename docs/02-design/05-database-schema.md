@@ -1,10 +1,10 @@
 # PostgreSQL 物理模型与 `archdoc_*` GORM 建模字典
 
 - **文档编号**：`05-database-schema.md`
-- **文档版本**：v1.1.0 (ADR-04 扩展：16 → 18 张自有表，新增 `base_snapshot_id` 与 `parent_task_id`)
-- **编制日期**：2026-11-20
+- **文档版本**：v1.2.0 (ADR-06 扩展：18 → 20 张自有表，新增 `archdoc_review_comments` 与 `archdoc_chat_proposal_items`，扩展 `ChatMessage` 与 `Document.LastCommentNo`)
+- **编制日期**：2026-11-21
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-31`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
+- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-33`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
 
 ---
 
@@ -54,7 +54,7 @@ func (ArchitectureElement) TableName() string {
 
 ## 2. 全局物理实体关系图（Mermaid ER Diagram）
 
-本模块共设计 **18 张自有业务表**，全部严格遵循 `archdoc_` 表前缀约束，划分为 8 个领域子域（严格遵守共享公共表零 DDL 红线）：
+本模块共设计 **20 张自有业务表**，全部严格遵循 `archdoc_` 表前缀约束，划分为 8 个领域子域（严格遵守共享公共表零 DDL 红线）：
 
 ```mermaid
 erDiagram
@@ -66,6 +66,7 @@ erDiagram
     REPOSITORIES ||--o| ARCHDOC_REPO_REMOTE_HEADS : "repo_id"
     USERS ||--o{ ARCHDOC_GEN_TASKS : "triggered_by"
     USERS ||--o{ ARCHDOC_DOCUMENT_REVISIONS : "created_by"
+    USERS ||--o{ ARCHDOC_REVIEW_COMMENTS : "author_id"
 
     ARCHDOC_DOC_TYPES ||--o{ ARCHDOC_DOC_TYPE_REVISIONS : "doc_type_id"
     ARCHDOC_DOC_TYPES ||--o{ ARCHDOC_DOCUMENTS : "doc_type_slug"
@@ -83,10 +84,14 @@ erDiagram
     ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_DOCUMENT_REVISIONS : "document_id"
     ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_SECTION_EVIDENCES : "document_id"
     ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_CHAT_SESSIONS : "document_id"
+    ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_REVIEW_COMMENTS : "document_id"
+    ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_CHAT_PROPOSAL_ITEMS : "document_id"
     ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_DOCUMENT_DRIFTS : "document_id"
     ARCHDOC_DOCUMENTS ||--o{ ARCHDOC_QUALITY_METRICS : "document_id"
 
     ARCHDOC_CHAT_SESSIONS ||--o{ ARCHDOC_CHAT_MESSAGES : "session_id"
+    ARCHDOC_CHAT_MESSAGES ||--o{ ARCHDOC_CHAT_PROPOSAL_ITEMS : "message_id"
+    ARCHDOC_CHAT_MESSAGES ||--o{ ARCHDOC_REVIEW_COMMENTS : "proposal_group_msg_id"
 ```
 
 ---
@@ -266,6 +271,7 @@ type Document struct {
 	Status              string     `gorm:"size:24;not null;default:'draft';index" json:"status"` // draft | approved
 	CurrentRevisionNo   int        `gorm:"default:0;not null" json:"current_revision_no"`        // 乐观锁版本号
 	CurrentRevisionID   *uint      `json:"current_revision_id"`
+	LastCommentNo       int        `gorm:"default:0;not null" json:"-"`                          // 文档内单调递增批注编号高水位（物理删除后永不复用旧号）
 	PublishedRevisionID *uint      `json:"published_revision_id"`                                // 当前对外发布的修订 ID（撤回后置 nil）
 	PublishedCommitSHA  string     `gorm:"size:40;default:'';index" json:"published_commit_sha"` // 已发布版本对应的 commit_sha（驱动 Code Drift）
 	PublishedRelPath    string     `gorm:"size:512;default:''" json:"published_rel_path"`        // publish_dir 内相对路径（防改名残留与撤回精准清理）
@@ -322,7 +328,7 @@ type SectionEvidence struct {
 func (SectionEvidence) TableName() string { return config.TablePrefix + "section_evidences" }
 ```
 
-### 3.5 协同精修域（`F-09`，`W2`）
+### 3.5 协同精修与审阅批注域（`F-09` / `F-33`，`W2` → `M12`）
 
 ```go
 // ChatSession Canvas Studio 文档协同精修会话
@@ -338,26 +344,75 @@ type ChatSession struct {
 
 func (ChatSession) TableName() string { return config.TablePrefix + "chat_sessions" }
 
-// ChatMessage 精修对话消息与结构化章节 Diff 提案记录
+// ChatMessage 精修对话消息与多槽位提案组头记录
 type ChatMessage struct {
-	ID                 uint           `gorm:"primaryKey" json:"id"`
-	SessionID          uint           `gorm:"not null;index" json:"session_id"`
-	Role               string         `gorm:"size:16;not null" json:"role"` // user | assistant
-	Content            string         `gorm:"type:text;not null" json:"content"`
-	TargetSlotID       string         `gorm:"size:64;default:''" json:"target_slot_id"`
-	BaseRevisionNo     int            `gorm:"default:0;not null" json:"base_revision_no"`
-	ProposedBeforeMD   string         `gorm:"type:text;default:''" json:"proposed_before_md"`
-	ProposedAfterMD    string         `gorm:"type:text;default:''" json:"proposed_after_md"`
-	UnifiedDiff        string         `gorm:"type:text;default:''" json:"unified_diff"`
+	ID                  uint           `gorm:"primaryKey" json:"id"`
+	SessionID           uint           `gorm:"not null;index" json:"session_id"`
+	Role                string         `gorm:"size:16;not null" json:"role"` // user | assistant
+	Intent              string         `gorm:"size:16;not null;default:'revise'" json:"intent"` // revise | ask
+	ScopeType           string         `gorm:"size:20;not null;default:'slot'" json:"scope_type"` // slot | inline | global | review_batch
+	Content             string         `gorm:"type:text;not null" json:"content"`
+	TargetSlotID        string         `gorm:"size:64;default:''" json:"target_slot_id"`
+	BaseRevisionNo      int            `gorm:"default:0;not null" json:"base_revision_no"`
+	ProposedBeforeMD    string         `gorm:"type:text;default:''" json:"proposed_before_md"`
+	ProposedAfterMD     string         `gorm:"type:text;default:''" json:"proposed_after_md"`
+	UnifiedDiff         string         `gorm:"type:text;default:''" json:"unified_diff"`
 	VerifierPreviewJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_preview"`
-	ProposalStatus     string         `gorm:"size:20;default:'none';not null;index" json:"proposal_status"` // none | pending | accepted | rejected | superseded
-	AppliedRevisionID  *uint          `json:"applied_revision_id"`
-	ModelTier          string         `gorm:"size:20;default:''" json:"model_tier"`
+	PlanSummaryJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"plan_summary"` // M12: 阶段 1 Plan 路由结果与 advisory_locked 建议
+	ContextRefsJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"context_refs"` // M12: 引用的选区锚点 / slot_id / comment_ids
+	ProposalStatus      string         `gorm:"size:20;default:'none';not null;index" json:"proposal_status"` // none | pending | accepted | rejected | superseded
+	AppliedRevisionID   *uint          `json:"applied_revision_id"`
+	ModelTier           string         `gorm:"size:20;default:''" json:"model_tier"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+}
+
+func (ChatMessage) TableName() string { return config.TablePrefix + "chat_messages" }
+
+// ChatProposalItem 一次精修消息下包含的单槽位 Diff 提案项（第 20 张 archdoc_* 自有表）
+type ChatProposalItem struct {
+	ID                      uint           `gorm:"primaryKey" json:"id"`
+	MessageID               uint           `gorm:"not null;uniqueIndex:idx_archdoc_cpi_msg_slot,priority:1;index" json:"message_id"`
+	DocumentID              uint           `gorm:"not null;index:idx_archdoc_cpi_doc_slot_status,priority:1" json:"document_id"`
+	SlotID                  string         `gorm:"size:64;not null;uniqueIndex:idx_archdoc_cpi_msg_slot,priority:2;index:idx_archdoc_cpi_doc_slot_status,priority:2" json:"slot_id"`
+	BaseRevisionNo          int            `gorm:"not null;default:0" json:"base_revision_no"`
+	ProposedBeforeMD        string         `gorm:"type:text;not null;default:''" json:"proposed_before_md"`
+	ProposedAfterMD         string         `gorm:"type:text;not null;default:''" json:"proposed_after_md"`
+	FinalAppliedMD          string         `gorm:"type:text;not null;default:''" json:"final_applied_md"`
+	UnifiedDiff             string         `gorm:"type:text;not null;default:''" json:"unified_diff"`
+	CitedAnchorsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"cited_anchors"`
+	VerifierPreviewJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_preview"`
+	AddressedCommentIDsJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"addressed_comment_ids"`
+	Status                  string         `gorm:"size:20;not null;default:'pending';index:idx_archdoc_cpi_doc_slot_status,priority:3" json:"status"` // pending | accepted | rejected | superseded
+	AppliedRevisionID       *uint          `json:"applied_revision_id,omitempty"`
+	CreatedAt               time.Time      `json:"created_at"`
+	UpdatedAt               time.Time      `json:"updated_at"`
+}
+
+func (ChatProposalItem) TableName() string { return config.TablePrefix + "chat_proposal_items" }
+
+// ReviewComment 文档审阅批注实体（第 19 张 archdoc_* 自有表）
+type ReviewComment struct {
+	ID                 uint           `gorm:"primaryKey" json:"id"`
+	DocumentID         uint           `gorm:"not null;uniqueIndex:idx_archdoc_rc_doc_no,priority:1;index:idx_archdoc_rc_doc_status,priority:1" json:"document_id"`
+	CommentNo          int            `gorm:"not null;default:0;uniqueIndex:idx_archdoc_rc_doc_no,priority:2" json:"comment_no"`
+	BaseRevisionNo     int            `gorm:"not null;default:0" json:"base_revision_no"`
+	AuthorID           uint           `gorm:"not null;index" json:"author_id"`
+	OriginRole         string         `gorm:"size:16;not null;default:'owner'" json:"origin_role"`
+	ScopeType          string         `gorm:"size:16;not null;default:'inline'" json:"scope_type"`
+	SlotID             string         `gorm:"size:64;not null;default:'';index" json:"slot_id"`
+	AnchorJSON         datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"anchor"`
+	Category           string         `gorm:"size:24;not null;default:'correction'" json:"category"`
+	Content            string         `gorm:"type:text;not null" json:"content"`
+	PersistForRegen    bool           `gorm:"default:false;not null;index" json:"persist_for_regen"`
+	Status             string         `gorm:"size:20;not null;default:'open';index:idx_archdoc_rc_doc_status,priority:2" json:"status"`
+	ProposalGroupMsgID *uint          `gorm:"index" json:"proposal_group_msg_id,omitempty"`
+	ResolvedRevisionID *uint          `json:"resolved_revision_id,omitempty"`
 	CreatedAt          time.Time      `json:"created_at"`
 	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
-func (ChatMessage) TableName() string { return config.TablePrefix + "chat_messages" }
+func (ReviewComment) TableName() string { return config.TablePrefix + "review_comments" }
 ```
 
 ### 3.6 巡检与双维漂移域（`F-25`、`F-12`，`W2`）
@@ -512,7 +567,7 @@ func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules
 
 ### 4.1 `AutoMigrate` 初始化顺序与幂等 Seed 规则
 
-1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 18 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ChatSession` → `ChatMessage` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
+1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 20 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ReviewComment` → `ChatSession` → `ChatMessage` → `ChatProposalItem` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
 2. **幂等初始化**：
    - `LLMConfig`：若 `fast` / `flagship` 记录不存在，自动 Seed 默认空配置骨架行（`is_active = false`，提示管理员在后台配置）；重复启动零变更；
    - `DocType`：启动时将内嵌 5 类默认 `DocType` 释放至 `doc_types/`（仅补缺失目录），再调用 `DocTypeRegistry.SyncAll()` 计算聚合哈希同步入库，重复启动零重复记录、零多余修订。

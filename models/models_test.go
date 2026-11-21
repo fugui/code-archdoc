@@ -13,10 +13,10 @@ import (
 	"gorm.io/datatypes"
 )
 
-func TestAll18TablesPrefixAndAutoMigrate(t *testing.T) {
+func TestAll20TablesPrefixAndAutoMigrate(t *testing.T) {
 	ownModels := AllOwnModels()
-	if len(ownModels) != 18 {
-		t.Fatalf("期望自有 GORM 模型数量为 18，实际为 %d", len(ownModels))
+	if len(ownModels) != 20 {
+		t.Fatalf("期望自有 GORM 模型数量为 20，实际为 %d", len(ownModels))
 	}
 
 	seen := make(map[string]bool, len(ownModels))
@@ -120,6 +120,15 @@ func TestEnumsAndTaskStateMachine(t *testing.T) {
 	}
 	if !IsValidSymbolKind(SymbolKindCppFunc) || !IsValidSymbolKind(SymbolKindProtoRPC) || IsValidSymbolKind("rust_trait") {
 		t.Fatal("SymbolKind 校验失败")
+	}
+	if !IsValidReviewScopeType(ReviewScopeInline) || !IsValidReviewScopeType(ReviewScopeGlobal) || IsValidReviewScopeType("block") {
+		t.Fatal("ReviewScopeType 校验失败")
+	}
+	if !IsValidReviewCategory(ReviewCategoryCorrection) || !IsValidReviewCategory(ReviewCategoryGlobalRule) || IsValidReviewCategory("style") {
+		t.Fatal("ReviewCategory 校验失败")
+	}
+	if !IsValidReviewCommentStatus(ReviewStatusOpen) || !IsValidReviewCommentStatus(ReviewStatusProposed) || IsValidReviewCommentStatus("closed") {
+		t.Fatal("ReviewCommentStatus 校验失败")
 	}
 
 	// 2. 任务状态机转移校验

@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.2.0 (ADR-05 扩展：补齐 `POST /api/admin/doc-types` 可选高级治理字段与 `SlotDefinition` 源码工具字段)
+- **文档版本**：v1.3.0 (ADR-06 扩展：新增审阅批注篮 CRUD 与多槽位提案组 Apply/Reject 6 条接口，升级 `/chat/refine` 入参与 10 事件 SSE 协议)
 - **编制日期**：2026-11-21
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.5.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.6.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -1034,3 +1034,35 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
 - `GET /api/repos` 与 `GET /api/repos/:repo_id/scopes`：`RepoScopeCoverageVO` 新增 `scope_status`（`"active" | "missing" | "orphan"`）、`module_source`（`"repo" | "arch_element" | "discovered" | "orphan"`）、`effective_files`、`total_loc`；
 - `GET /api/documents/:id/source-preview`：新增可选查询参数 `scope=module|repo`（默认 `module`；`scope=repo` 严格受当前文档 `scope=repo` 证据锚点 / 快照 `module_context` 白名单保护，越界返 `403 PATH_ESCAPE`）；
 - `GET /api/tasks/:task_id`：新增 `parent_task_id`、`child_tasks`、`batch_summary`。
+
+---
+
+## 6. ADR-06 增量接口契约（`M12`，新增 6 Endpoints）
+
+### 6.1 新增接口清单（均挂载 `ScopeWrite` 守卫）
+
+| # | 方法 | 路由路径 | 鉴权级别 | 里程碑 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| 62 | `GET` | `/api/documents/:id/review-comments` | `ScopeWrite` | M12-A | 获取文档审阅批注列表（按 `comment_no ASC` 排序，支持 `status`/`scope_type`/`slot_id`/`persist_for_regen` 筛选） | - |
+| 63 | `POST` | `/api/documents/:id/review-comments` | `ScopeWrite` | M12-A | 新建划词/块级/章节/全局批注（事务分配文档内单调 `comment_no`） | - |
+| 64 | `PATCH` | `/api/documents/:id/review-comments/:comment_id` | `ScopeWrite` | M12-A | 更新批注正文、分类、`persist_for_regen` 或流转状态（`resolved`/`dismissed`/`open`） | - |
+| 65 | `DELETE` | `/api/documents/:id/review-comments/:comment_id` | `ScopeWrite` | M12-A | 物理删除未绑定已采纳修订的批注草稿（仅限 `open`/`dismissed`） | - |
+| 66 | `POST` | `/api/documents/:id/chat/messages/:msg_id/apply` | `ScopeWrite` | M12-B | 提案组多槽位批量/微调采纳，单事务合并生成 1 个新修订并无损继承未变槽位证据锚点 | `update / document_section / P1` |
+| 67 | `POST` | `/api/documents/:id/chat/proposal-items/:item_id/reject` | `ScopeWrite` | M12-B | 拒绝提案组内单个槽位提案项并自动回退关联 `proposed` 批注为 `open` | - |
+
+### 6.2 请求、响应与向后兼容契约
+
+1. **扩展 `POST /api/documents/:id/chat/refine` 入参**：
+   - 新增可选字段：`mode` (`"revise"` 默认 | `"ask"`)、`scope_type` (`"slot"` 默认 | `"inline"` | `"global"` | `"review_batch"`)、`comment_ids?: number[]`（`review_batch` 必填，去重 1~20 条）、`inline_anchor?: ReviewCommentAnchor`；
+   - `mode="ask"` 放行 `locked` 槽位与 `global` 作用域，不写 `ChatProposalItem`、不报 `EMPTY_PROPOSAL`；
+   - `scope_type="review_batch"` 允许空 `prompt`（自动合成可读消息标题与正文）；
+   - SSE 事件流升级为 10 类事件：`meta` / `plan` / `stage` / `tool_call` / `delta`（经 `StreamSplitFilter` 净化，零 JSON 噪音）/ `proposal_item` / `diff_proposal`（单槽位兼容下发）/ `verifier_preview` / `done` / `error`。
+2. **新增 `POST /api/documents/:id/chat/messages/:msg_id/apply`**：
+   - 请求体：`{ "base_revision_no": 5, "change_summary": "...", "items": [{ "item_id": 101, "slot_id": "core_request_flows", "override_markdown": "..." }] }`（`items` 为空时默认采纳该消息下全部 `pending` 提案项）；
+   - 校验：`base_revision_no > 0` 乐观锁拦截 `409 OPTIMISTIC_LOCK_CONFLICT`；目标 `locked` 槽位返 `409 CONFLICT`；
+   - 响应 (`200 OK`)：返回 `DocumentDetailVO`；单事务仅生成 1 条 `DocumentRevision`，未修改/未选中槽位 SHA256 与非内联证据锚点无损保留，被取代同槽位旧提案项关联批注自动回退 `open`。
+3. **新增 `POST /api/documents/:id/chat/proposal-items/:item_id/reject`**：
+   - 响应 (`200 OK`)：`{ "item_id": 101, "message_id": 88, "item_status": "rejected", "message_proposal_status": "pending|rejected|accepted" }`。
+4. **存量 `accept` / `reject` 向后兼容**：
+   - `POST /api/documents/:id/chat/messages/:msg_id/accept` 委托给 `ApplyProposalItems`（采纳全部 `pending` 项）；
+   - `POST /api/documents/:id/chat/messages/:msg_id/reject` 拒绝该消息下全部 `pending` 项并将关联 `proposed` 批注回退为 `open`。

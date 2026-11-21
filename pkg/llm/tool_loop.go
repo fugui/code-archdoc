@@ -44,6 +44,7 @@ type ToolTraceEvent struct {
 
 // ToolLoopCallbacks 为流式 Tool-Calling 提供增量内容与工具调用进度回调。
 type ToolLoopCallbacks struct {
+	OnTurnStart func(turn int)
 	OnDelta     func(delta string) error
 	OnToolEvent func(ev ToolTraceEvent) error
 }
@@ -57,7 +58,7 @@ type ToolLoopResult struct {
 	Trace           []ToolTraceEvent
 }
 
-const toolLoopFinalizeNotice = "只读源码工具探索配额已用尽。严禁继续调用任何工具，请立即基于已获取的 L1 Code IR 与上述源码事实，严格按 system 规定的 JSON 格式输出最终结果。"
+const toolLoopFinalizeNotice = "只读源码工具探索配额已用尽。严禁继续调用任何工具，请立即基于已获取的 L1 Code IR 与上述源码事实，严格按系统指令规定的输出格式输出最终结果。"
 
 // RunToolLoop 执行非流式受限只读 Tool-Calling 循环（供核心流程章节槽位生成使用）。
 func RunToolLoop(
@@ -168,6 +169,10 @@ func runToolLoopInternal(
 			}
 		}
 
+		if callbacks.OnTurnStart != nil {
+			callbacks.OnTurnStart(totalTurns)
+		}
+
 		resp, err := invokeSingleRound(ctx, client, cfg, turnReq, stream, callbacks.OnDelta)
 		if err != nil {
 			// 首轮遭遇上游内网模型/网关不支持 tools 参数时，自动平滑降级为无工具单轮调用
@@ -177,6 +182,9 @@ func runToolLoopInternal(
 					MaxTokens:   req.MaxTokens,
 					Temperature: req.Temperature,
 					Stream:      stream,
+				}
+				if callbacks.OnTurnStart != nil {
+					callbacks.OnTurnStart(totalTurns)
 				}
 				fbResp, fbErr := invokeSingleRound(ctx, client, cfg, fallbackReq, stream, callbacks.OnDelta)
 				if fbErr != nil {

@@ -1,6 +1,8 @@
 import type {
   ArchBindingFilter,
   CanonicalFacetName,
+  ChatIntentMode,
+  ChatScopeType,
   ContextInputName,
   DriftFilterType,
   FacetName,
@@ -9,6 +11,10 @@ import type {
   ModuleDiscoveryStrategy,
   RepoScopeFilter,
   RepoStatusFilter,
+  ReviewCategory,
+  ReviewCommentAnchor,
+  ReviewCommentStatus,
+  ReviewScopeType,
   ScopeProfileConfig,
   SectionOwnership,
   SlotDefinition,
@@ -206,13 +212,62 @@ export interface ToggleDocTypeStatusPayload {
 
 export interface ChatRefinePayload {
   session_id?: number;
-  target_slot_id: string;
+  mode?: ChatIntentMode;
+  scope_type?: ChatScopeType;
+  target_slot_id?: string;
   base_revision_no: number;
   prompt: string;
+  comment_ids?: number[];
+  inline_anchor?: ReviewCommentAnchor;
 }
 
 export interface AcceptChatProposalPayload {
   base_revision_no: number;
+}
+
+export interface ApplyProposalItemSelection {
+  item_id?: number;
+  slot_id?: string;
+  override_markdown?: string;
+}
+
+export interface ApplyChatProposalPayload {
+  base_revision_no: number;
+  change_summary?: string;
+  items?: ApplyProposalItemSelection[];
+}
+
+export interface RejectProposalItemResultVO {
+  item_id: number;
+  message_id: number;
+  item_status: 'rejected';
+  message_proposal_status: string;
+}
+
+export interface CreateReviewCommentPayload {
+  base_revision_no?: number;
+  scope_type: ReviewScopeType;
+  slot_id?: string;
+  anchor?: ReviewCommentAnchor;
+  category: ReviewCategory;
+  content: string;
+  persist_for_regen?: boolean;
+}
+
+export interface UpdateReviewCommentPayload {
+  content?: string;
+  category?: ReviewCategory;
+  persist_for_regen?: boolean;
+  status?: Extract<ReviewCommentStatus, 'open' | 'resolved' | 'dismissed'>;
+  scope_type?: ReviewScopeType;
+  slot_id?: string;
+}
+
+export interface ReviewCommentFilterQuery {
+  status?: ReviewCommentStatus;
+  scope_type?: ReviewScopeType;
+  slot_id?: string;
+  persist_for_regen?: boolean;
 }
 
 export interface DriftListQuery {

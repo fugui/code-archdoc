@@ -12,6 +12,7 @@ import {
   updateDocumentSection,
   updateSectionOwnership,
 } from '../api/documents';
+import { listReviewComments } from '../api/reviewComments';
 import {
   getRepoScopes,
   listDocTypes,
@@ -22,19 +23,24 @@ import GenerateTaskModal from '../components/GenerateTaskModal';
 import LeftDocTreePanel from '../components/studio/LeftDocTreePanel';
 import OrphanSectionsZone from '../components/studio/OrphanSectionsZone';
 import RightUtilityDrawer, { type RightDrawerTab } from '../components/studio/RightUtilityDrawer';
+import type { ReviewDraftContext } from '../components/studio/ReviewBasketPanel';
 import SectionCard from '../components/studio/SectionCard';
 import StudioTopBar from '../components/studio/StudioTopBar';
 import VerifierBanner from '../components/studio/VerifierBanner';
 import type { EvidenceInspectRequest } from '../components/studio/EvidenceSourceTab';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
+  ChatIntentMode,
   DocTypeSummaryVO,
   DocumentDetailVO,
   DocumentNavItemVO,
   EvidenceAnchor,
   OrphanResolveAction,
   RepoModuleVO,
+  ReviewCommentAnchor,
+  ReviewCommentVO,
   SectionOwnership,
+  SectionVO,
 } from '../types';
 import { formatApiError } from '../utils/errorMessages';
 import {
@@ -76,11 +82,23 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const [loadError, setLoadError] = useState<{ title: string; message: string } | null>(null);
   const [activeSlotId, setActiveSlotId] = useState<string>('');
 
-  // 右侧辅助抽屉状态（源码证据 / 修订历史 / Chat 精修）
+  // 右侧辅助抽屉状态（源码证据 / 修订历史 / 审阅与精修）
   const [drawerOpen, setDrawerOpen] = useState<boolean>(evidenceDeepLink);
+  const [wideDrawer, setWideDrawer] = useState<boolean>(false);
   const [drawerTab, setDrawerTab] = useState<RightDrawerTab>('evidence');
   const [evidenceRequest, setEvidenceRequest] = useState<EvidenceInspectRequest | null>(null);
   const [chatTargetSlotId, setChatTargetSlotId] = useState<string>('');
+  const [chatSubTab, setChatSubTab] = useState<'basket' | 'chat'>('chat');
+  const [chatMode, setChatMode] = useState<ChatIntentMode>('revise');
+  const [chatInlineAnchor, setChatInlineAnchor] = useState<{
+    slotId: string;
+    anchor: ReviewCommentAnchor;
+    nonce: number;
+  } | null>(null);
+  const [reviewComments, setReviewComments] = useState<ReviewCommentVO[]>([]);
+  const [activeCommentId, setActiveCommentId] = useState<number | null>(null);
+  const [reviewDraftContext, setReviewDraftContext] = useState<ReviewDraftContext | null>(null);
+  const [hybridPromptSlots, setHybridPromptSlots] = useState<SectionVO[]>([]);
 
   // 操作态与仓库模块范围上下文
   const [publishing, setPublishing] = useState<boolean>(false);
@@ -226,6 +244,39 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   useEffect(() => {
     void loadStudioData();
   }, [loadStudioData]);
+
+  const loadReviewComments = useCallback(async () => {
+    if (!doc || !doc.can_write) {
+      setReviewComments([]);
+      return;
+    }
+    try {
+      const items = await listReviewComments(doc.id);
+      setReviewComments(items);
+    } catch {
+      // 批注拉取失败不阻断画布核心阅读
+    }
+  }, [doc]);
+
+  useEffect(() => {
+    void loadReviewComments();
+  }, [loadReviewComments]);
+
+  const commentsBySlot = useMemo(() => {
+    const map = new Map<string, ReviewCommentVO[]>();
+    for (const c of reviewComments) {
+      if (!c.slot_id) continue;
+      const arr = map.get(c.slot_id) ?? [];
+      arr.push(c);
+      map.set(c.slot_id, arr);
+    }
+    return map;
+  }, [reviewComments]);
+
+  const pendingReviewCount = useMemo(
+    () => reviewComments.filter((c) => c.status === 'open').length,
+    [reviewComments],
+  );
 
   const regularSections = useMemo(
     () => (doc ? doc.sections.filter((s) => !s.is_orphan) : []),
@@ -456,6 +507,76 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
     }
   };
 
+  const handleOpenChatForReview = (
+    slotId: string,
+    opts?: {
+      subTab?: 'basket' | 'chat';
+      mode?: ChatIntentMode;
+      anchor?: ReviewCommentAnchor;
+    },
+  ) => {
+    setActiveSlotId(slotId);
+    setChatTargetSlotId(slotId);
+    if (opts?.subTab) setChatSubTab(opts.subTab);
+    if (opts?.mode) setChatMode(opts.mode);
+    if (opts?.anchor) {
+      setChatInlineAnchor({ slotId, anchor: opts.anchor, nonce: Date.now() });
+    }
+    setDrawerTab('chat');
+    setDrawerOpen(true);
+  };
+
+  const handleAnnotateBlock = (slotId: string, anchor: ReviewCommentAnchor) => {
+    setReviewDraftContext({
+      scopeType: 'inline',
+      slotId,
+      anchor,
+      nonce: Date.now(),
+    });
+    handleOpenChatForReview(slotId, { subTab: 'basket' });
+  };
+
+  const handleSelectReviewComment = (comment: ReviewCommentVO) => {
+    setActiveCommentId(comment.id);
+    if (comment.slot_id) {
+      handleSelectSlot(comment.slot_id);
+    }
+    setDrawerTab('chat');
+    setChatSubTab('basket');
+    setDrawerOpen(true);
+  };
+
+  const handleSelectionAction = (
+    action: 'comment' | 'refine' | 'ask',
+    slotId: string,
+    anchor: ReviewCommentAnchor,
+  ) => {
+    if (action === 'comment') {
+      handleAnnotateBlock(slotId, anchor);
+      return;
+    }
+    handleOpenChatForReview(slotId, {
+      subTab: 'chat',
+      mode: action === 'ask' ? 'ask' : 'revise',
+      anchor,
+    });
+  };
+
+  const handleAppliedProposal = (appliedSlots: string[], commentIds: number[]) => {
+    if (!doc || appliedSlots.length === 0 || commentIds.length === 0) return;
+    const appliedCommentSet = new Set(commentIds);
+    const hasSupplement = reviewComments.some(
+      (c) => appliedCommentSet.has(c.id) && c.category === 'supplement',
+    );
+    if (!hasSupplement) return;
+    const autoSections = doc.sections.filter(
+      (s) => appliedSlots.includes(s.slot_id) && s.ownership === 'auto',
+    );
+    if (autoSections.length > 0) {
+      setHybridPromptSlots(autoSections);
+    }
+  };
+
   return (
     <div className={`code-archdoc-studio ${isEmbedded ? 'code-archdoc-studio--embedded' : ''}`}>
       <StudioTopBar
@@ -464,6 +585,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
         repoName={doc?.repo_name || repoMeta?.repoName}
         subdirectory={effectiveSubdir}
         drawerOpen={drawerOpen}
+        pendingReviewCount={pendingReviewCount}
         publishing={publishing}
         unpublishing={unpublishing}
         exporting={exporting}
@@ -473,10 +595,16 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
           setDrawerTab('history');
           setDrawerOpen(true);
         }}
+        onOpenReviewBasket={() => {
+          setChatSubTab('basket');
+          setDrawerTab('chat');
+          setDrawerOpen(true);
+        }}
         onOpenChatRefine={() => {
           if (activeSlotId) {
             setChatTargetSlotId(activeSlotId);
           }
+          setChatSubTab('chat');
           setDrawerTab('chat');
           setDrawerOpen(true);
         }}
@@ -488,7 +616,11 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
 
       <div
         className={`code-archdoc-studio-grid ${
-          drawerOpen ? 'code-archdoc-studio-grid--with-drawer' : ''
+          drawerOpen
+            ? `code-archdoc-studio-grid--with-drawer ${
+                wideDrawer ? 'code-archdoc-studio-grid--drawer-wide' : ''
+              }`
+            : ''
         }`}
       >
         <LeftDocTreePanel
@@ -559,6 +691,36 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
             </div>
           ) : (
             <div className="code-archdoc-canvas-inner">
+              {hybridPromptSlots.length > 0 && doc.can_write && (
+                <div className="code-archdoc-review-hybrid-banner">
+                  <span>
+                    已通过“知识补充”批注应用至「{hybridPromptSlots.map((s) => s.title).join('、')}」，建议将所有权切换为 <strong>人机协同 (hybrid)</strong> 以防止后续重生成覆盖补充内容。
+                  </span>
+                  <div className="flex-center gap-xs">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-small"
+                      onClick={() => {
+                        const targets = hybridPromptSlots;
+                        setHybridPromptSlots([]);
+                        void Promise.all(
+                          targets.map((s) => handleChangeOwnership(s.slot_id, 'hybrid')),
+                        );
+                      }}
+                    >
+                      一键切换为 hybrid
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-text btn-small"
+                      onClick={() => setHybridPromptSlots([])}
+                    >
+                      暂不切换
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <VerifierBanner
                 report={doc.viewing_revision.verifier_report}
                 onJumpToSlot={handleSelectSlot}
@@ -570,17 +732,19 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
                   section={section}
                   baseRevisionNo={doc.current_revision_no}
                   canWrite={doc.can_write}
+                  reviewComments={commentsBySlot.get(section.slot_id) ?? []}
+                  activeCommentId={activeCommentId}
                   onSaveSection={handleSaveSection}
                   onChangeOwnership={handleChangeOwnership}
                   onReloadDocument={loadStudioData}
                   onInspectEvidence={handleInspectEvidence}
                   onInspectEvidenceLink={handleInspectEvidenceLink}
-                  onOpenChatRefine={(slotId) => {
-                    setActiveSlotId(slotId);
-                    setChatTargetSlotId(slotId);
-                    setDrawerTab('chat');
-                    setDrawerOpen(true);
-                  }}
+                  onOpenChatRefine={(slotId) =>
+                    handleOpenChatForReview(slotId, { subTab: 'chat', mode: 'revise' })
+                  }
+                  onAnnotateBlock={handleAnnotateBlock}
+                  onSelectReviewComment={handleSelectReviewComment}
+                  onSelectionAction={handleSelectionAction}
                 />
               ))}
 
@@ -600,10 +764,23 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
             doc={doc}
             evidenceRequest={evidenceRequest}
             chatTargetSlotId={chatTargetSlotId}
+            chatSubTab={chatSubTab}
+            chatMode={chatMode}
+            chatInlineAnchor={chatInlineAnchor}
+            reviewComments={reviewComments}
+            activeCommentId={activeCommentId}
+            reviewDraftContext={reviewDraftContext}
+            wideDrawer={wideDrawer}
+            onToggleWide={() => setWideDrawer((w) => !w)}
             onChangeTab={setDrawerTab}
+            onChangeChatSubTab={setChatSubTab}
             onClose={() => setDrawerOpen(false)}
             onRolledBack={(updatedDoc) => setDoc(updatedDoc)}
             onReloadDocument={loadStudioData}
+            onCommentsChanged={loadReviewComments}
+            onSelectCommentOnCanvas={handleSelectReviewComment}
+            onClearDraftContext={() => setReviewDraftContext(null)}
+            onAppliedProposal={handleAppliedProposal}
           />
         )}
       </div>

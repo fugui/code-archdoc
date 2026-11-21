@@ -20,6 +20,7 @@ type Document struct {
 	Status              string     `gorm:"size:24;not null;default:'draft';index" json:"status"`
 	CurrentRevisionNo   int        `gorm:"default:0;not null" json:"current_revision_no"`
 	CurrentRevisionID   *uint      `json:"current_revision_id"`
+	LastCommentNo       int        `gorm:"default:0;not null" json:"-"`
 	PublishedRevisionID *uint      `json:"published_revision_id"`
 	PublishedCommitSHA  string     `gorm:"size:40;default:'';index" json:"published_commit_sha"`
 	PublishedRelPath    string     `gorm:"size:512;default:''" json:"published_rel_path"`
