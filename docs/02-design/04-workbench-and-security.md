@@ -1,10 +1,10 @@
 # Canvas Studio 微前端工作台、双轨修订与 RBAC 审计设计
 
 - **文档编号**：`04-workbench-and-security.md`
-- **文档版本**：v1.0.0 (Stage 2 SDD Baseline)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-05 DocTypeEditorDrawer 三 Tab 蓝图双模融合编辑器架构)
+- **编制日期**：2026-11-21
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-26`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-26`, `F-32`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
 
 ---
 
@@ -123,14 +123,25 @@ AdminLLMConfigPage (F-14, W1)
 ├── ConnectivityProbeCard (点击探活：展示连通状态、延迟 ms、模型回显或明确报错)
 └── UsageCostSummaryCard (W2 增强：按档位与 DocType 展示 Token 消耗统计)
 
-AdminDocTypesPage (F-03, W2)
+AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
 ├── DocTypeToolbar (新建 DocType | 从目录强制重同步)
-├── DocTypeListTable (slug、display_name、启用状态、当前 Revision、已发布引用数、操作 [编辑/克隆/启停/删除])
-└── DocTypeEditorDrawer (@code/common Drawer)
-    ├── MetaConfigForm (display_name、model_tier、timeout、scope_profile、ir_facets、verify_policy)
-    ├── SlotsSchemaBuilder (可视化增删改槽位：slot_id、title、ownership、required、ir_facets、token_budget，防误改已有 slot_id 提示)
-    ├── AssetFileTabs (template.md | generation_prompt.md | refine_prompt.md 等宽代码编辑器)
-    └── RevisionHistorySubTab (查看历史不可变 DocTypeRevision 聚合哈希与变更时间)
+├── DocTypeListTable (slug、display_name、short_name/category、启用状态、当前 Revision、已发布引用数、操作 [编辑/克隆/启停/删除])
+└── DocTypeEditorDrawer (@code/common Drawer, 支持右上角 xl 标准宽度 ↔ full 宽屏编排切换)
+    ├── DrawerIdentitySummaryBar (展示 slug / display_name / model_tier 摘要，点击直跳基础信息)
+    ├── Tab 1: 文档蓝图 (Blueprint) —— 编辑既有 DocType 默认激活
+    │   ├── GlobalPromptsAccordion (折叠面板：generation_prompt.md 默认展开适中高度；refine_prompt.md 默认折叠带字数徽标)
+    │   ├── BlueprintModeToolbar (模式切换：[可视化编排] | [参数化源码 DSL v1] | [预览 template.md]；中部指标：槽位数 · 预算总和 · 去重分片数；右侧操作：新增槽位/静态块 或 插入片段/格式化/语法速查)
+    │   ├── BlueprintVisualEditor (可视化编排流)
+    │   │   ├── StaticBlockCard (文首 # 主标题与章节间固定 Markdown 块，支持编辑/上下移/删除)
+    │   │   └── SlotBlockCard (拟真章节卡：H2/H3/H4 或无标题内嵌切换 + 内联标题 + slot_id 既有加锁/确认解锁 + ownership + required + token_budget + enable_source_tools & max_tool_rounds + min_chars + ir_facets 分级 Chip 组 + 多行自适应 instruction_hint)
+    │   ├── BlueprintSourceEditor (参数化源码 DSL v1 编辑器：Markdown + ```slot <slot_id> 围栏块 + 200ms 防抖行号级诊断条，存在 error 时阻断切换与保存)
+    │   └── BlueprintTemplatePreview (只读实时展示 compileFromBlueprint 产出的 template.md)
+    ├── Tab 2: 基础信息与策略 (Metadata & Policy) —— 新建 DocType 默认激活
+    │   ├── BasicMetaForm (slug、display_name、short_name、category、description、model_tier、timeout_seconds、max_output_tokens、is_active)
+    │   ├── TopFacetsUnionSection (默认开启「自动聚合自全部章节槽位」，支持切换「手动覆写」与「一键对齐并集」)
+    │   └── DocTypePolicyPanel (默认折叠「高级治理策略」：repo_ir_facets 整仓裁剪白名单及预设、context_inputs & module_digest_source、verify_policy、scope_profile)
+    ├── Tab 3: 修订历史 (Revisions) —— 仅编辑模式可见，展示历史不可变 DocTypeRevision 聚合哈希、指令哈希与槽位数
+    └── DrawerFooterStatusBar (实时展示蓝图校验状态、源码模式既有 persistedSlotIds 变更风险预警徽标，切换/保存前强制弹出 useConfirm 风险确认门禁)
 ```
 
 ---

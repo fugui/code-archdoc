@@ -25,19 +25,23 @@ docs/
 │   ├── 01-http-api-contract.md            # 【API 契约】54 条 HTTP/SSE 接口字典、三层 RBAC 守卫、错误码与审计规范
 │   └── 02-data-model-and-dto-contract.md  # 【数据契约】16 表索引不变量、12 组 JSONB Schema、状态机、仓储接口与 TS 类型
 ├── 04-tasks/        # TDD 实施规划与验收：Milestone 拆解、W1/W2 任务作战卡与自动化验收测试标准 (AC)
-│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) DAG 与质量门禁
+│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) + ADR-04(M8~M10) + ADR-05(M11) DAG 与质量门禁
 │   ├── 02-m1-domain-model-and-api.md           # 【M1 作战卡】D-04 gitsync 底座、16 张领域模型、安全沙箱与 RBAC 基础 API
 │   ├── 03-m2-codeir-doctype-and-generation.md  # 【M2 作战卡】Golden Sample、L1 C/C++/Proto IR、DocType 种子与 L2/Verifier 引擎
 │   ├── 04-m3-revision-publish-and-bench-sync.md# 【M3 作战卡】手工直编、锁定/孤立保护、原子发布导出与 code-bench D-01~D-03
 │   ├── 05-m4-w1-frontend-workbench.md          # 【M4 作战卡】W1 微前端核心工作台与 W1 Exit Gate 纵向闭环验收
 │   ├── 06-m5-w2-java-python-doctype-and-chat.md# 【M5 作战卡】Java/Python 解析、DocType Web CRUD 与 SSE Chat 局部精修
 │   ├── 07-m6-w2-drift-metrics-and-governance.md# 【M6 作战卡】F-25 巡检、F-12 双维漂移雷达、F-26 质量看板与 F-27 资源治理
-│   └── 08-m7-portal-integration-and-delivery.md# 【M7 作战卡】CodeBench 门户联调、SC-01~SC-13 全量回归与单二进制交付
+│   ├── 08-m7-portal-integration-and-delivery.md# 【M7 作战卡】CodeBench 门户联调、SC-01~SC-13 全量回归与单二进制交付
+│   ├── 09-m8-module-discovery-batch-and-worktree-lock.md # 【M8 作战卡】一层模块自动发现、范围迁移、批量生成与可降级工作区读写锁
+│   ├── 10-m9-base-slice-module-context-and-repo-anchors.md # 【M9 作战卡】整仓基线切片、module_context 分片、仓库级证据锚点与外部契约漂移
+│   ├── 11-m10-hierarchical-rollup-drift-and-navigation.md  # 【M10 作战卡】仓库级共享术语表、层级汇总 (module_digests)、双源漂移与模块导航
+│   └── 12-m11-doctype-blueprint-editor.md                  # 【M11 作战卡】DocType 蓝图化双模融合编辑器与 Spec Drift 模板判定精化
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
 │   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型
 │   ├── 03-evidence-anchor-and-publish-mount.md        # ADR-03：跨提交稳定证据锚点与 code-bench 符号链接挂载发布契约
-│   ├── 04-module-scope-discovery-and-hierarchical-docs.md # ADR-04（提议）：Monorepo 一层模块发现、整仓抽取按模块切片与层级文档汇总
+│   ├── 04-module-scope-discovery-and-hierarchical-docs.md # ADR-04：Monorepo 一层模块发现、整仓抽取按模块切片与层级文档汇总
 │   └── 05-doctype-blueprint-dual-mode-editor.md       # ADR-05：文档类型蓝图化双模融合编辑器与 Spec Drift 模板判定精化
 └── 06-ops/          # 交付、运维与使用指南：双模联调、隔离测试、生产部署与模板配置手册
     ├── 01-verification-and-deployment-guide.md  # 联调验证、自动化回归测试与生产部署操作指南

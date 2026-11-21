@@ -2,8 +2,8 @@
 
 - **文档编号**：`05-doctype-blueprint-dual-mode-editor.md`
 - **日期**：2026-11-21
-- **状态**：已采纳 (Accepted) —— 待实施 (Pending Implementation)
-- **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-03`, `F-10`, `F-12`, `SC-08`, `Non-Goal 7`)；[`03-doctype-drift-and-publishing.md`](../02-design/03-doctype-drift-and-publishing.md)；[`ADR-03`](./03-evidence-anchor-and-publish-mount.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`02-code-ir-facets-subscription-guide.md`](../06-ops/02-code-ir-facets-subscription-guide.md)
+- **状态**：已采纳 (Accepted) —— 已按代码基线完成检视修正，并同步修订阶段一矩阵、阶段二设计、阶段三契约、M11 作战卡与阶段六运维手册（暂不实施）
+- **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-03`, `F-10`, `F-12`, `F-32`, `SC-08`, `SC-19`, `Non-Goal 7`)；[`03-doctype-drift-and-publishing.md`](../02-design/03-doctype-drift-and-publishing.md)；[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)；[`ADR-03`](./03-evidence-anchor-and-publish-mount.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`02-code-ir-facets-subscription-guide.md`](../06-ops/02-code-ir-facets-subscription-guide.md)
 
 ---
 
@@ -31,7 +31,7 @@
 | **P-1** | **双源维护与隐性错位** | 🔴 | 5 个内置 `DocType` 的 `template.md` 实质上只是将 `meta.slots[]` 中的 `title` 与 `<!-- slot:slot_id -->` 按顺序复写了一遍，但编辑器中两者互不联动。在「槽位构建器」调整槽位顺序，因 `template.md` 未重排导致 `assembleFullMarkdown` 输出顺序**实际不生效**；修改槽位 `title` 后 `template.md` 标题不同步，导致工作台目录树与发布产出 `## 标题` 分叉；增删槽位则触发 `ValidateTemplateSlots` 报错拦截，迫使管理员反复切 Tab 手工修改或点击「补全模板占位标记」。 |
 | **P-2** | **顶层与槽位 `ir_facets` 重复维护** | 🟠 | 运行时真正控制 Prompt 注入、Token 预算估算、Chat 精修上下文与 Spec Drift 判定的均为 `meta.slots[].ir_facets`；顶层 `meta.ir_facets` 仅作文档级总声明与列表展示，且运维手册明确建议其保持为所有槽位分片的并集。当前迫使用户在「基础元数据」和「槽位构建器」两个 Tab 之间手工勾选两遍。 |
 | **P-3** | **提示词上下文物理割裂** | 🟠 | 文档级指令（`generation_prompt.md`、`refine_prompt.md`）位于「模板与提示词资产」Tab，而直接协同生效的章节级写作指令（`slots[].instruction_hint`）藏在「槽位构建器」每张卡片最底部的单行 `<input>` 中，调优 Prompt 时无法在同一视野内通盘审阅、对比或批量编辑。 |
-| **P-4** | **后端已落地能力在 Web UI 中隐身，且新建/编辑能力不对称** | 🟡 | 后端 `SlotSpec` 已支持 `enable_source_tools`、`max_tool_rounds`，`Meta` 已支持 `repo_ir_facets`、`verify_policy`、`scope_profile`、`context_inputs`、`module_digest_source`，并已应用于 5 类内置模板；但 Web 表单未透出这些配置入口，且 `CreateDocTypeRequest` 尚未透传 `repo_ir_facets` / `context_inputs` / `module_digest_source`，管理员只能直接修改磁盘 `meta.json`。 |
+| **P-4** | **后端已落地能力在 Web UI 中隐身、新建/编辑能力不对称，且 `SlotsSnapshotJSON` 丢失源码工具配置** | 🔴 | ① 后端 `SlotSpec` 已支持 `enable_source_tools`、`max_tool_rounds`，`Meta` 已支持 `repo_ir_facets`、`verify_policy`、`scope_profile`、`context_inputs`、`module_digest_source`，并已应用于 5 类内置模板；但 Web 表单未透出这些配置入口；<br>② `CreateDocTypeRequest` 尚未透传 `repo_ir_facets` / `context_inputs` / `module_digest_source`，且 `pkg/doctype/schema.go` 的 `Meta.Validate` 对 `context_inputs` 仅允许 `module_context` / `module_digests` 而漏掉了 `ADR-04` 声明的 `"code_ir"`；<br>③ **`models.SlotDefinition`（`models/json_types.go`）缺少 `EnableSourceTools` 与 `MaxToolRounds` 字段，且 `services/doctype_service.go` 的 `toModelSlotDefs` 映射时未拷贝这两个字段**，导致 `archdoc_doc_type_revisions.slots_snapshot`、`GET /api/doc-types/:slug` 返回的 `detail.slots` 及 `unmarshalSpecSlotMetas` 均丢失了槽位的只读源码工具配置！ |
 | **P-5** | **`Spec Drift` 对局部模板标题变更误报全篇漂移** | 🟠 | `pkg/llm/prompt.go` 并不向大模型注入 `template.md`（仅在 `assembleFullMarkdown` 拼装输出时使用），但 `pkg/drift/spec_drift.go` 中 `globalPromptChanged := boundPromptHash != latestPromptHash || boundTemplateMD != latestTemplateMD`。一旦将槽位与模板融合编辑，只要修改 1 个槽位标题（同步修改了 `template.md` 对应 `## 标题`）或增删 1 个槽位，就会触发 `boundTemplateMD != latestTemplateMD`，将整篇文档所有未修改的兄弟非锁定槽位全部误标为 `prompt_changed`。 |
 
 ---
@@ -73,8 +73,8 @@ flowchart LR
 | :--- | :--- | :--- |
 | **D-1 统一蓝图 IR 与存储边界** | 保持后端四文件 SSOT 与 `ExtraFields` 双轨无损机制不变；前端通过确定性纯函数 `decompileToBlueprint` / `compileFromBlueprint` 实现 `DocBlueprint` 与 `(template.md, slots[])` 双向幂等转换。 | P-1 |
 | **D-2 参数化源码 DSL v1** | 定义 `Blueprint Source DSL v1`（Markdown + ```` ```slot <slot_id> ```` 围栏块），零第三方 npm 依赖实现行号级校验与规范序列化。 | P-1、P-3 |
-| **D-3 融合 UI 与防误改门禁** | 抽屉收敛为 3 Tab（`文档蓝图` / `基础信息与策略` / `修订历史`）；顶层 `ir_facets` 默认自动聚合槽位并集；高级治理策略折叠透出并补齐 `CreateDocTypeRequest` DTO；建立跨模式统一的 `persistedSlotIds` 风险拦截。 | P-1、P-2、P-3、P-4 |
-| **D-4 `Spec Drift` 静态骨架归一化** | 剥离 `template.md` 中绑定到已声明槽位的 `<!-- slot:id -->` 及其紧邻 `##~####` 标题行，仅当剩余静态骨架或 `PromptHash` 变更时才判定 `prompt_changed`，同步纳入 `EnableSourceTools` / `MaxToolRounds` 槽位比对。 | P-5 |
+| **D-3 融合 UI、DTO 补齐与防误改门禁** | 抽屉收敛为 3 Tab（`文档蓝图` / `基础信息与策略` / `修订历史`）；顶层 `ir_facets` 默认自动聚合槽位并集；高级治理策略折叠透出（含 `repo_ir_facets`、`context_inputs`、`module_digest_source`、`verify_policy`、`scope_profile`）；修复 `models.SlotDefinition` 与 `toModelSlotDefs` 丢失 `EnableSourceTools` / `MaxToolRounds` 缺陷并补齐 `CreateDocTypeRequest`；建立跨模式统一的 `persistedSlotIds` 风险拦截。 | P-1、P-2、P-3、P-4 |
+| **D-4 `Spec Drift` 静态骨架归一化** | 剥离 `template.md` 中绑定到已声明槽位的 `<!-- slot:id -->` 及其紧邻 `##~####` 标题行，仅当剩余静态骨架或 `PromptHash` 变更时才判定 `prompt_changed`，同步将 `EnableSourceTools` / `MaxToolRounds` 从补全后的 `SlotsSnapshotJSON` 贯通至 `SpecSlotMeta` 与 `slotSpecChanged`。 | P-4、P-5 |
 
 ---
 
@@ -239,9 +239,9 @@ hint: 梳理全部外部 HTTP/RPC 入口及其鉴权中间件与敏感配置默�
    - **完整前置校验**：拦截未闭合 `slot` 围栏、非法或重复 `slot_id`、越界 `token_budget` / `min_chars` / `max_tool_rounds`、非布尔/非整数类型、`hint` 超长（>1000 字符）、无紧邻标题槽位缺失 `title:` 等所有非法状态；
    - **阻塞保护**：只要源码解析存在任意 `severity === 'error'` 诊断，编辑器保留当前源码草稿，**禁止切回可视化视图与点击保存**，直至用户修正错误，杜绝静默覆盖或数据丢失。
 4. **规范化序列化 (`serializeBlueprintToDSL`)**：
-   - 字段按固定规范顺序输出：`ownership`、`required`、`ir_facets`、`token_budget`、`min_chars`、`enable_source_tools`（仅当为 `true` 或 `max_tool_rounds > 0` 时显式输出，或统一清晰输出）、`hint`；
-   - 当 `emitHeading === true` 时省略冗余 `title:` 行，章节标题仅在上方 `##~####` 出现一次；当 `emitHeading === false` 时显式输出 `title:`；
-   - 当 `hint` 包含换行符或超过 80 字符时自动采用 `hint: |` 加 2 空格缩进的多行块格式输出；若 `hint` 内容本身包含与围栏等长的反引号串，自动将外层 `slot` 围栏升级为更多反引号（如 4 反引号）防逃逸；
+   - 字段按固定规范顺序输出：`ownership`、`required`、`ir_facets`、`token_budget`、`min_chars`、`enable_source_tools`（始终显式输出布尔值；仅当 `enable_source_tools === true` 时紧接输出 `max_tool_rounds: <1~6>`，当 `enable_source_tools === false` 时省略 `max_tool_rounds`）、`hint`（当 `instruction_hint` 非空时输出，为空串时省略）；
+   - 当 `emitHeading === true` 时省略冗余 `title:` 行，章节标题仅在上方 `##~####` 出现一次；当 `emitHeading === false` 时首行显式输出 `title: <slot.title>`；
+   - 当 `hint` 包含换行符或超过 80 字符时自动采用 `hint: |` 加 2 空格缩进的多行块格式输出；单行短 `hint`（`1~80` 字符且不含换行）输出为 `hint: <text>`（若首尾含空格或以 `|` 开头则自动转多行 `hint: |` 块避免歧义）；若 `hint` 内容本身包含 `N`（`N >= 3`）个连续反引号串，自动将外层 `slot` 围栏升级为 `N + 1` 个反引号防逃逸；
    - 连续执行 `parseDSLToBlueprint` 与 `serializeBlueprintToDSL` 严格满足字节级幂等。
 
 ---
@@ -282,8 +282,9 @@ DocTypeEditorDrawer（支持右上角切换：xl 标准宽度 ↔ full 宽屏编
 │   │   └── 支持切换「手动覆写」开关（加载存量资产时，若磁盘 meta.ir_facets 与槽位并集存在差异且非空，自动保持手动模式并展示「一键对齐并集」按钮）
 │   └── 折叠面板「高级治理策略（可选）」—— 默认折叠，不干扰常规操作
 │       ├── repo_ir_facets（多模块整仓汇总裁剪白名单 + 一键应用「仅保留轻量与契约分片」预设）
-│       ├── verify_policy（strict_symbol_check / require_mermaid / max_mermaid_nodes / max_mermaid_edges / block_on_secret_leak）
-│       └── scope_profile（max_depth / include_tests / include_legacy_docs）
+│       ├── context_inputs & module_digest_source（多模块上下文输入开关 module_context / module_digests，及整仓汇总摘要源 doc_type_slug / slot_id / max_chars）
+│       ├── verify_policy（strict_symbol_check / require_mermaid / allowed_mermaid_types / max_mermaid_nodes / max_mermaid_edges / block_on_secret_leak）
+│       └── scope_profile（include_globs / exclude_globs / max_depth / include_tests / include_legacy_docs）
 │
 └── Tab 3: 修订历史 (Revisions) —— 仅编辑模式可见，保留不可变快照审计视图
 ```
@@ -302,16 +303,25 @@ DocTypeEditorDrawer（支持右上角切换：xl 标准宽度 ↔ full 宽屏编
 1. **双宽度预设切换**：复用 `@code/common` `Drawer` 原生支持的 `width` 预设（`DrawerWidthPreset`: `'xl'` 与 `'full'`），在抽屉标题栏右侧 `extra` 区域提供「宽屏编排 / 标准宽度」切换按钮，解决多栏提示词与参数化源码的横向视野限制。
 2. **主题与样式规范**：全部新增样式类遵循扁平 BEM `.code-archdoc-blueprint-*` 命名，100% 使用 `theme.css` `--color-*` 语义 Token（`--color-bg-surface`、`--color-bg-muted`、`--color-bg-input`、`--color-text-primary`、`--color-text-secondary`、`--color-border-primary`、`--color-danger`、`--color-warning`、`--color-primary-subtle` 等），严格适配亮/暗双模主题；严禁静态内联 `style={{ ... }}`、严禁 JS 模拟 hover 伪类、严禁 TypeScript `any`。
 
-### 5.4 新建/编辑后端 DTO 对齐（极小增量）
+### 5.4 后端 `SlotDefinition` 映射修复与新建/编辑 DTO 对齐（极小增量）
 
-当前 `services/doctype_service.go` 中 `UpdateDocTypeRequest` 已完整接收 `doctype.Meta`（包含 `RepoIRFacets`、`ScopeProfile`、`VerifyPolicy`、`ContextInputs`、`ModuleDigestSource`），但 `CreateDocTypeRequest` 尚缺少 `RepoIRFacets`、`ContextInputs` 与 `ModuleDigestSource`：
+经代码基线检视发现，当前后端与前端在 `SlotDefinition` 快照映射与 `CreateDocTypeRequest` 上存在三处对称性缺口，必须在 M11-A 一并闭环：
 
-- 在 `services/doctype_service.go` 中为 `CreateDocTypeRequest` 增量补充可选字段：
-  - `RepoIRFacets []string`（`json:"repo_ir_facets,omitempty"`）
-  - `ContextInputs []string`（`json:"context_inputs,omitempty"`）
-  - `ModuleDigestSource *doctype.ModuleDigestSourceSpec`（`json:"module_digest_source,omitempty"`）
-- 在 `DocTypeService.Create` 中透传至 `doctype.Meta`（`meta.Validate` 已内置对以上字段的白名单校验，无需重复校验逻辑）；
-- 同步在 `frontend/src/types/api.ts` 中为 `CreateDocTypePayload` 补齐可选字段 `repo_ir_facets?: FacetName[]`、`scope_profile?: ...`、`verify_policy?: ...`。
+1. **修复 `models.SlotDefinition` 与 `toModelSlotDefs` 丢失源码工具配置缺陷**：
+   - 在 `models/json_types.go` 的 `SlotDefinition` 结构体中补齐：
+     - `EnableSourceTools bool`（`json:"enable_source_tools,omitempty"`）
+     - `MaxToolRounds int`（`json:"max_tool_rounds,omitempty"`）
+   - 在 `services/doctype_service.go` 的 `toModelSlotDefs(specs []doctype.SlotSpec) []models.SlotDefinition` 中补齐 `EnableSourceTools: sl.EnableSourceTools` 与 `MaxToolRounds: sl.MaxToolRounds` 拷贝；
+   - 这样 `archdoc_doc_type_revisions.slots_snapshot`、`GET /api/doc-types/:slug` 返回的 `detail.slots`、`GET /api/doc-types/:slug/revisions` 返回的 `slots_snapshot` 以及 `unmarshalSpecSlotMetas` 均可完整获取槽位的只读源码工具配置，前端融合编辑器直接消费 `detail.slots` 即可无损回显。
+2. **补齐 `CreateDocTypeRequest` 与 `Meta.Validate` 白名单**：
+   - 在 `services/doctype_service.go` 中为 `CreateDocTypeRequest` 增量补充可选字段，并在 `DocTypeService.Create` 中透传至 `doctype.Meta`：
+     - `RepoIRFacets []string`（`json:"repo_ir_facets,omitempty"`）
+     - `ContextInputs []string`（`json:"context_inputs,omitempty"`）
+     - `ModuleDigestSource *doctype.ModuleDigestSourceSpec`（`json:"module_digest_source,omitempty"`）
+   - 在 `pkg/doctype/schema.go` 的 `Meta.Validate` 中，将 `context_inputs` 允许值白名单对齐 `ADR-04 §5.2`（允许 `"code_ir"`、`"module_context"`、`"module_digests"`）。
+3. **补齐前端 TypeScript 强类型接口**：
+   - 在 `frontend/src/types/domain.ts` 中新增 `CanonicalFacetName`（9 大可订阅规范分片联合类型，排除仅内部派生的 `'module_context'`）、`ContextInputName`（`'code_ir' | 'module_context' | 'module_digests'`）、`ScopeProfileConfig`、`VerifyPolicyConfig`、`ModuleDigestSourceConfig`、`DocTypeMeta` 接口；
+   - 在 `frontend/src/types/api.ts` 中为 `CreateDocTypePayload` 补齐可选字段 `scope_profile?: ScopeProfileConfig`、`verify_policy?: VerifyPolicyConfig`、`repo_ir_facets?: CanonicalFacetName[]`、`context_inputs?: ContextInputName[]`、`module_digest_source?: ModuleDigestSourceConfig`。
 
 ---
 
@@ -346,7 +356,7 @@ globalPromptChanged := boundPromptHash != latestPromptHash || boundTemplateMD !=
    latestSkeleton := normalizeTemplateStaticSkeleton(latestTemplateMD, latestSlots)
    globalPromptChanged := boundPromptHash != latestPromptHash || boundSkeleton != latestSkeleton
    ```
-2. **槽位级字段补全**：在 `SpecSlotMeta`（`pkg/drift/spec_drift.go`）与 `unmarshalSpecSlotMetas`（`services/doctype_service.go`）中补充 `EnableSourceTools bool` 与 `MaxToolRounds int` 两个字段，并在 `slotSpecChanged` 中纳入比对。确保管理员通过融合编辑器开启/关闭某槽位的只读源码工具时，精确将该槽位标为 `slot_modified`。
+2. **槽位级字段全链路补全**：基于 §5.4 补齐后的 `models.SlotDefinition`，在 `SpecSlotMeta`（`pkg/drift/spec_drift.go`）与 `unmarshalSpecSlotMetas`（`services/doctype_service.go`）中同步补充 `EnableSourceTools bool` 与 `MaxToolRounds int` 两个字段，并在 `slotSpecChanged` 中纳入比对（当 `EnableSourceTools == false` 时将 `MaxToolRounds` 归一化为 `0` 后比对）。确保管理员通过融合编辑器开启/关闭某槽位的只读源码工具或调整最大工具轮次时，精确将该槽位标为 `slot_modified`。
 3. **API 枚举兼容**：不新增或修改 `Reason` / `ChangeKind` 枚举值（仍为 `slot_added` / `slot_removed` / `slot_modified` / `prompt_changed`），保证前端 `DriftRadarPage` 与所有历史漂移快照完全兼容。
 
 ### 6.4 典型变更行为对照矩阵
@@ -406,8 +416,8 @@ globalPromptChanged := boundPromptHash != latestPromptHash || boundTemplateMD !=
 | **T-ADR05-08** | 前端纯函数 | 跨模式 `persistedSlotIds` 变更差集检测 | 源码中删除或重命名既有 `slot_id` 时准确识别出 `unconfirmedMissingIds`；若改回原 `slot_id` 则差集自动清零 |
 | **T-ADR05-09** | Go `pkg/drift` | 修改单个槽位 A 的 `title`（同步修改 `template.md` 中紧邻绑定 `## 标题`），兄弟槽位 B/C 与静态文本不变 | `ComputeSpecDrift` 仅返回槽位 A（`reason="slot_modified"`），兄弟槽位 B/C 零误报 |
 | **T-ADR05-10** | Go `pkg/drift` | 新增槽位 E 或删除槽位 C（同步增删 `template.md` 中绑定 `## 标题` 与标记） | 仅槽位 E 报 `slot_added` / 仅槽位 C 报 `slot_removed`，其余未修改槽位零漂移 |
-| **T-ADR05-11** | Go `pkg/drift` | ① 修改 `template.md` 中的静态导语/H1 标题或修改 `generation_prompt.md`；② 仅开启槽位 B 的 `enable_source_tools=true` | ① 所有非锁定槽位均准确标为 `prompt_changed`（`locked` 豁免）；② 仅槽位 B 标为 `slot_modified`，其他槽位零漂移 |
-| **T-ADR05-12** | Go `services` / `handlers` | `POST /api/admin/doc-types` 携带可选 `repo_ir_facets`、`scope_profile`、`verify_policy` 创建并 `SyncOne` 回读；传入非法 `repo_ir_facets` | 合法请求返回 `201`，落盘 `meta.json` 与 `GetDetail` 回读完整一致；非法分片返回 `400` 且无目录残留 |
+| **T-ADR05-11** | Go `pkg/drift` | ① 修改 `template.md` 中的静态导语/H1 标题或修改 `generation_prompt.md`；② 仅开启槽位 B 的 `enable_source_tools=true` 或调整 `max_tool_rounds` | ① 所有非锁定槽位均准确标为 `prompt_changed`（`locked` 豁免）；② 仅槽位 B 标为 `slot_modified`，其他槽位零漂移 |
+| **T-ADR05-12** | Go `services` / `handlers` | `POST /api/admin/doc-types` 携带可选 `repo_ir_facets`、`context_inputs`、`module_digest_source`、`scope_profile`、`verify_policy` 及槽位 `enable_source_tools=true, max_tool_rounds=4` 创建并回读；传入非法 `repo_ir_facets` | 合法请求返回 `201`，落盘 `meta.json`、`GetDetail` 回读的 `detail.slots` 与 `latest_revision.slots_snapshot` 均完整保留 `enable_source_tools` / `max_tool_rounds` 及高级策略；非法分片返回 `400` 且无目录残留 |
 
 ---
 
@@ -417,13 +427,14 @@ globalPromptChanged := boundPromptHash != latestPromptHash || boundTemplateMD !=
 
 | 里程碑 | 范围 | 交付内容 | 前置依赖 |
 | :---: | :--- | :--- | :---: |
-| **M11-A** | **核心底座与后端漂移精化** | 1. 实现 `frontend/src/utils/docTypeBlueprint.ts` 及 `T-ADR05-01`~`08`（纳入 `npm test`）；<br>2. 实现 `pkg/drift/spec_drift.go` 静态骨架归一化与 `EnableSourceTools` 对比及 `T-ADR05-09`~`11`；<br>3. 补齐 `CreateDocTypeRequest` 与前端 `CreateDocTypePayload` 字段及 `T-ADR05-12`。 | M10 |
-| **M11-B** | **融合编辑器 UI 全量重构与验收** | 1. 重构 `DocTypeEditorDrawer.tsx` 为三 Tab 结构，拆分蓝图可视化编辑器与参数化源码编辑器子组件；<br>2. 落地顶层 `ir_facets` 自动并集、高级策略折叠面板、跨模式 `persistedSlotIds` 防误改弹窗与抽屉宽屏切换；<br>3. 完善亮/暗双模主题样式并通过 `make test && make lint && make build`。 | M11-A |
+| **M11-A** | **核心底座与后端漂移精化** | 1. 实现 `frontend/src/utils/docTypeBlueprint.ts` 及 `T-ADR05-01`~`08`（纳入 `npm test`）；<br>2. 实现 `pkg/drift/spec_drift.go` 静态骨架归一化与 `EnableSourceTools` / `MaxToolRounds` 对比及 `T-ADR05-09`~`11`；<br>3. 修复 `models.SlotDefinition` / `toModelSlotDefs` 映射，补齐 `CreateDocTypeRequest` 与前端强类型契约及 `T-ADR05-12`。 | M10 |
+| **M11-B** | **融合编辑器 UI 全量重构与验收** | 1. 重构 `DocTypeEditorDrawer.tsx` 为三 Tab 结构，拆分 `BlueprintVisualEditor.tsx`、`BlueprintSourceEditor.tsx`、`DocTypePolicyPanel.tsx` 子组件；<br>2. 落地顶层 `ir_facets` 自动并集、高级策略折叠面板、跨模式 `persistedSlotIds` 防误改弹窗与抽屉宽屏切换；<br>3. 完善亮/暗双模主题样式并通过 `make lint-arch && make test && make lint && make build`。 | M11-A |
 
-### 9.2 实施阶段须同步修订的 SDD 文档
+### 9.2 已同步修订的 SDD 文档清单
 
-1. [`docs/02-design/03-doctype-drift-and-publishing.md`](../02-design/03-doctype-drift-and-publishing.md)：补充 §4.3 `Spec Drift` 模板静态骨架归一化规则与 `EnableSourceTools` / `MaxToolRounds` 比对说明；
-2. [`docs/02-design/04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)：更新 §2.4 `AdminDocTypesPage` / `DocTypeEditorDrawer` 融合蓝图组件树；
-3. [`docs/03-api/01-http-api-contract.md`](../03-api/01-http-api-contract.md) 与 [`docs/03-api/02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)：补齐 `CreateDocTypeRequest` 可选 `repo_ir_facets` / `context_inputs` / `module_digest_source` 说明；
-4. [`docs/04-tasks/01-roadmap.md`](../04-tasks/01-roadmap.md) 及新增 `12-m11-doctype-blueprint-editor.md` TDD 作战卡；
-5. [`docs/06-ops/02-code-ir-facets-subscription-guide.md`](../06-ops/02-code-ir-facets-subscription-guide.md)：更新第 5 节 Web 管理端操作步骤以对齐融合蓝图与自动并集体验。
+1. [`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md)：升级至 v0.5.0，新增 `F-32`（`DocType` 蓝图化双模融合编辑器与 `Spec Drift` 模板静态骨架归一化）与核心验收场景 `SC-19`；
+2. [`docs/02-design/03-doctype-drift-and-publishing.md`](../02-design/03-doctype-drift-and-publishing.md)：补充 §1.2 `SlotSpec` / `Meta` 完整 Schema、§4.3 `Spec Drift` 模板静态骨架归一化算法（`normalizeTemplateStaticSkeleton`）与 §7 ADR-05 蓝图编解码架构设计；
+3. [`docs/02-design/04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)：更新 §2.4 `AdminDocTypesPage` / `DocTypeEditorDrawer` 三 Tab 融合蓝图组件树与跨模式 `persistedSlotIds` 防误改交互门禁；
+4. [`docs/03-api/01-http-api-contract.md`](../03-api/01-http-api-contract.md) 与 [`docs/03-api/02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)：补齐 `POST /api/admin/doc-types` 可选治理字段、`models.SlotDefinition` 源码工具字段及前端 `DocBlueprint` / `CreateDocTypePayload` TypeScript 强类型契约；
+5. [`docs/04-tasks/01-roadmap.md`](../04-tasks/01-roadmap.md) 及新增 [`docs/04-tasks/12-m11-doctype-blueprint-editor.md`](../04-tasks/12-m11-doctype-blueprint-editor.md) TDD 作战卡（含 `M11-A` / `M11-B` 任务拆解与 `T-ADR05-01`~`12` 测试规范）；
+6. [`docs/06-ops/02-code-ir-facets-subscription-guide.md`](../06-ops/02-code-ir-facets-subscription-guide.md) 与 [`docs/README.md`](../README.md)：更新第 5 节 Web 管理端操作指南（可视化编排 + 参数化源码 DSL v1 + 顶层 `ir_facets` 自动并集）及知识库目录树。

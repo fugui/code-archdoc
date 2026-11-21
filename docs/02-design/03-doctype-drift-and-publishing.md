@@ -1,10 +1,10 @@
 # `DocType` 注册表、双维漂移雷达、发布挂载与质量度量设计
 
 - **文档编号**：`03-doctype-drift-and-publishing.md`
-- **文档版本**：v1.1.0 (ADR-04 声明式上下文、外部契约/模块摘要双源漂移与模块导航扩展)
-- **编制日期**：2026-11-20
+- **文档版本**：v1.2.0 (ADR-05 蓝图双模融合编解码、`SlotSpec` 源码工具契约与 `Spec Drift` 静态骨架归一化)
+- **编制日期**：2026-11-21
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-03`, `F-10`, `F-11`, `F-12`, `F-25`, `F-26`, `F-30`, `F-31`, `SC-05`, `SC-07`, `SC-08`, `SC-10`, `SC-11`, `SC-17`, `SC-18`, `Non-Goal 7`, [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
+- **关联基线**：`F-03`, `F-10`, `F-11`, `F-12`, `F-25`, `F-26`, `F-30`, `F-31`, `F-32`, `SC-05`, `SC-07`, `SC-08`, `SC-10`, `SC-11`, `SC-17`, `SC-18`, `SC-19`, `Non-Goal 7`, [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
 
 ---
 
@@ -95,7 +95,9 @@
           "ir_facets": { "type": "array", "items": { "type": "string" } },
           "token_budget": { "type": "integer", "minimum": 500, "maximum": 64000, "default": 8000 },
           "min_chars": { "type": "integer", "minimum": 0, "default": 40 },
-          "instruction_hint": { "type": "string", "maxLength": 1000 }
+          "instruction_hint": { "type": "string", "maxLength": 1000 },
+          "enable_source_tools": { "type": "boolean", "default": false, "description": "是否为该槽位开放受限只读沙箱源码工具" },
+          "max_tool_rounds": { "type": "integer", "minimum": 0, "maximum": 6, "default": 0, "description": "源码工具最大调用轮次（enable_source_tools=true 且省略时默认 4）" }
         }
       }
     },
@@ -276,17 +278,26 @@ Algorithm DetectCodeDrift(doc, publishedCommitSHA, remoteHeadSHA):
 
 > **精准满足 `SC-11`**：当新提交仅修改 `OrderService::Pay` 函数实现时，只有锚定 `order::OrderService::Pay` 的第 3 章因 `content_fingerprint` 变化而被标记 `Code Drift`，同文件内其他未修改函数引用的章节不会误报。
 
-### 4.3 槽位级 `Spec Drift` 定位算法（`F-12`、`SC-08`）
+### 4.3 槽位级 `Spec Drift` 定位算法与模板静态骨架归一化（`F-12`、`F-32`、`SC-08`、`SC-19`、[`ADR-05` D-4](../05-adr/05-doctype-blueprint-dual-mode-editor.md)）
 
 每轮巡检周期（及管理员更新 `DocType` 完成目录同步后立即异步触发），对所有绑定该 `doc_type_slug` 的已发布文档执行零网络开销的 `Spec Drift` 比对：
 
-1. 比对 `doc.DocTypeRevisionID` 与 `docType.LatestRevisionID`：相等则 `Spec Drift = 0`。
-2. 不等时，加载两份不可变 `DocTypeRevision` 的 `slots_snapshot_json`、`generation_prompt_md` 哈希与 `template_md` 哈希：
-   - 按 `slot_id` 做集合差运算，精确输出：
-     - `added_slots[]`：新修订新增的 `slot_id`；
-     - `removed_slots[]`：新修订删除的 `slot_id`（提示若文档已锁定将转入孤立章节）；
-     - `modified_slots[]`：槽位 `ir_facets`/`instruction_hint`/`title`/`required` 变更或全局 `generation_prompt_md` 变更影响到的全部非锁定槽位。
-3. 写入 `archdoc_document_drifts`（`drift_type = "spec"`），确保模板修改后在**下一次巡检周期内（实际上近实时）**在漂移雷达标出 `Spec Drift`（满足 `F-12` 验收指标 3 与 `SC-08`）。
+1. 比对 `PublishedRevision.DocTypeRevisionID` 与 `docType.LatestRevisionID`：相等则 `Spec Drift = 0`。
+2. 不等时，加载两份不可变 `DocTypeRevision` 的 `slots_snapshot_json`（含 `enable_source_tools` 与 `max_tool_rounds`）、`prompt_hash`（由 `generation_prompt.md` + `refine_prompt.md` 计算）与 `template_md`：
+   - **模板静态骨架归一化 (`normalizeTemplateStaticSkeleton(templateMD, slots)`)**：
+     由于 `pkg/llm/prompt.go` (`BuildSlotMessages`) 并不向大模型注入 `template.md`（`template.md` 仅在全篇组装 `assembleFullMarkdown` 时使用），若直接比对 `boundTemplateMD != latestTemplateMD`，则在融合编辑器中仅修改单个槽位标题（同步修改了 `template.md` 绑定的 `## 标题`）或增删一个槽位时，会误将所有未修改的兄弟非锁定槽位全部标为 `prompt_changed`。因此 `pkg/drift/spec_drift.go` 先执行确定性纯函数归一化：
+     1. 将 `\r\n` 统一为 `\n` 后按行扫描；
+     2. 凡匹配独立槽位标记行 `^\s*<!--\s*slot:([a-z][a-z0-9_]{1,48})\s*-->\s*$` 且 `slot_id` 属于传入 `slots[]`（首次出现）时，标记移除该标记行；
+     3. 向上跳过纯空行回溯紧邻的上一非空行：若匹配 `^#{2,4}\s+.+$`（与前端蓝图反编译 `Heading Binding` 规则完全同构），一并标记移除该绑定标题行；
+     4. 过滤移除行后，折叠连续空行为单个空行并裁剪首尾空白，得到剥离了「槽位占位符及其绑定章节标题」后的**纯粹文档级静态骨架**；
+     5. 仅当 `boundPromptHash != latestPromptHash || boundSkeleton != latestSkeleton` 时，才判定 `globalPromptChanged = true`（例如修改了文首导语、免责声明、H1 主标题或 `generation_prompt.md` / `refine_prompt.md`）。
+   - **按 `slot_id` 做集合差运算**，精确输出：
+     - `added_slots[]`（`reason = "slot_added"`）：新修订新增的 `slot_id`；
+     - `removed_slots[]`（`reason = "slot_removed"`）：新修订删除的 `slot_id`（提示若文档已锁定将转入孤立章节）；
+     - `modified_slots[]`：
+       - 单槽位规格变更（`reason = "slot_modified"`）：`title`、`ownership`、`required`、`instruction_hint`、`ir_facets`（集合无序对比）、`enable_source_tools` 或归一化 `max_tool_rounds` 任一发生变化；
+       - 全局指令/静态骨架变更（`reason = "prompt_changed"`）：当该槽位自身规格未变，但 `globalPromptChanged == true` 且 `ownership != "locked"` 时触发（`locked` 槽位严格豁免）。
+3. 写入 `archdoc_document_drifts`（`drift_type = "spec"`），确保模板修改后在**下一次巡检周期内（实际上近实时）**在漂移雷达标出 `Spec Drift`（满足 `F-12` 验收指标 3、`SC-08` 与 `SC-19`）。
 
 ### 4.4 单篇文档章节级增量刷新编排
 
@@ -345,7 +356,7 @@ testdata/golden/
 在 `meta.json` 顶层新增 3 个可选字段（纳入 `pkg/doctype/schema.go` 已知键与白名单校验）：
 - `context_inputs`: `["code_ir", "module_context", "module_digests"]`（允许值白名单：`code_ir` | `module_context` | `module_digests`）；
 - `repo_ir_facets`: 可选 `FacetName[]`，整仓汇总启用 `module_digests` 时仅加载此子集（默认 `["tree", "build", "deps"]`）；
-- `module_digest_source`: `{ "doc_type": "<slug>", "slot_id": "<slot_id>" }`（例如 `system-architecture` 默认绑定 `{ "doc_type": "system-architecture", "slot_id": "overview_boundaries" }`）。
+- `module_digest_source`: `{ "doc_type_slug": "<slug>", "slot_id": "<slot_id>", "max_chars": 600, "fallback_order": ["approved", "draft", "glossary_fallback"] }`（例如 `system-architecture` 默认绑定 `{ "doc_type_slug": "system-architecture", "slot_id": "overview_boundaries", "max_chars": 600 }`）。
 
 ### 6.2 外部契约漂移与模块摘要双源合并漂移
 
@@ -359,3 +370,19 @@ testdata/golden/
 - **Frontmatter 追加通用键**：整仓文档写入 `scope_type: "repo"`；模块文档写入 `scope_type: "module"`、`module: "<subdir>"`、`parent_doc: "<relative_path>"`（根据 `sanitized_subdir` 段数 `N` 动态拼接 `N+1` 个 `../` + `<doc_type>.md`）。
 - **整仓文末自动追加 `## 模块导航`**：由 `pkg/publisher` 确定性渲染同仓全部已发布模块文档的相对链接（`./sub/<sanitized_subdir>/<doc_type>.md`）与短提交徽标。
 - **两级仓库 `README.md`**：仓库根目录 `README.md` 分为 `## 整仓文档` 与 `## 模块文档`（按模块分组）两级导航结构。
+
+---
+
+## 7. ADR-05 蓝图化双模融合编解码架构（`F-32`、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)）
+
+在不改变服务端 `<data_dir>/doc_types/<slug>/` 四文件 SSOT 与 `ExtraFields` 双轨编解码的前提下，前端引入零外部依赖纯函数模块 `frontend/src/utils/docTypeBlueprint.ts`，将 `(template.md, meta.slots[])` 统一收敛为 `DocBlueprint` 内存中间表示（IR）：
+
+1. **`DocBlueprint` 双向幂等转换**：
+   - `decompileToBlueprint(templateMD, slots)`：扫描 `<!-- slot:<slot_id> -->` 独立标记行，自动吸附紧邻上方的 `##~####` 标题行为 `SlotBlueprintBlock`（`emitHeading = true, headingLevel = 2|3|4`）；若上方无紧邻 2~4 级标题（自由内嵌槽位），则置 `emitHeading = false` 并将前置文本完整保留为 `StaticBlueprintBlock`，保障复杂存量自由排版模板 **100% 无损往返**；
+   - `compileFromBlueprint(blueprint)`：按 `blocks` 顺序提取 `slots[]` 并生成 `template.md`，天然保证 `slots[]` 顺序、章节标题与 `<!-- slot:<slot_id> -->` 标记 100% 同步一致，彻底消除缺标记保存失败与排序失效。
+2. **参数化源码 `Blueprint Source DSL v1`**：
+   - 以标准 Markdown 承载静态骨架与 `## 章节标题`，以 ```` ```slot <slot_id> ```` CommonMark 围栏块内联编写槽位属性（`ownership`、`required`、`ir_facets`/`facets`、`token_budget`/`budget`、`min_chars`、`enable_source_tools`/`source_tools`、`max_tool_rounds`/`tool_rounds`、`hint`/`instruction_hint`）；
+   - 普通代码围栏（```` ```mermaid ````、```` ```json ```` 等）内部状态机自动透传，不误解析示例文本；
+   - 严格校验未知键、越界值、非法分片（附 Levenshtein 纠错建议）与未闭合围栏，输出精确到 `line` 的 `BlueprintDiagnostic`，存在任何 `error` 时锁定视图切换与保存。
+3. **顶层 `meta.ir_facets` 自动并集**：
+   - `computeCanonicalFacetsUnion(slots)` 按 9 大规范分片标准顺序自动去重聚合所有槽位的 `ir_facets`；当加载存量模板发现 `meta.ir_facets` 与槽位并集不一致且非空时，自动保留手动覆写模式并提供「一键对齐并集」入口。

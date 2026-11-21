@@ -1,7 +1,7 @@
 # Code IR 分片订阅 (`ir_facets`) 原理解析与配置使用指南
 
 > **适用范围**：`code-archdoc` 管理员（`archdoc_admin` / `super_admin`）、文档模板作者与架构治理人员。  
-> **关联设计**：[`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)、[`03-doctype-drift-and-publishing.md`](../02-design/03-doctype-drift-and-publishing.md)、[`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md)、[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
+> **关联设计**：[`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)、[`03-doctype-drift-and-publishing.md`](../02-design/03-doctype-drift-and-publishing.md)、[`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md)、[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
 
 ---
 
@@ -71,32 +71,49 @@ flowchart LR
 
 | 配置位置 | JSON 字段 | 必填 | 运行时职责与配置建议 |
 | :--- | :--- | :---: | :--- |
-| **基础元数据 Tab**<br/>「顶层订阅 Code IR 分片」 | `meta.ir_facets` | 是<br/>（至少 1 项） | 文档类型级别的**总依赖声明与索引**（写入 `archdoc_doc_types.ir_facets_json` 并在列表页展示）。建议保持为**下方所有槽位 `ir_facets` 的并集**。 |
-| **槽位构建器 Tab**<br/>「订阅 Code IR 分片」 | `meta.slots[].ir_facets` | 推荐必填 | **运行时真正生效的配置**。决定该章节生成 Prompt 注入、Token 预算估算、Chat 局部精修与 Spec Drift 判定。 |
-| **文件级进阶配置**<br/>（仅 `meta.json`） | `meta.repo_ir_facets` | 否 | **多模块大仓“整仓汇总”裁剪白名单**（见 [`services/generation_service.go`](../../services/generation_service.go) `filterSlotSpecForScope`）。当整仓生成且存在子模块摘要（`module_digests`）时，系统会将每个槽位的 `slot.ir_facets` 与 `repo_ir_facets` 取交集，自动剔除 `symbols` / `runtime_primitives` 等重分片，防止撑爆整仓 Prompt。单模块小仓或子模块生成不受其影响。 |
+| **基础信息与策略 Tab**<br/>「顶层订阅 Code IR 分片」 | `meta.ir_facets` | 是<br/>（至少 1 项） | 文档类型级别的**总依赖声明与索引**（写入 `archdoc_doc_types.ir_facets_json` 并在列表页展示）。在 `ADR-05` 蓝图融合编辑器中**默认自动聚合自全部章节槽位 `ir_facets` 的并集**（亦支持切换为手动覆写）。 |
+| **文档蓝图 Tab**<br/>「可视化编排 / 参数化源码 (`ir_facets`)」 | `meta.slots[].ir_facets` | 推荐必填 | **运行时真正生效的配置**。决定该章节生成 Prompt 注入、Token 预算估算、Chat 局部精修与 Spec Drift 判定。 |
+| **基础信息与策略 Tab → 高级治理策略**<br/>（或 `meta.json`） | `meta.repo_ir_facets` | 否 | **多模块大仓“整仓汇总”裁剪白名单**（见 [`services/generation_service.go`](../../services/generation_service.go) `filterSlotSpecForScope`）。当整仓生成且存在子模块摘要（`module_digests`）时，系统会将每个槽位的 `slot.ir_facets` 与 `repo_ir_facets` 取交集，自动剔除 `symbols` / `runtime_primitives` 等重分片，防止撑爆整仓 Prompt。单模块小仓或子模块生成不受其影响。 |
 
-> **常见避坑**：不要只在「基础元数据」中勾选了顶层 `ir_facets`，却忘了在「槽位构建器」中为各个槽位勾选对应的分片。如果某槽位的 `slot.ir_facets` 为空，该槽位在生成和 Chat 精修时将无法获得对应分片的事实内容。
+> **常见避坑**：运行时向大模型投喂事实仅取决于每个槽位自身的 `slot.ir_facets`；在融合编辑器中，只需为各章节槽位勾选或编写 `ir_facets`，顶层 `meta.ir_facets` 会默认自动汇总并集，无需手工勾选两遍。
 
 ---
 
 ## 5. 操作指南：如何配置与使用
 
-### 5.1 方式一：通过 Web 管理端配置（推荐）
+### 5.1 方式一：通过 Web 管理端「文档蓝图」双模融合编辑器配置（推荐，[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)）
 
 需要账号具备 `archdoc_admin` 或 `super_admin` 角色权限：
 
 1. 进入左侧菜单 **「模块治理 → 文档类型管理」**（路由 `/admin/doc-types`）。
 2. 选择以下操作之一：
    - **克隆已有模板**（最推荐）：点击最接近目标场景的内置模板右侧 **「克隆」** 按钮，复制出自定义 DocType 后再微调。
-   - **新建 / 编辑**：点击右上角 **「新建文档类型」** 或点击既有模板的 **「编辑」** 按钮打开编辑器抽屉（[`DocTypeEditorDrawer.tsx`](../../frontend/src/components/doctype/DocTypeEditorDrawer.tsx)）。
-3. 切换到 **「槽位构建器」** Tab：
-   - 针对每个章节槽位，点击 **「订阅 Code IR 分片 (`ir_facets`)」** 下的标签按钮（Chip）完成勾选/取消勾选。
-   - 根据订阅分片的体量，同步调整该槽位的 **「Token 预算 (`token_budget`)」**（默认 `8000`，范围 `500 ~ 64000`）。
-4. 切回 **「基础元数据」** Tab：
-   - 在 **「顶层订阅 Code IR 分片 (`ir_facets`)」** 中，勾选上述所有槽位所用到分片的并集。
-5. 检查 **「模板与提示词资产」** Tab，确保 `template.md` 中包含所有 `<!-- slot:<slot_id> -->` 标记（可使用「补全模板占位标记」一键补齐）。
-6. 点击 **「创建并落盘」** 或 **「保存并同步修订」**：
-   - 后端会持有 `slug` 级写锁，原子落盘 `doc_types/<slug>/meta.json` 等资产文件，生成新修订 `Rev vN`，并异步触发受影响文档的 Spec Drift 重算。
+   - **新建 / 编辑**：点击右上角 **「新建文档类型」** 或点击既有模板的 **「编辑」** 按钮打开编辑器抽屉（[`DocTypeEditorDrawer.tsx`](../../frontend/src/components/doctype/DocTypeEditorDrawer.tsx)，支持右上角一键切换宽屏编排）。
+3. 在 **「文档蓝图 (Blueprint)」** Tab 中，可任选 **「可视化编排」** 或 **「参数化源码 (`DSL v1`)」** 模式（两种模式实时双向无损同步，自动派生 `template.md` 与 `slots[]`）：
+   - **可视化编排模式**：
+     - 在每张章节槽位卡片（`SlotBlockCard`）中直接点选 **「订阅 Code IR 分片 (`ir_facets`)」** Chip 标签；
+     - 按需调整该槽位的 **「Token 预算 (`token_budget`)」**（默认 `8000`）、**「只读源码工具 (`enable_source_tools` & `max_tool_rounds`)」** 与多行 **「章节写作提示 (`instruction_hint`)」**；
+   - **参数化源码模式（适合批量编辑或由 LLM 生成后整篇粘贴）**：
+     - 直接在 Markdown 标题下方编写 ```` ```slot <slot_id> ```` 围栏块，例如：
+       ````markdown
+       ## 1. 对外暴露面与鉴权入口
+
+       ```slot attack_surface
+       ir_facets: [http_routes, idl_contracts, config_keys]
+       token_budget: 10000
+       enable_source_tools: true
+       max_tool_rounds: 4
+       hint: |
+         梳理全部外部 HTTP/RPC 入口及其鉴权中间件与敏感配置默认值。
+       ```
+       ````
+     - 编辑器提供 200ms 实时行号级语法校验（若分片名拼写错误如 `symbol`，会自动提示 `是否指 "symbols"？`）。
+4. 切换到 **「基础信息与策略」** Tab（可选检查）：
+   - **顶层 `ir_facets`**：默认已开启 **「自动聚合自全部章节槽位」**，随蓝图自动更新有序并集，无需重复勾选；
+   - **高级治理策略（折叠面板）**：如需面向多模块大仓配置整仓汇总裁剪白名单 `repo_ir_facets`、`context_inputs`、`module_digest_source`、`verify_policy` 或 `scope_profile`，可展开面板可视化配置。
+5. 点击 **「创建并落盘」** 或 **「保存并同步修订」**：
+   - 若修改或移除了已落盘的既有 `slot_id`，系统会弹出风险确认门禁防止误破坏已发布文档；
+   - 确认后后端持有 `slug` 级写锁，原子落盘 `doc_types/<slug>/` 四份资产文件，生成新修订 `Rev vN`，并基于静态骨架归一化精准重算受影响文档的 Spec Drift。
 
 ### 5.2 方式二：通过 `meta.json` 文件管理（支持 `repo_ir_facets` 等进阶项）
 

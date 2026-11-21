@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.1.0 (ADR-04 扩展：新增 6 个模块治理与批量生成接口，总计 60 Endpoints)
-- **编制日期**：2026-11-20
+- **文档版本**：v1.2.0 (ADR-05 扩展：补齐 `POST /api/admin/doc-types` 可选高级治理字段与 `SlotDefinition` 源码工具字段)
+- **编制日期**：2026-11-21
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.4.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.5.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -317,12 +317,12 @@
 ```
 
 #### `GET /api/doc-types/:slug` (`JWT`, W1)
-- **响应 (`200 OK`)**：在列表字段基础上返回 `meta`（完整 `meta.json` 对象，保留未知扩展字段）、`slots`、`template_md`、`generation_prompt_md`、`refine_prompt_md`、`latest_revision`。
+- **响应 (`200 OK`)**：在列表字段基础上返回 `meta`（完整 `meta.json` 对象，保留未知扩展字段）、`slots`（完整 `SlotDefinition[]`，含 `enable_source_tools` 与 `max_tool_rounds`）、`template_md`、`generation_prompt_md`、`refine_prompt_md`、`latest_revision`。
 
 #### `GET /api/doc-types/:slug/revisions` (`JWT`, W1)
-- **响应 (`200 OK`)**：返回 `{ "items": DocTypeRevisionSummaryVO[] }`，按 `revision_no DESC` 排序，包含 `id`, `revision_no`, `aggregate_hash`, `prompt_hash`, `slots_snapshot`, `created_by`, `created_at`。
+- **响应 (`200 OK`)**：返回 `{ "items": DocTypeRevisionSummaryVO[] }`，按 `revision_no DESC` 排序，包含 `id`, `revision_no`, `aggregate_hash`, `prompt_hash`, `slots_snapshot`（含 `enable_source_tools` 与 `max_tool_rounds`）, `created_by`, `created_at`。
 
-#### `POST /api/admin/doc-types` (`Admin`, W2)
+#### `POST /api/admin/doc-types` (`Admin`, W2 / M11 ADR-05 扩展)
 - **请求体**：
 ```json
 {
@@ -331,9 +331,30 @@
   "short_name": "安全评审",
   "category": "质量与安全",
   "description": "面向研发安全评审的入口面、鉴权与敏感数据流分析",
+  "is_active": true,
   "model_tier": "flagship",
   "timeout_seconds": 300,
+  "max_output_tokens": 16000,
   "ir_facets": ["tree", "http_routes", "idl_contracts", "config_keys", "data_models"],
+  "repo_ir_facets": ["tree", "http_routes", "idl_contracts", "config_keys"],
+  "context_inputs": ["module_context", "module_digests"],
+  "module_digest_source": {
+    "doc_type_slug": "security-review",
+    "slot_id": "attack_surface",
+    "max_chars": 600
+  },
+  "scope_profile": {
+    "max_depth": 12,
+    "include_tests": false,
+    "include_legacy_docs": false
+  },
+  "verify_policy": {
+    "strict_symbol_check": false,
+    "require_mermaid": true,
+    "max_mermaid_nodes": 35,
+    "max_mermaid_edges": 60,
+    "block_on_secret_leak": true
+  },
   "slots": [
     {
       "slot_id": "attack_surface",
@@ -342,15 +363,19 @@
       "required": true,
       "ir_facets": ["http_routes", "idl_contracts"],
       "token_budget": 8000,
-      "min_chars": 40
+      "min_chars": 40,
+      "enable_source_tools": true,
+      "max_tool_rounds": 4,
+      "instruction_hint": "梳理全部外部 HTTP/RPC 入口及其鉴权中间件。"
     }
   ],
-  "template_md": "## 1. 外部入口与攻击面清单\n<!-- slot:attack_surface -->\n",
+  "template_md": "# 安全架构评审报告\n\n## 1. 外部入口与攻击面清单\n<!-- slot:attack_surface -->\n",
   "generation_prompt_md": "你是资深应用安全架构师...",
   "refine_prompt_md": ""
 }
 ```
-- **状态码**：`201 Created`（返回 `DocTypeDetailVO`）；非法 `slug` → `400 INVALID_SLUG`；重名 → `409 CONFLICT`；非管理员 → `403 FORBIDDEN`。
+  - 可选高级治理字段：`max_output_tokens`、`repo_ir_facets`（9 大规范分片白名单校验）、`context_inputs`（允许 `"code_ir"` | `"module_context"` | `"module_digests"`）、`module_digest_source`、`scope_profile`、`verify_policy`；槽位可选 `enable_source_tools`（bool）与 `max_tool_rounds`（`0~6`）。
+- **状态码**：`201 Created`（返回 `DocTypeDetailVO`）；非法 `slug` → `400 INVALID_SLUG`；非法分片/枚举/缺槽位标记 → `400 INVALID_PARAM`（且保证磁盘无残留目录）；重名 → `409 CONFLICT`；非管理员 → `403 FORBIDDEN`。
 
 #### `POST /api/admin/doc-types/:slug/clone` (`Admin`, W2)
 - **请求体**：`{ "new_slug": "security-review-v2", "display_name": "安全架构评审报告 V2" }`

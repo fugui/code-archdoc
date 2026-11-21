@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.0.0 (Stage 3 Frozen Contract)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 & ADR-05 Frozen Contract)
+- **编制日期**：2026-11-21
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.0.1)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.0.0)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.0.1)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.2.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -189,16 +189,18 @@ type AffectedSlotDrift struct {
 	ChangedFiles   []string `json:"changed_files,omitempty"`
 }
 
-// 10. DocTypeRevision.SlotsSnapshotJSON (对齐 03-doctype-drift-and-publishing.md §1.2)
+// 10. DocTypeRevision.SlotsSnapshotJSON (对齐 03-doctype-drift-and-publishing.md §1.2 & ADR-05 §5.4)
 type SlotDefinition struct {
-	SlotID          string   `json:"slot_id"`
-	Title           string   `json:"title"`
-	Ownership       string   `json:"ownership"` // auto | hybrid | locked
-	Required        bool     `json:"required"`
-	IRFacets        []string `json:"ir_facets"`
-	TokenBudget     int      `json:"token_budget"`
-	MinChars        int      `json:"min_chars"`
-	InstructionHint string   `json:"instruction_hint,omitempty"`
+	SlotID            string   `json:"slot_id"`
+	Title             string   `json:"title"`
+	Ownership         string   `json:"ownership"` // auto | hybrid | locked
+	Required          bool     `json:"required"`
+	IRFacets          []string `json:"ir_facets"`
+	TokenBudget       int      `json:"token_budget"`
+	MinChars          int      `json:"min_chars"`
+	InstructionHint   string   `json:"instruction_hint,omitempty"`
+	EnableSourceTools bool     `json:"enable_source_tools,omitempty"`
+	MaxToolRounds     int      `json:"max_tool_rounds,omitempty"`
 }
 
 // 11. QualityMetric.SlotDiffRatiosJSON: map[slot_id]float64 (例如 {"core_request_flows": 0.24})
@@ -592,3 +594,104 @@ export type ChatRefineSSEEvent =
 ### 7.3 `config/config.go` 新增配置项
 - `ExtractSection`（`yaml:"extract"`）：`MaxRepoFiles int`（默认 `50000`）、`MaxRepoDurationSeconds int`（默认 `600`）；
 - `SchedulerSection`：新增 `MaxTokensPerBatch int`（默认 `1000000`）。
+
+---
+
+## 8. ADR-05 契约增量（`M11`：蓝图双模融合编辑器与 `Spec Drift` 静态骨架精化）
+
+### 8.1 后端 `SlotDefinition`、`SpecSlotMeta` 与 `CreateDocTypeRequest` 增量
+
+1. **`models.SlotDefinition` (`models/json_types.go`) & `toModelSlotDefs` (`services/doctype_service.go`)**：
+   - 新增 `EnableSourceTools bool`（`json:"enable_source_tools,omitempty"`）与 `MaxToolRounds int`（`json:"max_tool_rounds,omitempty"`），并在 `toModelSlotDefs` 中从 `doctype.SlotSpec` 完整拷贝。
+2. **`drift.SpecSlotMeta` (`pkg/drift/spec_drift.go`) & `unmarshalSpecSlotMetas` (`services/doctype_service.go`)**：
+   - 新增 `EnableSourceTools bool` 与 `MaxToolRounds int`，在 `slotSpecChanged` 中纳入比对（当 `EnableSourceTools == false` 时将 `MaxToolRounds` 归一化为 `0`）；
+   - `ComputeSpecDrift` 新增纯函数 `normalizeTemplateStaticSkeleton(templateMD string, slots []SpecSlotMeta) string`，以 `boundSkeleton != latestSkeleton` 替代裸 `boundTemplateMD != latestTemplateMD`。
+3. **`services.CreateDocTypeRequest` (`services/doctype_service.go`) & `doctype.Meta.Validate` (`pkg/doctype/schema.go`)**：
+   - `CreateDocTypeRequest` 新增可选字段 `RepoIRFacets []string`、`ContextInputs []string`、`ModuleDigestSource *doctype.ModuleDigestSourceSpec`；
+   - `Meta.Validate` 的 `context_inputs` 允许值白名单支持 `"code_ir"`、`"module_context"`、`"module_digests"`。
+
+### 8.2 前端 `DocBlueprint` 与 `DocType` 治理策略 TypeScript 契约
+
+```typescript
+// frontend/src/types/domain.ts 增量
+export type CanonicalFacetName = Exclude<FacetName, 'module_context'>;
+export type ContextInputName = 'code_ir' | 'module_context' | 'module_digests';
+
+export interface ScopeProfileConfig {
+  include_globs?: string[];
+  exclude_globs?: string[];
+  max_depth?: number;
+  include_tests: boolean;
+  include_legacy_docs?: boolean;
+}
+
+export interface VerifyPolicyConfig {
+  strict_symbol_check: boolean;
+  require_mermaid: boolean;
+  allowed_mermaid_types?: string[];
+  max_mermaid_nodes?: number;
+  max_mermaid_edges?: number;
+  block_on_secret_leak?: boolean;
+}
+
+export interface ModuleDigestSourceConfig {
+  doc_type_slug: string;
+  slot_id: string;
+  max_chars?: number;
+  fallback_order?: string[];
+}
+
+// frontend/src/types/api.ts 增量
+export interface CreateDocTypePayload {
+  slug: string;
+  display_name: string;
+  short_name?: string;
+  category?: string;
+  description: string;
+  is_active?: boolean;
+  model_tier: ModelTier;
+  timeout_seconds: number;
+  max_output_tokens?: number;
+  scope_profile?: ScopeProfileConfig;
+  ir_facets: FacetName[];
+  repo_ir_facets?: FacetName[];
+  context_inputs?: ContextInputName[];
+  module_digest_source?: ModuleDigestSourceConfig;
+  verify_policy?: VerifyPolicyConfig;
+  slots: SlotDefinition[];
+  template_md: string;
+  generation_prompt_md: string;
+  refine_prompt_md: string;
+}
+
+// frontend/src/utils/docTypeBlueprint.ts 纯函数契约
+export type BlueprintHeadingLevel = 2 | 3 | 4;
+
+export interface StaticBlueprintBlock {
+  kind: 'static';
+  key: string;
+  markdown: string;
+}
+
+export interface SlotBlueprintBlock {
+  kind: 'slot';
+  key: string;
+  emitHeading: boolean;
+  headingLevel: BlueprintHeadingLevel;
+  slot: SlotDefinition;
+  divergedTemplateHeading?: string;
+}
+
+export type BlueprintBlock = StaticBlueprintBlock | SlotBlueprintBlock;
+
+export interface DocBlueprint {
+  blocks: BlueprintBlock[];
+}
+
+export interface BlueprintDiagnostic {
+  line: number;
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+}
+```

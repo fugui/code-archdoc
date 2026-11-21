@@ -1,16 +1,17 @@
 # 代码设计文档反推 (`code-archdoc`) 特性清单与需求范围界定规范 (Feature Matrix & Scope)
 
 - **文档编号**：`01-feature-matrix.md`
-- **文档版本**：v0.4.0 (ADR-04 Monorepo 一层模块发现与层级文档演进)
-- **更新日期**：2026-11-20
+- **文档版本**：v0.5.0 (ADR-05 DocType 蓝图化双模融合编辑器与 Spec Drift 模板判定精化)
+- **更新日期**：2026-11-21
 - **所属模块**：`archdoc`（服务名 `Code-Archdoc` / `code-archdoc-server`）
 - **当前阶段**：阶段一：特性清单与边界明确（`01-features`）
-- **状态**：已冻结（含 M1~M7 P0 基线与 ADR-04 M8~M10 演进特性）。
+- **状态**：已冻结（含 M1~M7 P0 基线、ADR-04 M8~M10 演进特性与 ADR-05 M11 演进特性）。
 
 ### 修订记录
 
 | 版本 | 日期 | 修订要点 |
 | :--- | :--- | :--- |
+| v0.5.0 | 2026-11-21 | 采纳 [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)：<br>1. 新增 `F-32`（`DocType` 蓝图化双模融合编辑器与 `Spec Drift` 模板静态骨架归一化）：将 `DocTypeEditorDrawer` 收敛为三 Tab 融合蓝图架构（可视化编排 + `Blueprint Source DSL v1` 参数化源码双向同步），支持顶层 `ir_facets` 自动并集、高级治理策略透出与跨模式 `persistedSlotIds` 防误改门禁；<br>2. 精化 `F-12` `Spec Drift` 模板比对：剥离 `template.md` 中绑定的 `<!-- slot:id -->` 与紧邻 `##~####` 标题行，仅在静态骨架或 `PromptHash` 变更时触发全篇 `prompt_changed`，并将 `enable_source_tools` / `max_tool_rounds` 纳入槽位级漂移检测；<br>3. 新增核心验收场景 `SC-19`（对应 `M11` 交付波次）。 |
 | v0.4.0 | 2026-11-20 | 采纳 [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)：<br>1. 更新 `KA-04`：明确 Monorepo「一层子目录即模块」为默认粒度（支持按仓策略与 `architecture_elements` 合并），无损兼容单模块仓库；<br>2. 新增 `F-28`（一层模块自动发现与范围迁移）、`F-29`（多模块批次生成与批次预算熔断）、`F-30`（整仓基线切片、模块外部上下文与仓库级证据锚点）、`F-31`（仓库级共享术语表、层级汇总与模块导航）；<br>3. 新增核心验收场景 `SC-14`~`SC-18`（对应 `M8`~`M10` 交付波次）。 |
 | v0.1.0 | 2026-11-15 | 完成阶段一特性矩阵初稿（`F-01`~`F-18`、`SC-01`~`SC-07`、`KA-01`~`KA-06` 与 `Non-Goals`）。 |
 | v0.2.0 | 2026-11-19 | 重构 `F-03` 为可管理 `DocType` 注册表；补齐架构师/开发者视图深度；强化降噪、脱敏、Token 熔断、Mermaid 门禁与双维漂移；新增 `F-19`~`F-23` 与 `SC-08`~`SC-10`。 |
@@ -123,6 +124,7 @@
 | **F-29** | **多模块批次生成与工作区可降级读写锁** | `Backend`<br>`Frontend`<br>`Models` | **P0 / M8** | 新增 `POST /api/tasks/generate-batch`，建立批次父任务（`task_kind="batch"`）+ 模块子任务模型，支持多选模块或全量 `active` 模块，并可选在模块全部终态后追加整仓汇总生成；全量范围权限前置校验（任一无权整批 `403` 零落库）、批次级 Token 预算前置熔断（`scheduler.max_tokens_per_batch`，0 LLM 请求）与级联取消；引入仓库级可降级读写锁彻底修复「同步 → 抽取」并发竞态。 | 1. 预算超限整批失败并返回按模块分解的 `budget_advice`，LLM 请求 = 0。<br>2. 子目录负责人提交含越权模块的批次返 `403` 且零落库。<br>3. 抽取期间并发同步被阻塞，快照 `commit_sha` 与内容严格一致。 |
 | **F-30** | **整仓基线切片、模块外部上下文 (`module_context`) 与仓库级证据锚点** | `Backend`<br>`Frontend` | **P0 / M9** | Code IR 升级至 Schema `1.1`，同仓同提交仅 1 次 Git 同步与 1 次整仓 L1 抽取，模块快照由纯函数 `SliceByModule` 确定性切片产出（超阈值自动降级并复用既有提取器构建轻量依赖索引）；生成第 10 分片 `module_context`（出/入依赖边、导出接口、消费契约、根构建片段），按 `DocType` 声明式注入与工具白名单开放；扩展 `EvidenceAnchor.scope="repo"`、Verifier 白名单硬门禁、白名单源码预览与 `external_contract_*` 漂移检测。 | 1. 同仓 5 模块并发生成仅 1 次同步、1 次整仓 L1 抽取。<br>2. `SliceByModule` 与旧版按子目录抽取逐分片等价。<br>3. 非白名单 `scope=repo` 锚点被 Verifier 判 `error`（`can_approve=false`），源码预览越界返 `403`。<br>4. 外部契约变更触发 `external_contract_modified`。 |
 | **F-31** | **仓库级共享术语表、层级汇总 (`module_digests`) 与模块导航** | `Backend`<br>`Frontend` | **P0 / M10** | 术语表由基线快照统一生成 1 次供同仓所有模块复用；整仓 `DocType` 声明式消费 `module_digests`（已发布优先 → 草稿 → 术语表兜底）与跨模块依赖图并按 `repo_ir_facets` 收敛 IR；支持 `module_doc` 锚点与双源合并漂移联动（模块发布/变更触发整仓 `module_digest_changed` / `module_scope_changed` 且不被 `EvaluateRepoCodeDrift` 覆盖）；发布自动追加「模块导航」节、动态深度 `parent_doc` Frontmatter 与两级仓库 `README.md`。 | 1. 同仓多模块并发仅触发 1 次术语表 LLM 调用。<br>2. 模块发布新修订后，仅引用该模块摘要的整仓章节标记 `module_digest_changed`。<br>3. 发布产物含正确 `scope_type`/`module`/`parent_doc` 与模块导航链接。 |
+| **F-32** | **`DocType` 蓝图化双模融合编辑器与 `Spec Drift` 模板判定精化（ADR-05）** | `Backend`<br>`Frontend`<br>`Models` | **P0 / M11** | 1. **统一蓝图 IR 与双模融合编排**：保持磁盘四文件 SSOT 与 `ExtraFields` 零破坏，前端通过 `DocBlueprint` IR 在同一「文档蓝图」视图内融合全局 Prompt、`template.md` 骨架与 `slots[]`，提供「可视化卡片编排」与「参数化源码 `Blueprint Source DSL v1`（Markdown + ```` ```slot <slot_id> ```` 围栏块）」双向无损实时切换及行号级错误诊断；<br>2. **自动并集、高级策略透出与跨模式防误改**：顶层 `meta.ir_facets` 默认自动聚合所有槽位分片并集（兼容手动覆写）；折叠透出 `repo_ir_facets`、`context_inputs`、`module_digest_source`、`verify_policy`、`scope_profile` 及槽位 `enable_source_tools`/`max_tool_rounds`；修复 `SlotsSnapshotJSON` 源码工具字段持久化与 `CreateDocTypeRequest` 对齐；建立跨可视化/源码模式的 `persistedSlotIds` 修改/删除 `useConfirm` 强制风险确认门禁；<br>3. **`Spec Drift` 静态骨架归一化**：剥离 `template.md` 中已声明槽位的 `<!-- slot:id -->` 及紧邻 `##~####` 绑定标题行，仅当剩余静态骨架或 `PromptHash` 变化时才判定全局 `prompt_changed`，消除修改单章标题或增删槽位时对兄弟槽位的全篇漂移误报，并将 `enable_source_tools` / `max_tool_rounds` 纳入 `slot_modified` 检测。 | 1. 5 类内置模板与复杂自由排版模板经 `decompile ↔ compile` 与 `DSL parse ↔ serialize` 连续往返 100% 字节级幂等。<br>2. DSL 未知键、越界值、非法分片或未闭合围栏触发精确行号 `error` 并阻断切换与保存；源码中修改/移除既有 `slot_id` 触发强制确认门禁。<br>3. 修改单槽位标题或增删槽位时，未修改的兄弟非锁定槽位 `Spec Drift` 零误报；修改静态导语或开启槽位 `enable_source_tools` 时精确标出对应漂移。 |
 
 ### 子域 E：P1/P2 进阶演进特性
 
@@ -162,6 +164,7 @@
 | **SC-16** | M8 / M9 | **同仓并发工作区互斥与整仓一次抽取切片** | 1. 模块 A 抽取期间模块 B 触发同步且远端前进；<br>2. 同仓 5 个模块并发生成。 | 1. A 快照 `commit_sha` 与抽取内容严格一致；<br>2. `GitSyncer.Sync` = 1、整仓 L1 抽取 = 1、术语表 LLM 调用 = 1，`SliceByModule` 与旧版按子目录抽取等价。 |
 | **SC-17** | M9 | **模块外部上下文、白名单门禁与外部契约漂移** | `order/a.cpp` `#include "pay/api.h"`；L2 引用白名单外 `scope=repo` 符号；随后变更 `pay/api.h::PayClient::Charge`。 | 1. `order` 的 `OutboundDeps` 含 `pay`、`pay` 的 `InboundDeps` 含 `order`；<br>2. 非白名单 `scope=repo` 锚点被 Verifier 判 `error`（`can_approve=false`）；<br>3. 外部符号指纹变化触发 `order` 对应章节 `external_contract_modified`。 |
 | **SC-18** | M10 | **层级文档汇总、模块摘要漂移联动与模块导航发布** | 整仓 `system-architecture` 消费 `order` 摘要发布；随后 `order` 发布新修订更新 `overview_boundaries`。 | 1. 整仓仅引用 `order` 摘要的章节标记 `module_digest_changed` 且不被 `EvaluateRepoCodeDrift` 覆盖；<br>2. 发布产物自动附带「模块导航」节、动态深度 `parent_doc` 与两级 `README.md`。 |
+| **SC-19** | M11 | **`DocType` 蓝图双模往返、源码防误改与 `Spec Drift` 静态骨架零误报** | 1. 在融合编辑器中对内置模板切换「可视化编排 ↔ 参数化源码 DSL v1」，调整槽位顺序、修改单章标题并为某槽位开启 `enable_source_tools: true`；<br>2. 在源码模式输入拼写错误键 `token_budegt` 或删改既有 `slot_id`。 | 1. 编译产出的 `slots[]` 顺序、`template.md` 占位符及 `## 标题`、顶层 `ir_facets` 并集 100% 同步；已发布文档仅被改标题/工具开关的槽位标记 `slot_modified`，其余兄弟非锁定槽位零 `prompt_changed` 误报；<br>2. 拼写错误键精确报行号 `error` 并阻断保存；删改既有 `slot_id` 触发底部风险徽标与 `useConfirm` 确认门禁。 |
 
 ---
 
