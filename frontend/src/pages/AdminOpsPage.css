@@ -1,0 +1,157 @@
+/* ==========================================================================
+   AdminOpsPage 运行与存储运维页面样式（全量 --color-* Token）
+   ========================================================================== */
+
+.code-archdoc-ops-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.15rem;
+  align-items: start;
+}
+
+.code-archdoc-ops-panel {
+  padding: 1.25rem 1.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.code-archdoc-ops-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-ops-panel-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.code-archdoc-ops-quota-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.code-archdoc-ops-quota-item {
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.code-archdoc-ops-quota-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+}
+
+.code-archdoc-ops-quota-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-ops-quota-num {
+  font-family: var(--font-family-mono);
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-ops-quota-track {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+}
+
+.code-archdoc-ops-quota-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+}
+
+.code-archdoc-ops-quota-fill--warn {
+  background: var(--color-warning);
+}
+
+.code-archdoc-ops-quota-fill--danger {
+  background: var(--color-danger);
+}
+
+.code-archdoc-ops-quota-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-ops-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.code-archdoc-ops-kv-cell {
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.code-archdoc-ops-kv-label {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-ops-kv-val {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-ops-kv-hint {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-ops-note {
+  padding: 0.8rem 0.95rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 960px) {
+  .code-archdoc-ops-grid,
+  .code-archdoc-ops-kv-grid {
+    grid-template-columns: 1fr;
+  }
+}

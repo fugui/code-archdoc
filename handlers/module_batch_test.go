@@ -22,7 +22,6 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/publisher"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	"code-common/backend/testdb"
@@ -49,7 +48,6 @@ type m8TestEnv struct {
 	otherUser    models.User
 	otherTok     string
 	repo         models.Repository
-	cipher       *security.Cipher
 	moduleStore  *models.ModuleStore
 	docStore     *models.DocumentStore
 	docTypeStore *models.DocTypeStore
@@ -67,11 +65,6 @@ func setupM8TestEnv(t *testing.T) *m8TestEnv {
 
 	config.AppConfig.Auth.JWTSecret = "m8-unit-test-jwt-secret-key-9876543210"
 	config.AppConfig.Auth.StandaloneMode = true
-
-	cipher, err := security.NewCipher("m8-unit-test-32byte-master-key00", "jwt", true)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	tmpRoot := t.TempDir()
 	fixtureRoot := filepath.Join(tmpRoot, "monorepo_fixture")
@@ -137,7 +130,7 @@ func setupM8TestEnv(t *testing.T) *m8TestEnv {
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
 		WithModuleRepo(moduleStore)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, docTypeStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -159,7 +152,7 @@ func setupM8TestEnv(t *testing.T) *m8TestEnv {
 		WithLeaseManager(leaseMgr)
 	llmClient := llm.NewClientWithOptions(&http.Client{Timeout: 10 * time.Second}, 10*time.Millisecond)
 	genSvc := services.NewGenerationOrchestrator(
-		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, cipher, llmClient, 2,
+		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, llmClient, 2,
 	).WithGovernance(leaseMgr, scheduler)
 
 	driftSvc := services.NewDriftOrchestrator(
@@ -252,7 +245,6 @@ func setupM8TestEnv(t *testing.T) *m8TestEnv {
 		otherUser:    other,
 		otherTok:     issueTestToken(t, other),
 		repo:         repo,
-		cipher:       cipher,
 		moduleStore:  moduleStore,
 		docStore:     docStore,
 		docTypeStore: docTypeStore,
@@ -262,24 +254,21 @@ func setupM8TestEnv(t *testing.T) *m8TestEnv {
 
 func configureM8MockLLM(t *testing.T, env *m8TestEnv, baseURL string) {
 	t.Helper()
-	encKey, err := env.cipher.Encrypt("sk-m8-mock-key-0000")
-	if err != nil {
-		t.Fatal(err)
+	cfg := models.LLMConfig{
+		Name:             "M8-Mock-Model",
+		BaseURL:          baseURL,
+		ModelName:        "mock-deepseek-v3",
+		APIKey:           "sk-m8-mock-key-0000",
+		APIKeyMasked:     "sk-****0000",
+		TimeoutSeconds:   30,
+		MaxRetries:       0,
+		MaxTokensPerTask: 500000,
+		MaxFilesPerTask:  5000,
+		IsActive:         true,
+		IsDefault:        true,
 	}
-	for _, tier := range []string{models.ModelTierFast, models.ModelTierFlagship} {
-		if err := env.db.Model(&models.LLMConfig{}).Where("tier = ?", tier).Updates(map[string]any{
-			"base_url":            baseURL,
-			"model_name":          "mock-" + tier,
-			"api_key_cipher":      encKey,
-			"api_key_masked":      "sk-****0000",
-			"timeout_seconds":     30,
-			"max_retries":         0,
-			"max_tokens_per_task": 500000,
-			"max_files_per_task":  5000,
-			"is_active":           true,
-		}).Error; err != nil {
-			t.Fatal(err)
-		}
+	if err := env.db.Create(&cfg).Error; err != nil {
+		t.Fatal(err)
 	}
 }
 

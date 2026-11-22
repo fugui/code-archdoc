@@ -3,7 +3,6 @@
 # 使用说明：本地或生产部署时请复制为 config.yaml 并按需修改（config.yaml 已加入 .gitignore）
 # 环境变量优先级（高于本配置文件同名字段）：
 #   - JWT_SECRET              : 平台共享 JWT 签名密钥（须与 code-bench 完全一致）
-#   - ARCHDOC_ENCRYPTION_KEY  : AES-256-GCM 32 字节主密钥（64 位 Hex 或 Base64，生成命令：openssl rand -hex 32）
 # ==============================================================================
 
 server:
@@ -59,13 +58,6 @@ storage:
   ir_cache_max_mb: 10240                # Code IR 压缩分片缓存上限（生产推荐 10240 MB = 10 GB）
   max_file_bytes: 1048576               # L1 降噪单文件体积上限（默认 1 MB，过滤超大单文件与二进制）
   reap_interval_mins: 10                # 后台磁盘配额巡检周期（分钟，生产推荐 10~15）
-
-# ── 凭据加密配置 (F-14) ──
-security:
-  # AES-256-GCM 32 字节主密钥（支持 64 位 Hex 或 Base64 编码），用于加密 archdoc_llm_configs.api_key_cipher
-  # 生产环境必须通过环境变量 ARCHDOC_ENCRYPTION_KEY 注入，切勿明文提交至版本库！
-  # 注意：standalone_mode=false 且未配置主密钥时，写入新 LLM APIKey 将被安全拒绝。
-  encryption_key: ""
 
 # ── 任务调度与 LLM 并发控制配置 (F-05 / F-27) ──
 scheduler:

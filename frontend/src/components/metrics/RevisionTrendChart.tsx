@@ -12,7 +12,7 @@ interface RevisionTrendChartProps {
 const VIEW_WIDTH = 760;
 const VIEW_HEIGHT = 270;
 const PAD_LEFT = 52;
-const PAD_RIGHT = 64;
+const PAD_RIGHT = 24;
 const PAD_TOP = 22;
 const PAD_BOTTOM = 44;
 const PLOT_WIDTH = VIEW_WIDTH - PAD_LEFT - PAD_RIGHT;
@@ -20,12 +20,6 @@ const PLOT_HEIGHT = VIEW_HEIGHT - PAD_TOP - PAD_BOTTOM;
 
 function formatPercent(v: number): string {
   return `${(v * 100).toFixed(1)}%`;
-}
-
-function formatCompactTokens(v: number): string {
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-  return String(v);
 }
 
 function buildPolylinePoints(coords: Array<{ x: number; y: number }>): string {
@@ -51,11 +45,6 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
       return null;
     }
 
-    const maxTokens = Math.max(
-      ...revisions.map((r) => r.avg_tokens_per_doc),
-      1000,
-    );
-
     const stepX = revisions.length > 1 ? PLOT_WIDTH / (revisions.length - 1) : 0;
     const xAt = (idx: number): number =>
       revisions.length === 1 ? PAD_LEFT + PLOT_WIDTH / 2 : PAD_LEFT + idx * stepX;
@@ -65,28 +54,19 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
       return PAD_TOP + (1 - clamped) * PLOT_HEIGHT;
     };
 
-    const yTok = (tokens: number): number => {
-      const ratio = Math.max(0, Math.min(1, tokens / maxTokens));
-      return PAD_TOP + (1 - ratio) * PLOT_HEIGHT;
-    };
-
-    const barWidth = Math.min(36, Math.max(16, PLOT_WIDTH / Math.max(revisions.length * 3, 4)));
+    const hitBandWidth = Math.min(48, Math.max(24, PLOT_WIDTH / Math.max(revisions.length * 2.5, 4)));
 
     const editPts = revisions.map((r, i) => ({ x: xAt(i), y: yPct(r.avg_edit_diff_ratio) }));
     const chatPts = revisions.map((r, i) => ({ x: xAt(i), y: yPct(r.chat_accept_rate) }));
     const blockPts = revisions.map((r, i) => ({ x: xAt(i), y: yPct(r.verifier_block_rate) }));
-    const cachePts = revisions.map((r, i) => ({ x: xAt(i), y: yPct(r.avg_cache_hit_ratio) }));
 
     return {
-      maxTokens,
-      barWidth,
+      hitBandWidth,
       xAt,
       yPct,
-      yTok,
       editPts,
       chatPts,
       blockPts,
-      cachePts,
     };
   }, [revisions]);
 
@@ -97,7 +77,7 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
           <div className="code-archdoc-trend-title-wrap">
             <h2 className="code-archdoc-trend-title">DocTypeRevision 质量演进趋势</h2>
             <p className="code-archdoc-trend-subtitle">
-              按模板修订版本纵向追踪修改率下降与采纳率/缓存命中率提升
+              按模板修订版本纵向追踪修改率下降与采纳率提升
             </p>
           </div>
         </div>
@@ -120,7 +100,7 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
             DocTypeRevision 质量演进趋势（{docTypeSlug}）
           </h2>
           <p className="code-archdoc-trend-subtitle">
-            点击或悬浮各修订节点查看精确指标；柱状背景表示单篇平均 Token 消耗
+            点击或悬浮各修订节点查看精确指标
           </p>
         </div>
 
@@ -137,14 +117,6 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
             <span className="code-archdoc-trend-swatch code-archdoc-trend-swatch--block" />
             <span>Verifier 拦截率</span>
           </span>
-          <span className="code-archdoc-trend-legend-item">
-            <span className="code-archdoc-trend-swatch code-archdoc-trend-swatch--cache" />
-            <span>KV Cache 命中</span>
-          </span>
-          <span className="code-archdoc-trend-legend-item">
-            <span className="code-archdoc-trend-swatch code-archdoc-trend-swatch--tokens" />
-            <span>单篇 Token</span>
-          </span>
         </div>
       </div>
 
@@ -155,7 +127,7 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
           role="img"
           aria-label={`${docTypeSlug} 修订版本质量指标对比图`}
         >
-          {/* 网格线与双纵轴刻度 */}
+          {/* 网格线与纵轴刻度 */}
           {yTicks.map((tick) => {
             const y = chartData.yPct(tick);
             return (
@@ -175,14 +147,6 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
                 >
                   {`${Math.round(tick * 100)}%`}
                 </text>
-                <text
-                  x={VIEW_WIDTH - PAD_RIGHT + 8}
-                  y={y + 4}
-                  textAnchor="start"
-                  className="code-archdoc-trend-axis-label"
-                >
-                  {formatCompactTokens(Math.round(chartData.maxTokens * tick))}
-                </text>
               </g>
             );
           })}
@@ -190,36 +154,16 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
           {/* 选中列高亮 */}
           {effectiveIdx >= 0 && (
             <rect
-              x={chartData.xAt(effectiveIdx) - chartData.barWidth * 0.8}
+              x={chartData.xAt(effectiveIdx) - chartData.hitBandWidth * 0.65}
               y={PAD_TOP}
-              width={chartData.barWidth * 1.6}
+              width={chartData.hitBandWidth * 1.3}
               height={PLOT_HEIGHT}
               rx={6}
               className="code-archdoc-trend-highlight-col"
             />
           )}
 
-          {/* 单篇平均 Token 柱状图 */}
-          {revisions.map((rev, idx) => {
-            const x = chartData.xAt(idx) - chartData.barWidth / 2;
-            const y = chartData.yTok(rev.avg_tokens_per_doc);
-            const h = Math.max(0, PAD_TOP + PLOT_HEIGHT - y);
-            return (
-              <rect
-                key={`bar-${rev.doc_type_revision_id}`}
-                x={x}
-                y={y}
-                width={chartData.barWidth}
-                height={h}
-                rx={4}
-                className={`code-archdoc-trend-bar ${
-                  idx === effectiveIdx ? 'code-archdoc-trend-bar--active' : ''
-                }`}
-              />
-            );
-          })}
-
-          {/* 四条核心百分比折线 */}
+          {/* 三条核心百分比折线 */}
           {revisions.length > 1 && (
             <>
               <polyline
@@ -233,10 +177,6 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
               <polyline
                 points={buildPolylinePoints(chartData.blockPts)}
                 className="code-archdoc-trend-line code-archdoc-trend-line--block"
-              />
-              <polyline
-                points={buildPolylinePoints(chartData.cachePts)}
-                className="code-archdoc-trend-line code-archdoc-trend-line--cache"
               />
             </>
           )}
@@ -265,12 +205,6 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
                   r={r}
                   className="code-archdoc-trend-dot code-archdoc-trend-dot--block"
                 />
-                <circle
-                  cx={cx}
-                  cy={chartData.cachePts[idx].y}
-                  r={r}
-                  className="code-archdoc-trend-dot code-archdoc-trend-dot--cache"
-                />
                 <text
                   x={cx}
                   y={VIEW_HEIGHT - 16}
@@ -280,9 +214,9 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
                   {`Rev ${rev.revision_no}`}
                 </text>
                 <rect
-                  x={cx - Math.max(chartData.barWidth, 24)}
+                  x={cx - chartData.hitBandWidth}
                   y={PAD_TOP}
-                  width={Math.max(chartData.barWidth * 2, 48)}
+                  width={chartData.hitBandWidth * 2}
                   height={PLOT_HEIGHT + 28}
                   className="code-archdoc-trend-hit"
                   onMouseEnter={() => setSelectedIdx(idx)}
@@ -322,15 +256,8 @@ export const RevisionTrendChart: React.FC<RevisionTrendChartProps> = ({
             </span>
           </div>
           <div className="code-archdoc-trend-insp-cell">
-            <span className="code-archdoc-trend-insp-label">KV Cache 命中率</span>
+            <span className="code-archdoc-trend-insp-label">创建时间</span>
             <span className="code-archdoc-trend-insp-val">
-              {formatPercent(activeRev.avg_cache_hit_ratio)}
-            </span>
-          </div>
-          <div className="code-archdoc-trend-insp-cell">
-            <span className="code-archdoc-trend-insp-label">单篇平均 Token / 创建于</span>
-            <span className="code-archdoc-trend-insp-val">
-              {formatCompactTokens(activeRev.avg_tokens_per_doc)} ·{' '}
               {formatDateTime(activeRev.created_at)}
             </span>
           </div>

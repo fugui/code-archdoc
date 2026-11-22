@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,7 +21,6 @@ import (
 	"code-archdoc/pkg/codeir/treesitter"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/publisher"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	commonModels "code-common/backend/models"
@@ -61,12 +59,6 @@ func setupM3TestEnv(t *testing.T) *m3TestEnv {
 	config.AppConfig.Auth.JWTSecret = "m3-unit-test-jwt-secret-key-0123456789"
 	config.AppConfig.Auth.StandaloneMode = true
 
-	hexKey := hex.EncodeToString([]byte("archdoc-m3-test-32byte-key-00003"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("初始化加密器失败: %v", err)
-	}
-
 	tmpData := t.TempDir()
 	docTypesDir := filepath.Join(tmpData, "doc_types")
 	irCacheDir := filepath.Join(tmpData, "ir_cache")
@@ -97,7 +89,7 @@ func setupM3TestEnv(t *testing.T) *m3TestEnv {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, dtStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
 		t.Fatalf("SeedAndSyncAll 失败: %v", err)

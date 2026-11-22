@@ -641,7 +641,13 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                           <span className="code-badge code-badge--purple">{dt.category}</span>
                         )}
                         <span className="code-badge code-badge--muted">{dt.slug}</span>
-                        <span className="code-badge code-badge--primary">{dt.model_tier}</span>
+                        <span
+                          className={`code-badge ${
+                            dt.preferred_model ? 'code-badge--primary' : 'code-badge--muted'
+                          }`}
+                        >
+                          {dt.preferred_model || '默认模型'}
+                        </span>
                         <span className="code-badge code-badge--muted">{dt.slot_count} 个槽位</span>
                       </div>
                     </div>
@@ -861,7 +867,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                     <tr>
                       <th>文档类型</th>
                       <th>章节槽位</th>
-                      <th>档位</th>
+                      <th>模型</th>
                       <th>状态</th>
                       <th>重试次数</th>
                       <th>操作</th>
@@ -883,7 +889,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                             )}
                           </td>
                           <td>
-                            <span className="code-badge code-badge--muted">{slot.model_tier}</span>
+                            <span className="code-badge code-badge--muted">{slot.model_name || '-'}</span>
                           </td>
                           <td>
                             <StatusTag status={sm.tag} text={sm.label} size="sm" />

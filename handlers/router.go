@@ -221,10 +221,14 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 				admin.POST("/drift/poll", h.TriggerAdminDriftPoll)
 			}
 
-			// 域 9：OpenAI Compatible 分层 LLM 配置管理与探活 (F-14) + 磁盘配额治理 (F-27 W2)
+			// 域 9：OpenAI Compatible 平等模型池配置与探活 + 磁盘配额治理 (F-27 W2)
 			admin.GET("/llm-configs", h.ListLLMConfigs)
-			admin.PUT("/llm-configs/:tier", h.UpdateLLMConfig)
-			admin.POST("/llm-configs/:tier/probe", h.ProbeLLMConfig)
+			admin.POST("/llm-configs", h.CreateLLMConfig)
+			admin.POST("/llm-configs/probe", h.ProbeAdhocLLMConfig)
+			admin.PUT("/llm-configs/:id", h.UpdateLLMConfig)
+			admin.DELETE("/llm-configs/:id", h.DeleteLLMConfig)
+			admin.POST("/llm-configs/:id/default", h.SetDefaultLLMConfig)
+			admin.POST("/llm-configs/:id/probe", h.ProbeLLMConfig)
 			if h.reaperSvc != nil {
 				admin.GET("/storage/stats", h.GetAdminStorageStats)
 				admin.POST("/storage/reap", h.TriggerAdminStorageReap)

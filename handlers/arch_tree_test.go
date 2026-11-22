@@ -2,7 +2,6 @@ package handlers_test
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"code-archdoc/config"
 	"code-archdoc/handlers"
 	"code-archdoc/models"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	"code-common/backend/testdb"
@@ -34,12 +32,6 @@ func setupArchTreeTestEnv(t *testing.T) (*gorm.DB, *gin.Engine) {
 	config.AppConfig.Auth.JWTSecret = "arch-tree-test-jwt-secret-key-9876543210"
 	config.AppConfig.Auth.StandaloneMode = true
 
-	hexKey := hex.EncodeToString([]byte("archdoc-tree-test-32byte-key-001"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("初始化加密器失败: %v", err)
-	}
-
 	masterStore := models.NewSharedMasterStore(db)
 	docStore := models.NewDocumentStore(db)
 	snapStore := models.NewSnapshotStore(db)
@@ -51,7 +43,7 @@ func setupArchTreeTestEnv(t *testing.T) (*gorm.DB, *gin.Engine) {
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
 		WithModuleRepo(moduleStore)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 
 	_ = commonAudit.Close(context.Background())
 	commonAudit.Init(db, commonAudit.InitOptions{

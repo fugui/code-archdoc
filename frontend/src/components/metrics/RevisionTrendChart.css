@@ -70,15 +70,6 @@
   background: var(--color-danger);
 }
 
-.code-archdoc-trend-swatch--cache {
-  background: var(--color-primary);
-}
-
-.code-archdoc-trend-swatch--tokens {
-  background: var(--color-purple);
-  border-radius: 2px;
-}
-
 .code-archdoc-trend-svg-wrap {
   width: 100%;
   overflow-x: auto;
@@ -114,18 +105,6 @@
   font-weight: 600;
 }
 
-.code-archdoc-trend-bar {
-  fill: var(--color-purple-subtle);
-  stroke: var(--color-purple);
-  stroke-width: 1;
-  transition: opacity 0.15s ease;
-}
-
-.code-archdoc-trend-bar--active {
-  fill: var(--color-purple);
-  opacity: 0.32;
-}
-
 .code-archdoc-trend-line {
   fill: none;
   stroke-width: 2.4;
@@ -145,10 +124,6 @@
   stroke: var(--color-danger);
 }
 
-.code-archdoc-trend-line--cache {
-  stroke: var(--color-primary);
-}
-
 .code-archdoc-trend-dot {
   stroke: var(--color-bg-surface);
   stroke-width: 2;
@@ -165,10 +140,6 @@
 
 .code-archdoc-trend-dot--block {
   fill: var(--color-danger);
-}
-
-.code-archdoc-trend-dot--cache {
-  fill: var(--color-primary);
 }
 
 .code-archdoc-trend-hit {

@@ -18,7 +18,7 @@ type DocType struct {
 	Description         string         `gorm:"type:text;default:''" json:"description"`
 	IsBuiltin           bool           `gorm:"default:false;not null" json:"is_builtin"`
 	IsActive            bool           `gorm:"default:true;not null;index" json:"is_active"`
-	ModelTier           string         `gorm:"size:20;default:'flagship';not null" json:"model_tier"`
+	PreferredModel      string         `gorm:"size:80;default:'';not null" json:"preferred_model"`
 	TimeoutSeconds      int            `gorm:"default:300;not null" json:"timeout_seconds"`
 	IRFacetsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"ir_facets"`
 	LatestRevisionID    *uint          `gorm:"index" json:"latest_revision_id"`

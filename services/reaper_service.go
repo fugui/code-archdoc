@@ -44,11 +44,10 @@ type ReapResultVO struct {
 
 // StorageStatsVO 对应 GET /api/admin/storage/stats 响应（01-http-api-contract.md §3.10）。
 type StorageStatsVO struct {
-	Sandbox      SandboxStorageStatVO `json:"sandbox"`
-	IRCache      IRCacheStorageStatVO `json:"ir_cache"`
-	PublishDir   PublishStorageStatVO `json:"publish_dir"`
-	Scheduler    SchedulerStatsVO     `json:"scheduler"`
-	UsageLast30D []UsageSummaryVO     `json:"usage_last_30d"`
+	Sandbox    SandboxStorageStatVO `json:"sandbox"`
+	IRCache    IRCacheStorageStatVO `json:"ir_cache"`
+	PublishDir PublishStorageStatVO `json:"publish_dir"`
+	Scheduler  SchedulerStatsVO     `json:"scheduler"`
 }
 
 type SandboxStorageStatVO struct {
@@ -70,15 +69,7 @@ type PublishStorageStatVO struct {
 	PublishedFiles int   `json:"published_files"`
 }
 
-type UsageSummaryVO struct {
-	ModelTier          string `json:"model_tier"`
-	DocTypeSlug        string `json:"doc_type_slug"`
-	TotalTokens        int64  `json:"total_tokens"`
-	CachedPromptTokens int64  `json:"cached_prompt_tokens"`
-	CallCount          int64  `json:"call_count"`
-}
-
-// ResourceReaper 实现受 ActiveLeaseManager 硬保护的双级 LRU 磁盘配额回收与存储/成本观测统计（F-27）。
+// ResourceReaper 实现受 ActiveLeaseManager 硬保护的双级 LRU 磁盘配额回收与存储观测统计（F-27）。
 type ResourceReaper struct {
 	cfg       ReaperConfig
 	snapRepo  SnapshotRepo
@@ -452,7 +443,7 @@ func (r *ResourceReaper) resolveSafeIRPath(absRoot, storagePath string) string {
 	return candidate
 }
 
-// GetStorageStats 汇总 sandbox_dir、ir_cache、publish_dir、TaskScheduler 与近 30 天 LLM Token 消耗统计。
+// GetStorageStats 汇总 sandbox_dir、ir_cache、publish_dir 与 TaskScheduler 运行态势。
 func (r *ResourceReaper) GetStorageStats(ctx context.Context) (*StorageStatsVO, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -480,24 +471,6 @@ func (r *ResourceReaper) GetStorageStats(ctx context.Context) (*StorageStatsVO, 
 		schedStats = r.scheduler.Stats()
 	}
 
-	usageList := make([]UsageSummaryVO, 0)
-	if r.govRepo != nil {
-		since := time.Now().AddDate(0, 0, -30)
-		rows, err := r.govRepo.SummarizeLLMUsageSince(ctx, since)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			usageList = append(usageList, UsageSummaryVO{
-				ModelTier:          row.ModelTier,
-				DocTypeSlug:        row.DocTypeSlug,
-				TotalTokens:        row.TotalTokens,
-				CachedPromptTokens: row.CachedPromptTokens,
-				CallCount:          row.CallCount,
-			})
-		}
-	}
-
 	return &StorageStatsVO{
 		Sandbox: SandboxStorageStatVO{
 			UsedMB:       bytesToMB(sbBytes),
@@ -515,8 +488,7 @@ func (r *ResourceReaper) GetStorageStats(ctx context.Context) (*StorageStatsVO, 
 			UsedMB:         bytesToMB(pubBytes),
 			PublishedFiles: pubFiles,
 		},
-		Scheduler:    schedStats,
-		UsageLast30D: usageList,
+		Scheduler: schedStats,
 	}, nil
 }
 

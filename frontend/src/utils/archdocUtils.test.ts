@@ -344,7 +344,7 @@ describe('安全 Markdown AST 解析器与 XSS 链接拦截', () => {
 describe('SSE Chat 局部精修帧解析器 (T-M5-05)', () => {
   it('正确解析 meta / delta / diff_proposal / verifier_preview / done / error 帧并忽略非法帧', () => {
     const meta = parseChatSSEBlock(
-      'event: meta\ndata: {"session_id":12,"message_id":88,"slot_id":"core_request_flows","base_revision_no":4,"model_tier":"flagship"}',
+      'event: meta\ndata: {"session_id":12,"message_id":88,"slot_id":"core_request_flows","base_revision_no":4,"model_name":"DeepSeek-V3"}',
     );
     assert.ok(meta && meta.event === 'meta');
     assert.equal(meta.data.message_id, 88);
@@ -490,7 +490,7 @@ describe('DocType 短名分组、方案 A1 覆盖汇总与架构元素类型标�
         description: '',
         is_builtin: true,
         is_active: true,
-        model_tier: 'flagship' as const,
+        preferred_model: 'DeepSeek-V3',
         timeout_seconds: 300,
         ir_facets: [],
         slot_count: 5,
@@ -509,7 +509,7 @@ describe('DocType 短名分组、方案 A1 覆盖汇总与架构元素类型标�
         description: '',
         is_builtin: true,
         is_active: true,
-        model_tier: 'fast' as const,
+        preferred_model: '',
         timeout_seconds: 240,
         ir_facets: [],
         slot_count: 3,
@@ -528,7 +528,7 @@ describe('DocType 短名分组、方案 A1 覆盖汇总与架构元素类型标�
         description: '',
         is_builtin: true,
         is_active: true,
-        model_tier: 'fast' as const,
+        preferred_model: '',
         timeout_seconds: 240,
         ir_facets: [],
         slot_count: 4,

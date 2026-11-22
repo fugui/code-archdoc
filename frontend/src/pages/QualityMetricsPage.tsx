@@ -6,7 +6,6 @@ import {
   ArrowRight,
   BarChart3,
   CheckCircle2,
-  Cpu,
   Edit3,
   FileCode2,
   FileText,
@@ -96,12 +95,6 @@ const OverviewCardGrid: React.FC<{
 
 function formatPercent(v: number): string {
   return `${(v * 100).toFixed(1)}%`;
-}
-
-function formatTokens(v: number): string {
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-  return String(v);
 }
 
 function slotHeatLevel(ratio: number): {
@@ -566,7 +559,7 @@ export const QualityMetricsPage: React.FC = () => {
               <span>生成质量度量与修订纵向对比</span>
             </h2>
             <p className="code-archdoc-overview-section-sub">
-              闭环度量首版 AI 草稿→定稿章节级修改率、Chat 局部精修采纳率、Verifier 门禁拦截率及 KV Cache 命中率
+              闭环度量首版 AI 草稿→定稿章节级修改率、Chat 局部精修采纳率及 Verifier 门禁拦截率
             </p>
           </div>
 
@@ -634,11 +627,11 @@ export const QualityMetricsPage: React.FC = () => {
         {loading ? (
           <div className="code-archdoc-loading">
             <Loader2 size={18} className="code-archdoc-spin" />
-            <span>正在聚合质量度量与 Token 缓存指标...</span>
+            <span>正在聚合质量度量指标...</span>
           </div>
         ) : (
           <>
-            {/* 5 大核心 KPI 卡片 */}
+            {/* 4 大核心 KPI 卡片 */}
             <div className="code-archdoc-metrics-kpis">
               <div className="code-card code-archdoc-metrics-kpi">
                 <div className="code-archdoc-metrics-kpi-top">
@@ -697,21 +690,6 @@ export const QualityMetricsPage: React.FC = () => {
                 </span>
                 <span className="code-archdoc-metrics-kpi-sub">
                   Gate 2 必填章节有效字符达标率
-                </span>
-              </div>
-
-              <div className="code-card code-archdoc-metrics-kpi">
-                <div className="code-archdoc-metrics-kpi-top">
-                  <span className="code-archdoc-metrics-kpi-label">单篇 Token & KV Cache</span>
-                  <div className="code-archdoc-metrics-kpi-icon code-archdoc-stat-icon--primary">
-                    <Cpu size={16} />
-                  </div>
-                </div>
-                <span className="code-archdoc-metrics-kpi-val">
-                  {formatTokens(overview.avg_tokens_per_doc)}
-                </span>
-                <span className="code-archdoc-metrics-kpi-sub">
-                  Prefix KV Cache 命中率 {formatPercent(overview.avg_cache_hit_ratio)}
                 </span>
               </div>
             </div>

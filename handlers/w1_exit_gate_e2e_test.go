@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +25,6 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/publisher"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	commonAuth "code-common/backend/auth"
@@ -53,12 +51,6 @@ func TestW1ExitGateFullVerticalLoop(t *testing.T) {
 
 	config.AppConfig.Auth.JWTSecret = "w1-exit-gate-jwt-secret-key-0123456789"
 	config.AppConfig.Auth.StandaloneMode = true
-
-	hexKey := hex.EncodeToString([]byte("archdoc-w1-exit-gate-32byte-key!"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("初始化加密器失败: %v", err)
-	}
 
 	// 将 cpp_order_service 夹具复制为真实本地 Git 仓库，由 DefaultGitSyncer 执行真实 Git 同步
 	wd, err := os.Getwd()
@@ -102,7 +94,7 @@ func TestW1ExitGateFullVerticalLoop(t *testing.T) {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, docTypeStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
 		t.Fatalf("SeedAndSyncAll 失败: %v", err)
@@ -111,7 +103,7 @@ func TestW1ExitGateFullVerticalLoop(t *testing.T) {
 	snapSvc := services.NewSnapshotService(snapStore, facetStore, agg, services.DefaultGitSyncer{}, sandboxDir, 1024*1024)
 	llmClient := llm.NewClientWithOptions(&http.Client{Timeout: 10 * time.Second}, 10*time.Millisecond)
 	genSvc := services.NewGenerationOrchestrator(
-		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, cipher, llmClient, 2,
+		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, llmClient, 2,
 	)
 	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, agg, sandboxDir)
@@ -226,36 +218,35 @@ func TestW1ExitGateFullVerticalLoop(t *testing.T) {
 	}))
 	defer mockLLM.Close()
 
-	// 配置并探活 flagship / fast 模型（验证 F-14 脱敏与探活链路）
-	for _, tier := range []string{"flagship", "fast"} {
-		w := doJSONReq(t, router, http.MethodPut, "/api/admin/llm-configs/"+tier, adminTok, map[string]any{
-			"base_url":            mockLLM.URL + "/v1",
-			"model_name":          "mock-" + tier + "-model",
-			"api_key":             "sk-test-live-key-99887766",
-			"timeout_seconds":     60,
-			"max_retries":         1,
-			"max_tokens_per_task": 300000,
-			"max_files_per_task":  2000,
-			"is_active":           true,
-		})
-		if w.Code != http.StatusOK {
-			t.Fatalf("配置 %s LLM 失败: status=%d body=%s", tier, w.Code, w.Body.String())
-		}
-		var cfgVO services.LLMConfigVO
-		mustUnmarshal(t, w.Body.Bytes(), &cfgVO)
-		if !cfgVO.HasAPIKey || strings.Contains(w.Body.String(), "sk-test-live-key-99887766") {
-			t.Fatalf("LLM 配置响应未脱敏: %s", w.Body.String())
-		}
+	// 新增并探活默认模型（验证脱敏与探活链路）
+	w := doJSONReq(t, router, http.MethodPost, "/api/admin/llm-configs", adminTok, map[string]any{
+		"name":                "DeepSeek-V3-Mock",
+		"base_url":            mockLLM.URL + "/v1",
+		"model_name":          "mock-deepseek-model",
+		"api_key":             "sk-test-live-key-99887766",
+		"timeout_seconds":     60,
+		"max_retries":         1,
+		"max_tokens_per_task": 300000,
+		"max_files_per_task":  2000,
+		"is_active":           true,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("新增 LLM 配置失败: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var cfgVO services.LLMConfigVO
+	mustUnmarshal(t, w.Body.Bytes(), &cfgVO)
+	if !cfgVO.HasAPIKey || !cfgVO.IsDefault || strings.Contains(w.Body.String(), "sk-test-live-key-99887766") {
+		t.Fatalf("LLM 配置响应未脱敏或未自动设默认: %s", w.Body.String())
+	}
 
-		pw := doJSONReq(t, router, http.MethodPost, "/api/admin/llm-configs/"+tier+"/probe", adminTok, map[string]any{})
-		if pw.Code != http.StatusOK {
-			t.Fatalf("探活 %s 失败: status=%d body=%s", tier, pw.Code, pw.Body.String())
-		}
-		var probeVO services.LLMProbeResult
-		mustUnmarshal(t, pw.Body.Bytes(), &probeVO)
-		if !probeVO.Reachable {
-			t.Fatalf("预期探活成功，实际失败: %+v", probeVO)
-		}
+	pw := doJSONReq(t, router, http.MethodPost, fmt.Sprintf("/api/admin/llm-configs/%d/probe", cfgVO.ID), adminTok, map[string]any{})
+	if pw.Code != http.StatusOK {
+		t.Fatalf("探活失败: status=%d body=%s", pw.Code, pw.Body.String())
+	}
+	var probeVO services.LLMProbeResult
+	mustUnmarshal(t, pw.Body.Bytes(), &probeVO)
+	if !probeVO.Reachable {
+		t.Fatalf("预期探活成功，实际失败: %+v", probeVO)
 	}
 
 	// ── 步骤 1：触发 cpp_order_service 生成内置 system-architecture，验证 Git 同步 + Code IR 缓存 ──

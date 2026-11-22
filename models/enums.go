@@ -12,16 +12,6 @@ var (
 	ErrReviewCommentConflict  = errors.New("当前批注已关联提案或已采纳解决，仅允许撤回或删除草稿态批注")
 )
 
-// ModelTier 枚举
-const (
-	ModelTierFast     = "fast"
-	ModelTierFlagship = "flagship"
-)
-
-func IsValidModelTier(v string) bool {
-	return v == ModelTierFast || v == ModelTierFlagship
-}
-
 // FacetName 枚举（9 大 Canonical Code IR 分片 + 第 10 个派生分片 module_context）
 const (
 	FacetTree              = "tree"

@@ -18,7 +18,6 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/sandbox"
-	"code-archdoc/pkg/security"
 	"code-archdoc/pkg/verifier"
 	commonModels "code-common/backend/models"
 
@@ -89,7 +88,7 @@ type GenSlotTaskVO struct {
 	DocumentID        *uint      `json:"document_id"`
 	Status            string     `json:"status"`
 	AttemptCount      int        `json:"attempt_count"`
-	ModelTier         string     `json:"model_tier"`
+	ModelName         string     `json:"model_name"`
 	ErrorMessage      string     `json:"error_message"`
 	StartedAt         *time.Time `json:"started_at"`
 	FinishedAt        *time.Time `json:"finished_at"`
@@ -164,7 +163,6 @@ type GenerationOrchestrator struct {
 	reviewRepo        ReviewCommentRepo
 	moduleSvc         *ModuleService
 	rbacSvc           *RBACService
-	keyCipher         *security.Cipher
 	llmClient         *llm.Client
 	verifier          *verifier.Verifier
 	leaseMgr          *ActiveLeaseManager
@@ -260,7 +258,6 @@ func NewGenerationOrchestrator(
 	taskRepo TaskRepo,
 	docRepo DocumentRepo,
 	govRepo GovernanceRepo,
-	keyCipher *security.Cipher,
 	llmClient *llm.Client,
 	maxLLMConcurrency int,
 ) *GenerationOrchestrator {
@@ -279,7 +276,6 @@ func NewGenerationOrchestrator(
 		taskRepo:          taskRepo,
 		docRepo:           docRepo,
 		govRepo:           govRepo,
-		keyCipher:         keyCipher,
 		llmClient:         llmClient,
 		verifier:          verifier.New(),
 		maxTokensPerBatch: 1000000,
@@ -940,8 +936,8 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		assetsForBudget = append(assetsForBudget, asset)
 	}
 
-	// 4. 加载 LLM 分层端点配置与预算上限
-	endpoints, maxTokensLimit, maxFilesLimit, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, assetsForBudget)
+	// 4. 加载 LLM 模型端点配置与单任务保护上限
+	llmSet, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, assetsForBudget)
 	if cfgErr != nil {
 		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "LLM_CONFIG_INVALID", cfgErr.Error(), nil, 0)
 		return
@@ -952,8 +948,8 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		IR:               snapReady.IR,
 		DocTypes:         assetsForBudget,
 		GlossaryCached:   o.snapSvc.HasCachedGlossary(dbCtx, snapReady.Loc),
-		MaxTokensPerTask: maxTokensLimit,
-		MaxFilesPerTask:  maxFilesLimit,
+		MaxTokensPerTask: llmSet.maxTokens,
+		MaxFilesPerTask:  llmSet.maxFiles,
 		LockedSlotsByDoc: lockedByDoc,
 	})
 	if budgetRes.Exceeded {
@@ -976,10 +972,10 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		return
 	}
 
-	// 7. 生成或复用快照级共享术语表 glossary.json.gz（SC-02）
-	fastCfg := endpoints[models.ModelTierFast]
-	glossary, err := o.snapSvc.EnsureGlossary(ctx, snapReady.Snapshot, snapReady.Loc, snapReady.IR, o.llmClient, fastCfg, func(u *llm.UsageMetrics, st, errCode string) {
-		o.recordUsage(dbCtx, &taskID, nil, repo.ID, "", nil, "", "glossary", models.ModelTierFast, u, st, errCode, operatorID)
+	// 7. 生成或复用快照级共享术语表 glossary.json.gz（SC-02，统一使用系统默认模型）
+	defaultEp := llmSet.endpointFor("")
+	glossary, err := o.snapSvc.EnsureGlossary(ctx, snapReady.Snapshot, snapReady.Loc, snapReady.IR, o.llmClient, defaultEp, func(u *llm.UsageMetrics, st, errCode string) {
+		o.recordUsage(dbCtx, &taskID, nil, repo.ID, "", nil, "", "glossary", u, st, errCode, operatorID)
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -1026,7 +1022,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 				DocTypeRevisionID: p.revID,
 				SlotID:            sl.SlotID,
 				Status:            status,
-				ModelTier:         p.asset.Meta.ModelTier,
+				ModelName:         llmSet.labelFor(p.asset.Meta.PreferredModel),
 				OutputMarkdown:    outMD,
 			})
 		}
@@ -1060,7 +1056,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 
 	for _, p := range plans {
 		batchNonce := llm.GenerateNonce()
-		epCfg := endpoints[p.asset.Meta.ModelTier]
+		epCfg := llmSet.endpointFor(p.asset.Meta.PreferredModel)
 		for _, sl := range p.asset.Meta.Slots {
 			st := slotTaskMap[p.slug+"::"+sl.SlotID]
 			if st.Status == models.SlotTaskSkippedLocked {
@@ -1143,14 +1139,14 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 					if ctx.Err() != nil {
 						slotRow.Status = models.SlotTaskCanceled
 						slotRow.ErrorMessage = "任务已取消"
-						o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", planCopy.asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
+						o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
 					} else {
 						slotRow.Status = models.SlotTaskFailed
 						slotRow.ErrorMessage = callErr.Error()
 						mu.Lock()
 						failedSlots++
 						mu.Unlock()
-						o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", planCopy.asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+						o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
 					}
 					_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
 					return
@@ -1164,7 +1160,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 				slotRow.ErrorMessage = ""
 				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
 
-				o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", planCopy.asset.Meta.ModelTier, &resp.Usage, "success", "", operatorID)
+				o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &resp.Usage, "success", "", operatorID)
 
 				mu.Lock()
 				completedSlots++
@@ -1332,7 +1328,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 		targetSet[sid] = true
 	}
 
-	endpoints, _, _, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, []*doctype.AssetBundle{asset})
+	llmSet, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, []*doctype.AssetBundle{asset})
 	if cfgErr != nil {
 		o.markTaskFailed(dbCtx, taskID, models.TaskStatusExtracting, "LLM_CONFIG_INVALID", cfgErr.Error(), nil, 0)
 		return
@@ -1380,7 +1376,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 			SlotID:            sl.SlotID,
 			DocumentID:        &docIDVal,
 			Status:            models.SlotTaskPending,
-			ModelTier:         asset.Meta.ModelTier,
+			ModelName:         llmSet.labelFor(asset.Meta.PreferredModel),
 		})
 	}
 	if len(slotTasks) == 0 {
@@ -1397,7 +1393,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 		slotTaskByID[slotTasks[i].SlotID] = &slotTasks[i]
 	}
 
-	epCfg := endpoints[asset.Meta.ModelTier]
+	epCfg := llmSet.endpointFor(asset.Meta.PreferredModel)
 	batchNonce := llm.GenerateNonce()
 
 	var (
@@ -1476,14 +1472,14 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 				if ctx.Err() != nil {
 					slotRow.Status = models.SlotTaskCanceled
 					slotRow.ErrorMessage = "任务已取消"
-					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
+					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
 				} else {
 					slotRow.Status = models.SlotTaskFailed
 					slotRow.ErrorMessage = callErr.Error()
 					mu.Lock()
 					failedSlots++
 					mu.Unlock()
-					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
 				}
 				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
 				return
@@ -1497,7 +1493,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 			slotRow.ErrorMessage = ""
 			_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
 
-			o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", asset.Meta.ModelTier, &resp.Usage, "success", "", operatorID)
+			o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &resp.Usage, "success", "", operatorID)
 
 			mu.Lock()
 			completedSlots++
@@ -1750,12 +1746,12 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		return
 	}
 
-	endpoints, _, _, err := o.loadLLMEndpointsAndLimits(ctx, []*doctype.AssetBundle{asset})
+	llmSet, err := o.loadLLMEndpointsAndLimits(ctx, []*doctype.AssetBundle{asset})
 	if err != nil {
 		o.failRetrySlot(ctx, slotTask, err.Error())
 		return
 	}
-	epCfg := endpoints[asset.Meta.ModelTier]
+	epCfg := llmSet.endpointFor(asset.Meta.PreferredModel)
 
 	glossary, _ := o.snapSvc.ReadCachedGlossary(ctx, snap, loc)
 	modCtx := o.snapSvc.LoadModuleContext(ctx, snap, loc)
@@ -1801,7 +1797,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	finAt := time.Now()
 	slotTask.FinishedAt = &finAt
 	if callErr != nil {
-		o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", asset.Meta.ModelTier, &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_RETRY_FAILED", operatorID)
+		o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_RETRY_FAILED", operatorID)
 		o.failRetrySlot(ctx, slotTask, callErr.Error())
 		return
 	}
@@ -1814,7 +1810,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	slotTask.ErrorMessage = ""
 	_ = o.taskRepo.UpdateSlotTask(ctx, slotTask)
 
-	o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", asset.Meta.ModelTier, &resp.Usage, "success", "", operatorID)
+	o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", &resp.Usage, "success", "", operatorID)
 
 	// 加载目标文档最新修订，仅替换目标槽位 Markdown，其余槽位内容与 content_sha256 严格字节级不变！
 	var doc *models.Document
@@ -1966,72 +1962,68 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 	return doc, nil
 }
 
+type resolvedLLMEndpoints struct {
+	endpoints map[string]llm.EndpointConfig
+	labels    map[string]string
+	maxTokens int
+	maxFiles  int
+}
+
+func (r *resolvedLLMEndpoints) endpointFor(preferredModel string) llm.EndpointConfig {
+	key := strings.TrimSpace(preferredModel)
+	if ep, ok := r.endpoints[key]; ok {
+		return ep
+	}
+	return r.endpoints[""]
+}
+
+func (r *resolvedLLMEndpoints) labelFor(preferredModel string) string {
+	key := strings.TrimSpace(preferredModel)
+	if lbl, ok := r.labels[key]; ok {
+		return lbl
+	}
+	return r.labels[""]
+}
+
 func (o *GenerationOrchestrator) loadLLMEndpointsAndLimits(
 	ctx context.Context,
 	assets []*doctype.AssetBundle,
-) (map[string]llm.EndpointConfig, int, int, error) {
-	configs, err := o.govRepo.ListLLMConfigs(ctx)
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("读取 LLM 配置失败: %w", err)
-	}
-
-	byTier := make(map[string]models.LLMConfig, len(configs))
-	for _, c := range configs {
-		byTier[c.Tier] = c
-	}
-
-	needTiers := map[string]bool{models.ModelTierFast: true}
+) (*resolvedLLMEndpoints, error) {
+	needKeys := []string{""}
+	seen := map[string]bool{"": true}
 	for _, a := range assets {
-		if a != nil && a.Meta.ModelTier != "" {
-			needTiers[a.Meta.ModelTier] = true
+		if a == nil {
+			continue
+		}
+		pref := strings.TrimSpace(a.Meta.PreferredModel)
+		if !seen[pref] {
+			seen[pref] = true
+			needKeys = append(needKeys, pref)
 		}
 	}
 
-	endpoints := make(map[string]llm.EndpointConfig, 2)
-	minTokens := 0
-	minFiles := 0
+	out := &resolvedLLMEndpoints{
+		endpoints: make(map[string]llm.EndpointConfig, len(needKeys)),
+		labels:    make(map[string]string, len(needKeys)),
+	}
 
-	for tier := range needTiers {
-		cfg, ok := byTier[tier]
-		if !ok || strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.ModelName) == "" {
-			// 若 flagship 未单独配置，则回退复用已配置的 fast（或反之），保障单模型内网环境可用
-			fallbackTier := models.ModelTierFast
-			if tier == models.ModelTierFast {
-				fallbackTier = models.ModelTierFlagship
-			}
-			if fb, fbOK := byTier[fallbackTier]; fbOK && strings.TrimSpace(fb.BaseURL) != "" && strings.TrimSpace(fb.ModelName) != "" {
-				cfg = fb
-			} else {
-				return nil, 0, 0, fmt.Errorf("未配置可用的 %s 档位 LLM 模型，请先在管理员配置中心完成配置", tier)
-			}
+	for _, key := range needKeys {
+		ep, cfg, err := ResolveLLMEndpoint(ctx, o.govRepo, key)
+		if err != nil {
+			return nil, err
 		}
+		out.endpoints[key] = ep
+		out.labels[key] = DisplayModelLabel(cfg)
 
-		apiKey := ""
-		if cfg.APIKeyCipher != "" && o.keyCipher != nil {
-			dec, decErr := o.keyCipher.Decrypt(cfg.APIKeyCipher)
-			if decErr != nil {
-				return nil, 0, 0, fmt.Errorf("解密 %s 档位 APIKey 失败: %w", tier, decErr)
-			}
-			apiKey = dec
+		if cfg.MaxTokensPerTask > 0 && (out.maxTokens == 0 || cfg.MaxTokensPerTask < out.maxTokens) {
+			out.maxTokens = cfg.MaxTokensPerTask
 		}
-
-		endpoints[tier] = llm.EndpointConfig{
-			BaseURL:        cfg.BaseURL,
-			ModelName:      cfg.ModelName,
-			APIKey:         apiKey,
-			TimeoutSeconds: cfg.TimeoutSeconds,
-			MaxRetries:     cfg.MaxRetries,
-		}
-
-		if cfg.MaxTokensPerTask > 0 && (minTokens == 0 || cfg.MaxTokensPerTask < minTokens) {
-			minTokens = cfg.MaxTokensPerTask
-		}
-		if cfg.MaxFilesPerTask > 0 && (minFiles == 0 || cfg.MaxFilesPerTask < minFiles) {
-			minFiles = cfg.MaxFilesPerTask
+		if cfg.MaxFilesPerTask > 0 && (out.maxFiles == 0 || cfg.MaxFilesPerTask < out.maxFiles) {
+			out.maxFiles = cfg.MaxFilesPerTask
 		}
 	}
 
-	return endpoints, minTokens, minFiles, nil
+	return out, nil
 }
 
 func (o *GenerationOrchestrator) loadDocTypeAssetFromRevision(rev *models.DocTypeRevision, slug string) (*doctype.AssetBundle, error) {
@@ -2092,7 +2084,6 @@ func (o *GenerationOrchestrator) recordUsage(
 	docTypeRevID *uint,
 	slotID string,
 	stage string,
-	modelTier string,
 	usage *llm.UsageMetrics,
 	status string,
 	errCode string,
@@ -2109,7 +2100,6 @@ func (o *GenerationOrchestrator) recordUsage(
 		DocTypeRevisionID:  docTypeRevID,
 		SlotID:             slotID,
 		Stage:              stage,
-		ModelTier:          modelTier,
 		ModelName:          usage.ModelName,
 		PromptTokens:       usage.PromptTokens,
 		CachedPromptTokens: usage.CachedPromptTokens,
@@ -2271,7 +2261,7 @@ func toGenSlotTaskVO(s *models.GenSlotTask) GenSlotTaskVO {
 		DocumentID:        s.DocumentID,
 		Status:            s.Status,
 		AttemptCount:      s.AttemptCount,
-		ModelTier:         s.ModelTier,
+		ModelName:         s.ModelName,
 		ErrorMessage:      s.ErrorMessage,
 		StartedAt:         s.StartedAt,
 		FinishedAt:        s.FinishedAt,

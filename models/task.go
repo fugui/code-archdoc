@@ -46,7 +46,7 @@ type GenSlotTask struct {
 	DocumentID        *uint          `gorm:"index" json:"document_id"`
 	Status            string         `gorm:"size:24;not null;default:'pending';index" json:"status"`
 	AttemptCount      int            `gorm:"default:0;not null" json:"attempt_count"`
-	ModelTier         string         `gorm:"size:20;default:''" json:"model_tier"`
+	ModelName         string         `gorm:"size:128;default:''" json:"model_name"`
 	OutputMarkdown    string         `gorm:"type:text;default:''" json:"output_markdown"`
 	CitedAnchorsJSON  datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"cited_anchors"`
 	ErrorMessage      string         `gorm:"type:text;default:''" json:"error_message"`

@@ -165,8 +165,12 @@ func TestMetaJSONPreserveUnknownExtraFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
 		t.Fatalf("Unmarshal meta.json 失败: %v", err)
 	}
+	// 旧 model_tier 字段应被 knownMetaKeys 静默吸收且不污染 ExtraFields
 	if len(meta.ExtraFields) != 2 {
 		t.Fatalf("期望保留 2 个未知扩展字段，实际 %d (%+v)", len(meta.ExtraFields), meta.ExtraFields)
+	}
+	if _, leaked := meta.ExtraFields["model_tier"]; leaked {
+		t.Fatalf("旧 model_tier 字段不应进入 ExtraFields: %+v", meta.ExtraFields)
 	}
 
 	// 序列化写回后再反序列化为通用 map 验证未知键原样保留
@@ -243,7 +247,6 @@ func TestDocTypeShortNameAndCategoryValidationAndFallback(t *testing.T) {
 		Name:        "custom-doc",
 		DisplayName: "自定义文档",
 		ShortName:   strings.Repeat("字", 33),
-		ModelTier:   "fast",
 		IRFacets:    []string{"tree"},
 		Slots: []doctype.SlotSpec{
 			{SlotID: "sec_one", Title: "1. 章节", Ownership: "auto", Required: true, IRFacets: []string{"tree"}},
@@ -260,7 +263,13 @@ func TestDocTypeShortNameAndCategoryValidationAndFallback(t *testing.T) {
 	}
 
 	m.Category = "质量与安全"
+	m.PreferredModel = strings.Repeat("m", 81)
+	if err := m.Validate("custom-doc"); err == nil {
+		t.Fatal("preferred_model 超过 80 个字符应被 Validate 拦截")
+	}
+
+	m.PreferredModel = "DeepSeek-V3"
 	if err := m.Validate("custom-doc"); err != nil {
-		t.Fatalf("合法 short_name/category 不应被拦截: %v", err)
+		t.Fatalf("合法 short_name/category/preferred_model 不应被拦截: %v", err)
 	}
 }

@@ -163,12 +163,12 @@ func TestQualityMetricsCompareAcrossDocTypeRevisions(t *testing.T) {
 	})
 	mustRecUsage(models.LLMUsageLog{
 		DocumentID: uintPtr(1), RepoID: repo.ID, DocTypeSlug: dt.Slug, DocTypeRevisionID: uintPtr(rev1.ID),
-		Stage: "slot_gen", ModelTier: models.ModelTierFlagship, ModelName: "deepseek-v3",
+		Stage: "slot_gen", ModelName: "deepseek-v3",
 		PromptTokens: 10000, CachedPromptTokens: 4000, CompletionTokens: 2000, LatencyMs: 1200, Status: "success", OperatorID: adminUser.ID,
 	})
 	mustRecUsage(models.LLMUsageLog{
 		DocumentID: uintPtr(2), RepoID: repo.ID, DocTypeSlug: dt.Slug, DocTypeRevisionID: uintPtr(rev1.ID),
-		Stage: "slot_gen", ModelTier: models.ModelTierFlagship, ModelName: "deepseek-v3",
+		Stage: "slot_gen", ModelName: "deepseek-v3",
 		PromptTokens: 10000, CachedPromptTokens: 6000, CompletionTokens: 2000, LatencyMs: 1100, Status: "success", OperatorID: adminUser.ID,
 	})
 
@@ -205,12 +205,12 @@ func TestQualityMetricsCompareAcrossDocTypeRevisions(t *testing.T) {
 	})
 	mustRecUsage(models.LLMUsageLog{
 		DocumentID: uintPtr(3), RepoID: repo.ID, DocTypeSlug: dt.Slug, DocTypeRevisionID: uintPtr(rev2.ID),
-		Stage: "slot_gen", ModelTier: models.ModelTierFlagship, ModelName: "deepseek-v3",
+		Stage: "slot_gen", ModelName: "deepseek-v3",
 		PromptTokens: 8000, CachedPromptTokens: 6400, CompletionTokens: 1000, LatencyMs: 900, Status: "success", OperatorID: adminUser.ID,
 	})
 	mustRecUsage(models.LLMUsageLog{
 		DocumentID: uintPtr(4), RepoID: repo.ID, DocTypeSlug: dt.Slug, DocTypeRevisionID: uintPtr(rev2.ID),
-		Stage: "slot_gen", ModelTier: models.ModelTierFlagship, ModelName: "deepseek-v3",
+		Stage: "slot_gen", ModelName: "deepseek-v3",
 		PromptTokens: 8000, CachedPromptTokens: 6400, CompletionTokens: 1000, LatencyMs: 850, Status: "success", OperatorID: adminUser.ID,
 	})
 
@@ -223,11 +223,11 @@ func TestQualityMetricsCompareAcrossDocTypeRevisions(t *testing.T) {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, nil)
+	llmSvc := services.NewLLMConfigService(govStore)
 	leaseMgr := services.NewActiveLeaseManager()
 	sched := services.NewTaskScheduler(services.SchedulerConfig{MaxConcurrency: 4, MaxUserConcurrency: 2})
 	agg := codeir.NewAggregator(treesitter.DefaultExtractors()...)
-	genSvc := services.NewGenerationOrchestrator(masterStore, dtStore, dtSvc, nil, taskStore, docStore, govStore, nil, nil, 4)
+	genSvc := services.NewGenerationOrchestrator(masterStore, dtStore, dtSvc, nil, taskStore, docStore, govStore, nil, 4)
 	driftSvc := services.NewDriftOrchestrator(masterStore, docStore, dtStore, dtSvc, driftStore, rbacSvc, genSvc, agg, leaseMgr, filepath.Join(tmpDir, "sandbox_dir"), 15)
 	pollerSvc := services.NewRemoteHeadPoller(services.PollerConfig{Enabled: false, Concurrency: 2}, driftStore, nil, nil, nil)
 	metricsSvc := services.NewQualityMetricsService(govStore, dtStore)
@@ -341,8 +341,8 @@ func TestQualityMetricsCompareAcrossDocTypeRevisions(t *testing.T) {
 	if err := json.Unmarshal(statsResp.Body.Bytes(), &statsVO); err != nil {
 		t.Fatal(err)
 	}
-	if statsVO.Scheduler.MaxConcurrency != 4 || len(statsVO.UsageLast30D) != 1 || statsVO.UsageLast30D[0].TotalTokens != 42000 {
-		t.Fatalf("storage stats 成本统计不符预期: %+v", statsVO)
+	if statsVO.Scheduler.MaxConcurrency != 4 || statsVO.Sandbox.MaxMB <= 0 || statsVO.IRCache.MaxMB <= 0 {
+		t.Fatalf("storage stats 调度或配额信息不符预期: %+v", statsVO)
 	}
 
 	reapResp := doReq(http.MethodPost, "/api/admin/storage/reap", adminToken, nil)

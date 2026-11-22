@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +33,6 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/publisher"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	"code-common/backend/gitsync"
@@ -157,12 +155,6 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 	config.AppConfig.Auth.JWTSecret = "m7-e2e-all-p0-jwt-secret-key-0123456789"
 	config.AppConfig.Auth.StandaloneMode = true
 
-	hexKey := hex.EncodeToString([]byte("archdoc-m7-e2e-32byte-masterkey!"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("初始化加密器失败: %v", err)
-	}
-
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +216,7 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, docTypeStore).
 		WithSpecDriftNotifier(docStore, driftStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
@@ -235,7 +227,7 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 		WithLeaseManager(leaseMgr)
 	llmClient := llm.NewClientWithOptions(&http.Client{Timeout: 10 * time.Second}, 10*time.Millisecond)
 	genSvc := services.NewGenerationOrchestrator(
-		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, cipher, llmClient, 4,
+		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, llmClient, 4,
 	).WithGovernance(leaseMgr, taskScheduler)
 	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, agg, sandboxDir).
@@ -245,7 +237,7 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 	)
 	publishSvc := services.NewPublishService(docStore, docTypeStore, masterStore, govStore, publishSink).
 		WithDriftOrchestrator(driftSvc)
-	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, cipher, llmClient)
+	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, llmClient)
 	metricsSvc := services.NewQualityMetricsService(govStore, docTypeStore)
 	reaperSvc := services.NewResourceReaper(services.ReaperConfig{
 		SandboxDir:      sandboxDir,
@@ -467,26 +459,38 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 	}))
 	defer mockLLM.Close()
 
-	// 配置 LLM 档位（flagship & fast）
+	// 配置平等模型池（创建默认模型并在变更预算时更新）
+	var defaultLLMConfigID uint
 	setLLMConfig := func(maxTokens, maxFiles int) {
-		for _, tier := range []string{models.ModelTierFlagship, models.ModelTierFast} {
-			w := doJSONReq(t, router, http.MethodPut, "/api/admin/llm-configs/"+tier, adminTok, map[string]any{
-				"base_url":            mockLLM.URL + "/v1",
-				"model_name":          "mock-" + tier,
-				"api_key":             "sk-m7-secret-key-987654321",
-				"timeout_seconds":     30,
-				"max_retries":         0,
-				"max_tokens_per_task": maxTokens,
-				"max_files_per_task":  maxFiles,
-				"is_active":           true,
-			})
-			if w.Code != http.StatusOK {
-				t.Fatalf("配置 LLM %s 失败: %d %s", tier, w.Code, w.Body.String())
+		payload := map[string]any{
+			"name":                "E2E-DeepSeek-V3",
+			"base_url":            mockLLM.URL + "/v1",
+			"model_name":          "mock-deepseek-v3",
+			"api_key":             "sk-m7-secret-key-987654321",
+			"timeout_seconds":     30,
+			"max_retries":         0,
+			"max_tokens_per_task": maxTokens,
+			"max_files_per_task":  maxFiles,
+			"is_active":           true,
+		}
+		var w *httptest.ResponseRecorder
+		if defaultLLMConfigID == 0 {
+			w = doJSONReq(t, router, http.MethodPost, "/api/admin/llm-configs", adminTok, payload)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("创建默认 LLM 失败: %d %s", w.Code, w.Body.String())
 			}
-			if strings.Contains(w.Body.String(), "sk-m7-secret-key-987654321") {
-				t.Fatalf("LLM 配置响应泄漏明文 APIKey: %s", w.Body.String())
+		} else {
+			w = doJSONReq(t, router, http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", defaultLLMConfigID), adminTok, payload)
+			if w.Code != http.StatusOK {
+				t.Fatalf("更新默认 LLM 失败: %d %s", w.Code, w.Body.String())
 			}
 		}
+		if strings.Contains(w.Body.String(), "sk-m7-secret-key-987654321") {
+			t.Fatalf("LLM 配置响应泄漏明文 APIKey: %s", w.Body.String())
+		}
+		var vo services.LLMConfigVO
+		mustUnmarshal(t, w.Body.Bytes(), &vo)
+		defaultLLMConfigID = vo.ID
 	}
 	setLLMConfig(300000, 2000)
 
@@ -980,14 +984,14 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 	// =========================================================================
 	t.Log("==> [SC-08] 验证 DocType CRUD、非法名 400、被引用删除 409 与 Spec Drift 联动")
 	if w := doJSONReq(t, router, http.MethodPost, "/api/admin/doc-types", adminTok, map[string]any{
-		"slug": "../evil", "display_name": "非法", "model_tier": "fast", "ir_facets": []string{"tree"},
+		"slug": "../evil", "display_name": "非法", "ir_facets": []string{"tree"},
 		"slots": []map[string]any{{"slot_id": "s1", "title": "1. S1", "ownership": "auto", "required": true}},
 	}); w.Code != http.StatusBadRequest {
 		t.Fatalf("SC-08 非法 slug ../evil 应返 400，实际 %d %s", w.Code, w.Body.String())
 	}
 	createDTW := doJSONReq(t, router, http.MethodPost, "/api/admin/doc-types", adminTok, map[string]any{
 		"slug": "security-review", "display_name": "安全评审报告", "description": "M7 E2E 自定义类型",
-		"model_tier": "flagship", "timeout_seconds": 300, "ir_facets": []string{"tree", "config_keys"},
+		"timeout_seconds": 300, "ir_facets": []string{"tree", "config_keys"},
 		"slots": []map[string]any{
 			{"slot_id": "threat_surface", "title": "1. 攻击面清单", "ownership": "auto", "required": true, "ir_facets": []string{"config_keys"}, "token_budget": 8000, "min_chars": 20},
 		},
@@ -1013,7 +1017,7 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 	putDTW := doJSONReq(t, router, http.MethodPut, "/api/admin/doc-types/system-architecture", adminTok, map[string]any{
 		"meta": map[string]any{
 			"name": dtDetail.Slug, "display_name": dtDetail.DisplayName, "description": dtDetail.Description,
-			"is_active": dtDetail.IsActive, "model_tier": dtDetail.ModelTier, "timeout_seconds": dtDetail.TimeoutSeconds,
+			"is_active": dtDetail.IsActive, "preferred_model": dtDetail.PreferredModel, "timeout_seconds": dtDetail.TimeoutSeconds,
 			"ir_facets": dtDetail.IRFacets, "slots": dtDetail.Slots,
 		},
 		"template_md":          dtDetail.TemplateMD,
@@ -1150,12 +1154,6 @@ func TestCodeBenchPortalGatewayAndSymlinkIntegration(t *testing.T) {
 	config.AppConfig.Auth.JWTSecret = "m7-portal-shared-jwt-secret-0123456789"
 	config.AppConfig.Auth.StandaloneMode = false
 
-	hexKey := hex.EncodeToString([]byte("archdoc-m7-portal-32byte-key!!!!"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	bareDir, _, headSHA := e2eInitBareWithFiles(t, "portal-demo-repo", map[string]string{
 		"src/demo.cpp": "namespace demo {\nint HandleRequest(int x) {\n  return x * 2;\n}\n}\n",
 	})
@@ -1187,7 +1185,7 @@ func TestCodeBenchPortalGatewayAndSymlinkIntegration(t *testing.T) {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, dtStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
 		t.Fatal(err)
@@ -1404,12 +1402,6 @@ func TestGracefulShutdownCancelsRunningGitProcessGroupAndFlushesAudit(t *testing
 	}
 	config.AppConfig.Auth.JWTSecret = "m7-shutdown-jwt-secret-0123456789"
 
-	hexKey := hex.EncodeToString([]byte("archdoc-m7-shutdown-32byte-key!!"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "blocking_child.pid")
 	blockingSyncer := &blockingProcessGroupGitSyncer{
@@ -1447,7 +1439,7 @@ func TestGracefulShutdownCancelsRunningGitProcessGroupAndFlushesAudit(t *testing
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, dtStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
 		t.Fatal(err)
@@ -1455,7 +1447,7 @@ func TestGracefulShutdownCancelsRunningGitProcessGroupAndFlushesAudit(t *testing
 	snapSvc := services.NewSnapshotService(snapStore, facetStore, agg, blockingSyncer, filepath.Join(tmpDir, "sandbox_dir"), 1024*1024).
 		WithLeaseManager(leaseMgr)
 	genSvc := services.NewGenerationOrchestrator(
-		masterStore, dtStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, cipher, llm.NewClient(), 1,
+		masterStore, dtStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, llm.NewClient(), 1,
 	).WithGovernance(leaseMgr, scheduler)
 
 	// 故意设置较长 FlushPeriod，确保唯有 commonAudit.Close(ctx) 主动 flush 才能让日志落库

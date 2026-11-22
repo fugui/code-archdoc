@@ -6,7 +6,6 @@ import type {
   ContextInputName,
   DriftFilterType,
   FacetName,
-  ModelTier,
   ModuleDigestSourceConfig,
   ModuleDiscoveryStrategy,
   RepoScopeFilter,
@@ -155,15 +154,18 @@ export interface ExportZipPayload {
   include_index?: boolean;
 }
 
-export interface UpdateLLMConfigPayload {
+export interface UpsertLLMConfigPayload {
+  name: string;
   base_url: string;
   model_name: string;
   api_key: string;
+  clear_api_key?: boolean;
   timeout_seconds: number;
   max_retries: number;
   max_tokens_per_task: number;
   max_files_per_task: number;
-  is_active: boolean;
+  is_active?: boolean;
+  is_default?: boolean;
 }
 
 export interface ProbeLLMConfigPayload {
@@ -179,7 +181,7 @@ export interface CreateDocTypePayload {
   category?: string;
   description: string;
   is_active?: boolean;
-  model_tier: ModelTier;
+  preferred_model?: string;
   timeout_seconds: number;
   max_output_tokens?: number;
   scope_profile?: ScopeProfileConfig;

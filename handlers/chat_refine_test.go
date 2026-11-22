@@ -25,7 +25,6 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/publisher"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	commonModels "code-common/backend/models"
@@ -66,12 +65,6 @@ func setupChatTestEnv(t *testing.T, llmBaseURL string) *chatTestEnv {
 	config.AppConfig.Auth.JWTSecret = "m5-chat-refine-test-jwt-secret-0123456789"
 	config.AppConfig.Auth.StandaloneMode = true
 
-	hexKey := hex.EncodeToString([]byte("archdoc-m5-chat-32byte-key-00005"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	tmpDir := t.TempDir()
 	reg, err := doctype.NewRegistry(filepath.Join(tmpDir, "doc_types"))
 	if err != nil {
@@ -98,33 +91,28 @@ func setupChatTestEnv(t *testing.T, llmBaseURL string) *chatTestEnv {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, dtStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// 配置 flagship / fast LLM 指向 Mock httptest.Server
-	encKey, err := cipher.Encrypt("sk-test-chat-key-12345678")
-	if err != nil {
-		t.Fatal(err)
+	// 配置默认 LLM 指向 Mock httptest.Server
+	cfg := models.LLMConfig{
+		Name:             "Chat-Mock-Qwen",
+		BaseURL:          llmBaseURL,
+		ModelName:        "mock-qwen-72b",
+		APIKey:           "sk-test-chat-key-12345678",
+		APIKeyMasked:     "sk-****5678",
+		TimeoutSeconds:   30,
+		MaxRetries:       0,
+		MaxTokensPerTask: 200000,
+		MaxFilesPerTask:  1000,
+		IsActive:         true,
+		IsDefault:        true,
 	}
-	for _, tier := range []string{models.ModelTierFlagship, models.ModelTierFast} {
-		cfg := models.LLMConfig{
-			Tier:             tier,
-			BaseURL:          llmBaseURL,
-			ModelName:        "mock-qwen-72b",
-			APIKeyCipher:     encKey,
-			APIKeyMasked:     "sk-****5678",
-			TimeoutSeconds:   30,
-			MaxRetries:       0,
-			MaxTokensPerTask: 200000,
-			MaxFilesPerTask:  1000,
-			IsActive:         true,
-		}
-		if err := db.Where("tier = ?", tier).Assign(cfg).FirstOrCreate(&cfg).Error; err != nil {
-			t.Fatal(err)
-		}
+	if err := db.Create(&cfg).Error; err != nil {
+		t.Fatal(err)
 	}
 
 	snapSvc := services.NewSnapshotService(snapStore, facetStore, agg, nil, filepath.Join(tmpDir, "sandbox_dir"), 1024*1024)
@@ -134,7 +122,7 @@ func setupChatTestEnv(t *testing.T, llmBaseURL string) *chatTestEnv {
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, nil, agg, filepath.Join(tmpDir, "sandbox_dir"))
 	publishSvc := services.NewPublishService(docStore, dtStore, masterStore, govStore, publishSink)
 	llmClient := llm.NewClientWithOptions(&http.Client{}, 10*time.Millisecond)
-	chatSvc := services.NewChatService(chatStore, docStore, dtStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, cipher, llmClient).
+	chatSvc := services.NewChatService(chatStore, docStore, dtStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, llmClient).
 		WithReviewCommentRepo(reviewStore)
 	reviewSvc := services.NewReviewCommentService(reviewStore, docStore)
 
@@ -368,12 +356,17 @@ func TestSSEChatRefineStreamAndAcceptPreservesOtherSlots(t *testing.T) {
 	var eventNames []string
 	var msgID uint
 	var sessionID uint
+	var metaModelName string
 	for _, ev := range events {
 		eventNames = append(eventNames, ev.Event)
 		if ev.Event == "meta" {
 			msgID = uint(ev.Data["message_id"].(float64))
 			sessionID = uint(ev.Data["session_id"].(float64))
+			metaModelName, _ = ev.Data["model_name"].(string)
 		}
+	}
+	if metaModelName != "Chat-Mock-Qwen" {
+		t.Fatalf("SSE meta 事件期望携带 model_name=Chat-Mock-Qwen，实际 %q", metaModelName)
 	}
 	// 断言严格按序收到 meta -> stage -> delta+（零 JSON 噪音） -> proposal_item -> diff_proposal -> verifier_preview -> done
 	if len(eventNames) < 7 ||

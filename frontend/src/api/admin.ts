@@ -10,13 +10,12 @@ import type {
   ItemsResponse,
   LLMConfigVO,
   LLMProbeResultVO,
-  ModelTier,
   ProbeLLMConfigPayload,
   ReapResultVO,
   StorageStatsVO,
   ToggleDocTypeStatusPayload,
   UpdateDocTypePayload,
-  UpdateLLMConfigPayload,
+  UpsertLLMConfigPayload,
 } from '../types';
 import { apiRequest } from './client';
 
@@ -25,21 +24,51 @@ export async function listLLMConfigs(): Promise<LLMConfigVO[]> {
   return Array.isArray(res.items) ? res.items : [];
 }
 
+export async function createLLMConfig(payload: UpsertLLMConfigPayload): Promise<LLMConfigVO> {
+  return apiRequest<LLMConfigVO>('/admin/llm-configs', {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
 export async function updateLLMConfig(
-  tier: ModelTier,
-  payload: UpdateLLMConfigPayload,
+  id: number,
+  payload: UpsertLLMConfigPayload,
 ): Promise<LLMConfigVO> {
-  return apiRequest<LLMConfigVO>(`/admin/llm-configs/${tier}`, {
+  return apiRequest<LLMConfigVO>(`/admin/llm-configs/${id}`, {
     method: 'PUT',
     bodyData: payload,
   });
 }
 
+export async function deleteLLMConfig(
+  id: number,
+): Promise<{ deleted: boolean; id: number }> {
+  return apiRequest<{ deleted: boolean; id: number }>(`/admin/llm-configs/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function setDefaultLLMConfig(id: number): Promise<LLMConfigVO> {
+  return apiRequest<LLMConfigVO>(`/admin/llm-configs/${id}/default`, {
+    method: 'POST',
+  });
+}
+
 export async function probeLLMConfig(
-  tier: ModelTier,
+  id: number,
   payload?: ProbeLLMConfigPayload,
 ): Promise<LLMProbeResultVO> {
-  return apiRequest<LLMProbeResultVO>(`/admin/llm-configs/${tier}/probe`, {
+  return apiRequest<LLMProbeResultVO>(`/admin/llm-configs/${id}/probe`, {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
+export async function probeAdhocLLMConfig(
+  payload: ProbeLLMConfigPayload,
+): Promise<LLMProbeResultVO> {
+  return apiRequest<LLMProbeResultVO>('/admin/llm-configs/probe', {
     method: 'POST',
     bodyData: payload,
   });

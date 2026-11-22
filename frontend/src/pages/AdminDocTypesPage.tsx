@@ -230,7 +230,7 @@ export const AdminDocTypesPage: React.FC = () => {
                 <tr>
                   <th>标识 (slug)</th>
                   <th>名称与定位</th>
-                  <th>模型档位</th>
+                  <th>指定模型</th>
                   <th>槽位数</th>
                   <th>当前修订</th>
                   <th>已发布引用</th>
@@ -270,15 +270,13 @@ export const AdminDocTypesPage: React.FC = () => {
                         )}
                       </td>
                       <td>
-                        <span
-                          className={`code-badge ${
-                            dt.model_tier === 'flagship'
-                              ? 'code-badge--purple'
-                              : 'code-badge--primary'
-                          }`}
-                        >
-                          {dt.model_tier}
-                        </span>
+                        {dt.preferred_model ? (
+                          <span className="code-badge code-badge--primary">
+                            {dt.preferred_model}
+                          </span>
+                        ) : (
+                          <span className="code-badge code-badge--muted">默认模型</span>
+                        )}
                       </td>
                       <td>{dt.slot_count}</td>
                       <td>

@@ -4,6 +4,7 @@ import {
   Cpu,
   FileText,
   FolderGit2,
+  HardDrive,
   LayoutDashboard,
   ListChecks,
   ListTree,
@@ -33,6 +34,7 @@ import {
 import { ModuleUserProvider, useModuleUser } from './context/ModuleUserContext';
 import AdminDocTypesPage from './pages/AdminDocTypesPage';
 import AdminLLMConfigPage from './pages/AdminLLMConfigPage';
+import AdminOpsPage from './pages/AdminOpsPage';
 import ArchTreeCoveragePage from './pages/ArchTreeCoveragePage';
 import CanvasStudioPage from './pages/CanvasStudioPage';
 import DriftRadarPage from './pages/DriftRadarPage';
@@ -99,6 +101,9 @@ const EmbeddedRoutes: React.FC = () => {
       <Route path="/admin/doc-types" element={<AdminDocTypesPage />} />
       <Route path={`${MODULE_BASE_PATH}/admin/doc-types`} element={<AdminDocTypesPage />} />
 
+      <Route path="/admin/ops" element={<AdminOpsPage />} />
+      <Route path={`${MODULE_BASE_PATH}/admin/ops`} element={<AdminOpsPage />} />
+
       <Route path="*" element={<Navigate to={defaultTarget} replace />} />
     </Routes>
   );
@@ -139,12 +144,15 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const isDrift = pathname.startsWith('/drift');
   const isAdminLLM = pathname.startsWith('/admin/llm');
   const isAdminDocTypes = pathname.startsWith('/admin/doc-types');
+  const isAdminOps = pathname.startsWith('/admin/ops');
 
-  const topbarTitle = isAdminDocTypes
-    ? '文档类型管理 (DocType 注册表)'
-    : isAdminLLM
-      ? 'LLM 模型配置与探活'
-      : isTasks
+  const topbarTitle = isAdminOps
+    ? '运行与存储运维'
+    : isAdminDocTypes
+      ? '文档类型管理 (DocType 注册表)'
+      : isAdminLLM
+        ? 'LLM 模型配置'
+        : isTasks
         ? '反推任务中心'
         : isArchTree
           ? '架构文档全景'
@@ -242,6 +250,15 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                 <FileText size={17} />
                 <span>文档类型管理</span>
               </Link>
+              <Link
+                to="/admin/ops"
+                className={`code-archdoc-nav-link ${
+                  isAdminOps ? 'code-archdoc-nav-link--active' : ''
+                }`}
+              >
+                <HardDrive size={17} />
+                <span>运行与存储运维</span>
+              </Link>
             </div>
           )}
         </nav>
@@ -286,6 +303,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             <Route path="/docs/:docId/evidence" element={<CanvasStudioPage evidenceDeepLink />} />
             <Route path="/admin/llm" element={<AdminLLMConfigPage />} />
             <Route path="/admin/doc-types" element={<AdminDocTypesPage />} />
+            <Route path="/admin/ops" element={<AdminOpsPage />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </div>

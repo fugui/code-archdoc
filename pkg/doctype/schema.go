@@ -134,7 +134,7 @@ type Meta struct {
 	Description        string                     `json:"description,omitempty"`
 	IsActive           bool                       `json:"is_active"`
 	IsBuiltin          bool                       `json:"is_builtin"`
-	ModelTier          string                     `json:"model_tier"`
+	PreferredModel     string                     `json:"preferred_model,omitempty"`
 	TimeoutSeconds     int                        `json:"timeout_seconds,omitempty"`
 	MaxOutputTokens    int                        `json:"max_output_tokens,omitempty"`
 	ScopeProfile       *ScopeProfileConfig        `json:"scope_profile,omitempty"`
@@ -156,6 +156,7 @@ var knownMetaKeys = map[string]bool{
 	"is_active":            true,
 	"is_builtin":           true,
 	"model_tier":           true,
+	"preferred_model":      true,
 	"timeout_seconds":      true,
 	"max_output_tokens":    true,
 	"scope_profile":        true,
@@ -327,8 +328,8 @@ func (m *Meta) Validate(expectedSlug string) error {
 	if utf8.RuneCountInString(strings.TrimSpace(m.Category)) > 32 {
 		return fmt.Errorf("%w: category 长度不能超过 32 个字符", ErrInvalidMeta)
 	}
-	if m.ModelTier != "fast" && m.ModelTier != "flagship" {
-		return fmt.Errorf("%w: model_tier 必须为 fast 或 flagship", ErrInvalidMeta)
+	if utf8.RuneCountInString(strings.TrimSpace(m.PreferredModel)) > 80 {
+		return fmt.Errorf("%w: preferred_model 长度不能超过 80 个字符", ErrInvalidMeta)
 	}
 	if len(m.IRFacets) == 0 {
 		return fmt.Errorf("%w: ir_facets 不能为空", ErrInvalidMeta)

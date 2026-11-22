@@ -3,11 +3,11 @@ package handlers_test
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +15,7 @@ import (
 	"code-archdoc/config"
 	"code-archdoc/handlers"
 	"code-archdoc/models"
-	"code-archdoc/pkg/security"
+	"code-archdoc/pkg/doctype"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	commonAuth "code-common/backend/auth"
@@ -38,14 +38,13 @@ func setupM1TestEnv(t *testing.T) (*gorm.DB, *gin.Engine, *services.RBACService)
 	config.AppConfig.Auth.JWTSecret = "m1-unit-test-jwt-secret-key-9876543210"
 	config.AppConfig.Auth.StandaloneMode = true
 
-	// 每次测试使用独立加密主密钥
-	hexKey := hex.EncodeToString([]byte("archdoc-m1-test-32byte-key-00001"))
-	cipher, err := security.NewCipher(hexKey, "", false)
+	reg, err := doctype.NewRegistry(filepath.Join(t.TempDir(), "doc_types"))
 	if err != nil {
-		t.Fatalf("初始化测试加密器失败: %v", err)
+		t.Fatal(err)
 	}
 
 	masterStore := models.NewSharedMasterStore(db)
+	dtStore := models.NewDocTypeStore(db)
 	docStore := models.NewDocumentStore(db)
 	snapStore := models.NewSnapshotStore(db)
 	taskStore := models.NewTaskStore(db)
@@ -54,7 +53,11 @@ func setupM1TestEnv(t *testing.T) (*gorm.DB, *gin.Engine, *services.RBACService)
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore).WithDocTypeRepo(dtStore)
+	docTypeSvc := services.NewDocTypeService(reg, dtStore)
+	if _, err := docTypeSvc.SeedAndSyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	// 初始化异步审计写入器（短刷新周期便于测试落库断言）
 	_ = commonAudit.Close(context.Background())
@@ -67,7 +70,7 @@ func setupM1TestEnv(t *testing.T) (*gorm.DB, *gin.Engine, *services.RBACService)
 		_ = commonAudit.Close(context.Background())
 	})
 
-	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, nil, nil)
+	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, nil)
 	r := gin.New()
 	r.Use(commonAudit.Middleware(config.ModuleKey))
 	appHandlers.RegisterRoutes(r, db)
@@ -380,7 +383,7 @@ func TestRepoCoveragePaginationAndDraftHiding(t *testing.T) {
 	}
 }
 
-func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
+func TestLLMConfigPoolCRUDMaskAuditDefaultAndProbe(t *testing.T) {
 	db, router, _ := setupM1TestEnv(t)
 
 	adminUser := createTestUser(t, db, "archdoc_admin_u", "架构文档管理员", []string{"user", config.AdminRole}, nil)
@@ -402,15 +405,53 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","model":"qwen2.5-coder-32b","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","model":"deepseek-v3","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
 	}))
 	defer mockLLM.Close()
 
-	// 2. 管理员 PUT /api/admin/llm-configs/fast 写入明文 APIKey
+	// 2. 初始模型池为空
+	reqList0 := httptest.NewRequest(http.MethodGet, "/api/admin/llm-configs", nil)
+	reqList0.Header.Set("Authorization", "Bearer "+adminTok)
+	recList0 := httptest.NewRecorder()
+	router.ServeHTTP(recList0, reqList0)
+	if recList0.Code != http.StatusOK {
+		t.Fatalf("GET /api/admin/llm-configs 失败: %d", recList0.Code)
+	}
+	var list0 struct {
+		Items []services.LLMConfigVO `json:"items"`
+	}
+	if err := json.Unmarshal(recList0.Body.Bytes(), &list0); err != nil {
+		t.Fatal(err)
+	}
+	if len(list0.Items) != 0 {
+		t.Fatalf("期望新环境模型池为空，实际 %d", len(list0.Items))
+	}
+
+	// 3. 保存前临时预探活 POST /api/admin/llm-configs/probe
+	adhocBody, _ := json.Marshal(map[string]any{
+		"base_url":   mockLLM.URL + "/v1",
+		"model_name": "deepseek-v3",
+		"api_key":    "sk-adhoc-key-1234",
+	})
+	reqAdhoc := httptest.NewRequest(http.MethodPost, "/api/admin/llm-configs/probe", bytes.NewReader(adhocBody))
+	reqAdhoc.Header.Set("Authorization", "Bearer "+adminTok)
+	reqAdhoc.Header.Set("Content-Type", "application/json")
+	recAdhoc := httptest.NewRecorder()
+	router.ServeHTTP(recAdhoc, reqAdhoc)
+	if recAdhoc.Code != http.StatusOK {
+		t.Fatalf("POST /api/admin/llm-configs/probe 失败: %d %s", recAdhoc.Code, recAdhoc.Body.String())
+	}
+	var adhocRes services.LLMProbeResult
+	if err := json.Unmarshal(recAdhoc.Body.Bytes(), &adhocRes); err != nil || !adhocRes.Reachable {
+		t.Fatalf("预探活结果异常: %+v err=%v", adhocRes, err)
+	}
+
+	// 4. 管理员 POST /api/admin/llm-configs 新增首个模型：自动设为默认模型，明文落库但响应与审计 100% 脱敏
 	secretPlain := "sk-test-secret-9999"
-	putBody1, _ := json.Marshal(map[string]any{
+	createBody1, _ := json.Marshal(map[string]any{
+		"name":                "DeepSeek-V3",
 		"base_url":            mockLLM.URL + "/v1",
-		"model_name":          "qwen2.5-coder-32b",
+		"model_name":          "deepseek-v3",
 		"api_key":             secretPlain,
 		"timeout_seconds":     120,
 		"max_retries":         3,
@@ -418,38 +459,37 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 		"max_files_per_task":  2000,
 		"is_active":           true,
 	})
-	reqPut1 := httptest.NewRequest(http.MethodPut, "/api/admin/llm-configs/fast", bytes.NewReader(putBody1))
-	reqPut1.Header.Set("Authorization", "Bearer "+adminTok)
-	reqPut1.Header.Set("Content-Type", "application/json")
-	recPut1 := httptest.NewRecorder()
-	router.ServeHTTP(recPut1, reqPut1)
-	if recPut1.Code != http.StatusOK {
-		t.Fatalf("PUT /api/admin/llm-configs/fast 失败: status=%d body=%s", recPut1.Code, recPut1.Body.String())
+	reqCreate1 := httptest.NewRequest(http.MethodPost, "/api/admin/llm-configs", bytes.NewReader(createBody1))
+	reqCreate1.Header.Set("Authorization", "Bearer "+adminTok)
+	reqCreate1.Header.Set("Content-Type", "application/json")
+	recCreate1 := httptest.NewRecorder()
+	router.ServeHTTP(recCreate1, reqCreate1)
+	if recCreate1.Code != http.StatusCreated {
+		t.Fatalf("POST /api/admin/llm-configs 失败: status=%d body=%s", recCreate1.Code, recCreate1.Body.String())
 	}
 
-	rawBody := recPut1.Body.String()
-	if strings.Contains(rawBody, secretPlain) || strings.Contains(rawBody, "api_key_cipher") {
-		t.Fatalf("响应 JSON 绝对不可包含明文 APIKey 或密文字段: %s", rawBody)
+	rawBody := recCreate1.Body.String()
+	if strings.Contains(rawBody, secretPlain) || strings.Contains(rawBody, `"api_key"`) {
+		t.Fatalf("响应 JSON 绝对不可包含明文 APIKey: %s", rawBody)
 	}
 	var cfgResp services.LLMConfigVO
-	if err := json.Unmarshal(recPut1.Body.Bytes(), &cfgResp); err != nil {
+	if err := json.Unmarshal(recCreate1.Body.Bytes(), &cfgResp); err != nil {
 		t.Fatal(err)
 	}
-	if cfgResp.APIKeyMasked != "sk-****9999" || !cfgResp.HasAPIKey {
-		t.Fatalf("期望 api_key_masked=sk-****9999 且 has_api_key=true，实际: %+v", cfgResp)
+	if cfgResp.APIKeyMasked != "sk-****9999" || !cfgResp.HasAPIKey || !cfgResp.IsDefault || cfgResp.Name != "DeepSeek-V3" {
+		t.Fatalf("新增首个模型返回不符合预期: %+v", cfgResp)
 	}
 
-	// 验证数据库中保存的是 AES-256-GCM 密文而非明文
+	// 验证数据库中直接存储明文 api_key
 	var dbCfg models.LLMConfig
-	if err := db.Where("tier = ?", models.ModelTierFast).First(&dbCfg).Error; err != nil {
+	if err := db.First(&dbCfg, cfgResp.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(dbCfg.APIKeyCipher, "v1:") || strings.Contains(dbCfg.APIKeyCipher, secretPlain) {
-		t.Fatalf("数据库未正确加密保存 APIKeyCipher: %q", dbCfg.APIKeyCipher)
+	if dbCfg.APIKey != secretPlain {
+		t.Fatalf("数据库应直接明文持久化 APIKey，实际 %q", dbCfg.APIKey)
 	}
-	savedCipher := dbCfg.APIKeyCipher
 
-	// 3. 刷新审计队列并验证 sys_audit_logs 存在 llm_config 记录且绝对不含明文或密文
+	// 5. 刷新审计队列并验证 sys_audit_logs 存在 llm_config 记录且绝对不含明文 APIKey
 	if err := commonAudit.Close(context.Background()); err != nil {
 		t.Fatalf("刷新审计队列失败: %v", err)
 	}
@@ -462,15 +502,28 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 	}
 	for _, al := range auditLogs {
 		combined := al.Summary + " " + al.BeforeData + " " + al.AfterData + " " + al.DiffSummary
-		if strings.Contains(combined, secretPlain) || strings.Contains(combined, savedCipher) {
-			t.Fatalf("严重安全漏洞：审计日志泄露了明文 APIKey 或密文！log=%+v", al)
+		if strings.Contains(combined, secretPlain) {
+			t.Fatalf("严重安全漏洞：审计日志泄露了明文 APIKey！log=%+v", al)
 		}
 	}
+	// 重新开启审计供后续用例使用
+	commonAudit.Init(db, commonAudit.InitOptions{QueueCap: 256, BatchSize: 1, FlushPeriod: 20 * time.Millisecond})
 
-	// 4. 再次更新 base_url 且 api_key == ""，断言原密文未被清空
+	// 6. 重复名称创建返回 409 CONFLICT
+	reqDup := httptest.NewRequest(http.MethodPost, "/api/admin/llm-configs", bytes.NewReader(createBody1))
+	reqDup.Header.Set("Authorization", "Bearer "+adminTok)
+	reqDup.Header.Set("Content-Type", "application/json")
+	recDup := httptest.NewRecorder()
+	router.ServeHTTP(recDup, reqDup)
+	if recDup.Code != http.StatusConflict {
+		t.Fatalf("重复名称期望返回 409，实际 %d (%s)", recDup.Code, recDup.Body.String())
+	}
+
+	// 7. 再次更新且 api_key == ""，断言原密钥未被清空
 	putBody2, _ := json.Marshal(map[string]any{
+		"name":                "DeepSeek-V3",
 		"base_url":            mockLLM.URL + "/v1/",
-		"model_name":          "qwen2.5-coder-32b",
+		"model_name":          "deepseek-v3",
 		"api_key":             "",
 		"timeout_seconds":     150,
 		"max_retries":         3,
@@ -478,7 +531,7 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 		"max_files_per_task":  2500,
 		"is_active":           true,
 	})
-	reqPut2 := httptest.NewRequest(http.MethodPut, "/api/admin/llm-configs/fast", bytes.NewReader(putBody2))
+	reqPut2 := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", cfgResp.ID), bytes.NewReader(putBody2))
 	reqPut2.Header.Set("Authorization", "Bearer "+adminTok)
 	reqPut2.Header.Set("Content-Type", "application/json")
 	recPut2 := httptest.NewRecorder()
@@ -487,15 +540,35 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 		t.Fatalf("二次 PUT 失败: %d %s", recPut2.Code, recPut2.Body.String())
 	}
 	var dbCfgAfter models.LLMConfig
-	if err := db.Where("tier = ?", models.ModelTierFast).First(&dbCfgAfter).Error; err != nil {
+	if err := db.First(&dbCfgAfter, cfgResp.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if dbCfgAfter.APIKeyCipher != savedCipher {
-		t.Fatalf("空 api_key 更新时原密文应保持不变")
+	if dbCfgAfter.APIKey != secretPlain {
+		t.Fatalf("空 api_key 更新时原密钥应保持不变，实际 %q", dbCfgAfter.APIKey)
 	}
 
-	// 5. 测试探活成功（验证解密后的 Bearer Token 正确传递且返回 reachable: true, latency_ms >= 0）
-	reqProbeOK := httptest.NewRequest(http.MethodPost, "/api/admin/llm-configs/fast/probe", nil)
+	// 8. 禁止直接停用当前默认模型（400 INVALID_PARAM）
+	disableBody, _ := json.Marshal(map[string]any{
+		"name":                "DeepSeek-V3",
+		"base_url":            mockLLM.URL + "/v1",
+		"model_name":          "deepseek-v3",
+		"timeout_seconds":     150,
+		"max_retries":         3,
+		"max_tokens_per_task": 250000,
+		"max_files_per_task":  2500,
+		"is_active":           false,
+	})
+	reqDisable := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", cfgResp.ID), bytes.NewReader(disableBody))
+	reqDisable.Header.Set("Authorization", "Bearer "+adminTok)
+	reqDisable.Header.Set("Content-Type", "application/json")
+	recDisable := httptest.NewRecorder()
+	router.ServeHTTP(recDisable, reqDisable)
+	if recDisable.Code != http.StatusBadRequest {
+		t.Fatalf("停用当前默认模型期望返回 400，实际 %d (%s)", recDisable.Code, recDisable.Body.String())
+	}
+
+	// 9. 测试已保存模型探活成功 & 上游 500 探活失败
+	reqProbeOK := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/llm-configs/%d/probe", cfgResp.ID), nil)
 	reqProbeOK.Header.Set("Authorization", "Bearer "+adminTok)
 	recProbeOK := httptest.NewRecorder()
 	router.ServeHTTP(recProbeOK, reqProbeOK)
@@ -506,16 +579,15 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 	if err := json.Unmarshal(recProbeOK.Body.Bytes(), &probeOK); err != nil {
 		t.Fatal(err)
 	}
-	if !probeOK.Reachable || probeOK.LatencyMs < 0 || probeOK.ModelEcho != "qwen2.5-coder-32b" {
+	if !probeOK.Reachable || probeOK.LatencyMs < 0 || probeOK.ModelEcho != "deepseek-v3" {
 		t.Fatalf("探活成功响应异常: %+v", probeOK)
 	}
 	if receivedAuthHeader != "Bearer "+secretPlain {
-		t.Fatalf("探活请求未正确解密并携带 Bearer Token: got %q", receivedAuthHeader)
+		t.Fatalf("探活请求未正确携带 Bearer Token: got %q", receivedAuthHeader)
 	}
 
-	// 6. 测试上游 500 探活失败（返回 reachable: false）
 	failProbe = true
-	reqProbeFail := httptest.NewRequest(http.MethodPost, "/api/admin/llm-configs/fast/probe", nil)
+	reqProbeFail := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/llm-configs/%d/probe", cfgResp.ID), nil)
 	reqProbeFail.Header.Set("Authorization", "Bearer "+adminTok)
 	recProbeFail := httptest.NewRecorder()
 	router.ServeHTTP(recProbeFail, reqProbeFail)
@@ -530,13 +602,105 @@ func TestLLMConfigEncryptMaskAuditAndProbe(t *testing.T) {
 		t.Fatalf("上游 500 应返回 reachable=false 与错误说明: %+v", probeFail)
 	}
 
-	// 7. 非法 tier 参数应返回 400 INVALID_PARAM
-	reqBadTier := httptest.NewRequest(http.MethodPut, "/api/admin/llm-configs/invalid", bytes.NewReader(putBody2))
-	reqBadTier.Header.Set("Authorization", "Bearer "+adminTok)
-	reqBadTier.Header.Set("Content-Type", "application/json")
-	recBadTier := httptest.NewRecorder()
-	router.ServeHTTP(recBadTier, reqBadTier)
-	if recBadTier.Code != http.StatusBadRequest {
-		t.Fatalf("非法 tier 期望返回 400，实际 %d", recBadTier.Code)
+	// 10. 新增第二个模型 GLM-4，验证多模型共存、不可直接删默认模型、切换默认后可删及 DocType 引用保护
+	createBody2, _ := json.Marshal(map[string]any{
+		"name":                "GLM-4",
+		"base_url":            mockLLM.URL + "/v1",
+		"model_name":          "glm-4-plus",
+		"api_key":             "sk-glm-secret-1111",
+		"timeout_seconds":     180,
+		"max_retries":         2,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2000,
+		"is_active":           true,
+	})
+	reqCreate2 := httptest.NewRequest(http.MethodPost, "/api/admin/llm-configs", bytes.NewReader(createBody2))
+	reqCreate2.Header.Set("Authorization", "Bearer "+adminTok)
+	reqCreate2.Header.Set("Content-Type", "application/json")
+	recCreate2 := httptest.NewRecorder()
+	router.ServeHTTP(recCreate2, reqCreate2)
+	if recCreate2.Code != http.StatusCreated {
+		t.Fatalf("创建第二个模型 GLM-4 失败: %d %s", recCreate2.Code, recCreate2.Body.String())
+	}
+	var cfg2 services.LLMConfigVO
+	_ = json.Unmarshal(recCreate2.Body.Bytes(), &cfg2)
+	if cfg2.IsDefault {
+		t.Fatal("新增第二个模型时不应抢占已有默认模型")
+	}
+
+	// 存在多个模型时直接删除默认模型 DeepSeek-V3 -> 409 CONFLICT
+	reqDelDef := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/llm-configs/%d", cfgResp.ID), nil)
+	reqDelDef.Header.Set("Authorization", "Bearer "+adminTok)
+	recDelDef := httptest.NewRecorder()
+	router.ServeHTTP(recDelDef, reqDelDef)
+	if recDelDef.Code != http.StatusConflict {
+		t.Fatalf("非唯一默认模型删除期望返回 409，实际 %d (%s)", recDelDef.Code, recDelDef.Body.String())
+	}
+
+	// 手动切换默认为 GLM-4 -> 200
+	reqSetDef := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/llm-configs/%d/default", cfg2.ID), nil)
+	reqSetDef.Header.Set("Authorization", "Bearer "+adminTok)
+	recSetDef := httptest.NewRecorder()
+	router.ServeHTTP(recSetDef, reqSetDef)
+	if recSetDef.Code != http.StatusOK {
+		t.Fatalf("切换默认模型失败: %d %s", recSetDef.Code, recSetDef.Body.String())
+	}
+
+	// 绑定某个 DocType 到 GLM-4，验证删除 GLM-4 时被引用保护拦截 -> 409 CONFLICT
+	if err := db.Model(&models.DocType{}).Where("slug = ?", "agents-context").Update("preferred_model", "GLM-4").Error; err != nil {
+		t.Fatal(err)
+	}
+	// 先把 DeepSeek-V3 设回默认以便检验引用拦截（即使单看非默认也应拦截）
+	reqDelRef := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/llm-configs/%d", cfg2.ID), nil)
+	reqDelRef.Header.Set("Authorization", "Bearer "+adminTok)
+	recDelRef := httptest.NewRecorder()
+	router.ServeHTTP(recDelRef, reqDelRef)
+	if recDelRef.Code != http.StatusConflict {
+		t.Fatalf("被 DocType 指定的模型删除期望返回 409，实际 %d (%s)", recDelRef.Code, recDelRef.Body.String())
+	}
+
+	// 删除非默认的 DeepSeek-V3 -> 200
+	reqDel1 := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/llm-configs/%d", cfgResp.ID), nil)
+	reqDel1.Header.Set("Authorization", "Bearer "+adminTok)
+	recDel1 := httptest.NewRecorder()
+	router.ServeHTTP(recDel1, reqDel1)
+	if recDel1.Code != http.StatusOK {
+		t.Fatalf("删除非默认模型失败: %d %s", recDel1.Code, recDel1.Body.String())
+	}
+
+	// 测试 clear_api_key 清空 GLM-4 密钥
+	clearBody, _ := json.Marshal(map[string]any{
+		"name":                "GLM-4",
+		"base_url":            mockLLM.URL + "/v1",
+		"model_name":          "glm-4-plus",
+		"clear_api_key":       true,
+		"timeout_seconds":     180,
+		"max_retries":         2,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2000,
+		"is_active":           true,
+	})
+	reqClear := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", cfg2.ID), bytes.NewReader(clearBody))
+	reqClear.Header.Set("Authorization", "Bearer "+adminTok)
+	reqClear.Header.Set("Content-Type", "application/json")
+	recClear := httptest.NewRecorder()
+	router.ServeHTTP(recClear, reqClear)
+	if recClear.Code != http.StatusOK {
+		t.Fatalf("clear_api_key 请求失败: %d %s", recClear.Code, recClear.Body.String())
+	}
+	var clearedVO services.LLMConfigVO
+	_ = json.Unmarshal(recClear.Body.Bytes(), &clearedVO)
+	if clearedVO.HasAPIKey || clearedVO.APIKeyMasked != "" {
+		t.Fatalf("clear_api_key 后期望 has_api_key=false，实际 %+v", clearedVO)
+	}
+
+	// 非法 ID 参数返回 400 INVALID_PARAM
+	reqBadID := httptest.NewRequest(http.MethodPut, "/api/admin/llm-configs/invalid", bytes.NewReader(putBody2))
+	reqBadID.Header.Set("Authorization", "Bearer "+adminTok)
+	reqBadID.Header.Set("Content-Type", "application/json")
+	recBadID := httptest.NewRecorder()
+	router.ServeHTTP(recBadID, reqBadID)
+	if recBadID.Code != http.StatusBadRequest {
+		t.Fatalf("非法 ID 期望返回 400，实际 %d", recBadID.Code)
 	}
 }

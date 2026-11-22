@@ -6,7 +6,6 @@
   "description": "面向架构师与研发骨干的运行时分层、并发/锁/共享内存模型、端到端核心链路时序图、外部依赖容错矩阵与架构约束文档",
   "is_active": true,
   "is_builtin": true,
-  "model_tier": "flagship",
   "timeout_seconds": 300,
   "scope_profile": {
     "max_depth": 12,

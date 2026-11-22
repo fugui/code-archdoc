@@ -146,6 +146,9 @@ func (r *stubDocTypeRepo) UpsertFromDirectorySync(context.Context, *models.DocTy
 func (r *stubDocTypeRepo) CountApprovedDocumentsBySlug(context.Context, string) (int64, error) {
 	return 0, nil
 }
+func (r *stubDocTypeRepo) ListByPreferredModel(context.Context, string) ([]models.DocType, error) {
+	return nil, nil
+}
 func (r *stubDocTypeRepo) DeleteIfUnused(context.Context, string) error { return nil }
 
 type stubGovRepo struct {
@@ -154,17 +157,37 @@ type stubGovRepo struct {
 }
 
 func (r *stubGovRepo) ListLLMConfigs(context.Context) ([]models.LLMConfig, error) { return nil, nil }
-func (r *stubGovRepo) GetLLMConfigByTier(_ context.Context, tier string) (*models.LLMConfig, error) {
+func (r *stubGovRepo) GetLLMConfigByID(context.Context, uint) (*models.LLMConfig, error) {
+	return nil, models.ErrNotFound
+}
+func (r *stubGovRepo) GetLLMConfigByName(_ context.Context, name string) (*models.LLMConfig, error) {
 	return &models.LLMConfig{
-		Tier:           tier,
+		ID:             1,
+		Name:           name,
 		BaseURL:        r.baseURL,
 		ModelName:      "mock-model",
 		TimeoutSeconds: 10,
 		IsActive:       true,
 	}, nil
 }
-func (r *stubGovRepo) SaveLLMConfig(context.Context, *models.LLMConfig) error { return nil }
-func (r *stubGovRepo) UpdateLLMProbeResult(context.Context, string, string, int64, time.Time) error {
+func (r *stubGovRepo) GetDefaultLLMConfig(context.Context) (*models.LLMConfig, error) {
+	return &models.LLMConfig{
+		ID:             1,
+		Name:           "DeepSeek-V3",
+		BaseURL:        r.baseURL,
+		ModelName:      "mock-model",
+		TimeoutSeconds: 10,
+		IsActive:       true,
+		IsDefault:      true,
+	}, nil
+}
+func (r *stubGovRepo) CreateLLMConfig(context.Context, *models.LLMConfig) error { return nil }
+func (r *stubGovRepo) UpdateLLMConfig(context.Context, *models.LLMConfig) error { return nil }
+func (r *stubGovRepo) SetDefaultLLMConfig(context.Context, uint) (*models.LLMConfig, error) {
+	return nil, nil
+}
+func (r *stubGovRepo) DeleteLLMConfig(context.Context, uint) error { return nil }
+func (r *stubGovRepo) UpdateLLMProbeResult(context.Context, uint, string, int64, time.Time) error {
 	return nil
 }
 func (r *stubGovRepo) RecordLLMUsage(context.Context, *models.LLMUsageLog) error { return nil }
@@ -176,9 +199,6 @@ func (r *stubGovRepo) ListQualityMetrics(context.Context, models.MetricsFilter) 
 	return r.metrics, nil
 }
 func (r *stubGovRepo) ListLLMUsageLogs(context.Context, models.MetricsFilter) ([]models.LLMUsageLog, error) {
-	return nil, nil
-}
-func (r *stubGovRepo) SummarizeLLMUsageSince(context.Context, time.Time) ([]models.UsageSummaryRecord, error) {
 	return nil, nil
 }
 func (r *stubGovRepo) ListSectionVerifierSummaries(context.Context, string, *uint, time.Time) ([]models.SectionVerifierMetricRow, error) {
@@ -510,7 +530,6 @@ type chatReviewHarness struct {
 
 func newChatReviewHarness(llmURL string, seedComments ...models.ReviewComment) *chatReviewHarness {
 	meta := doctype.Meta{
-		ModelTier: models.ModelTierFlagship,
 		Slots: []doctype.SlotSpec{
 			{SlotID: "sec_locked", Title: "锁定章节", Ownership: models.OwnershipLocked},
 			{SlotID: "sec_auto", Title: "核心架构", Ownership: models.OwnershipAuto},
@@ -558,7 +577,7 @@ func newChatReviewHarness(llmURL string, seedComments ...models.ReviewComment) *
 	chatRepo := newStubChatRepo()
 	reviewRepo := newStubReviewRepo(seedComments...)
 	revSvc := NewRevisionService(docRepo, dtRepo, nil, nil, nil).WithReviewHooks(chatRepo, reviewRepo)
-	chatSvc := NewChatService(chatRepo, docRepo, dtRepo, nil, govRepo, revSvc, nil, nil, nil, llm.NewClientWithOptions(&http.Client{}, 10*time.Millisecond)).
+	chatSvc := NewChatService(chatRepo, docRepo, dtRepo, nil, govRepo, revSvc, nil, nil, llm.NewClientWithOptions(&http.Client{}, 10*time.Millisecond)).
 		WithReviewCommentRepo(reviewRepo)
 	return &chatReviewHarness{chatSvc: chatSvc, revSvc: revSvc, docRepo: docRepo, chatRepo: chatRepo, reviewRepo: reviewRepo, govRepo: govRepo}
 }

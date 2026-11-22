@@ -6,7 +6,6 @@
   "description": "面向 AI 编程助手（受 4000 Token 预算硬约束）的高密度模块边界、架构红线、构建命令与高频改码入口包",
   "is_active": true,
   "is_builtin": true,
-  "model_tier": "fast",
   "timeout_seconds": 180,
   "max_output_tokens": 4000,
   "scope_profile": {

@@ -6,7 +6,6 @@
   "description": "面向研发迭代的仓库目录职责地图、核心请求逐跳源码导航与典型二次开发修改清单",
   "is_active": true,
   "is_builtin": true,
-  "model_tier": "fast",
   "timeout_seconds": 240,
   "scope_profile": {
     "max_depth": 12,

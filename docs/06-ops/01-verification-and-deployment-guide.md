@@ -51,20 +51,8 @@ make clean
 | 环境变量 | 是否必填 | 格式与生成方式 | 说明 |
 | :--- | :---: | :--- | :--- |
 | **`JWT_SECRET`** | **生产必填** | 与 `code-bench/config.yaml` 中 `auth.jwt_secret` **严格一致** | 实现 CodeBench 门户嵌入态无感单点鉴权；切勿留空导致单实例随机密钥不互通 |
-| **`ARCHDOC_ENCRYPTION_KEY`** | **生产必填** | 32 字节密钥的 **64 位 Hex** 或 **Base64** 字符串<br>生成命令：`openssl rand -hex 32` | 用于 AES-256-GCM 加密 `archdoc_llm_configs.api_key_cipher`；`standalone_mode=false` 且未配置时写入新 APIKey 将被安全拒绝 |
 
-#### 密钥生成与轮换步骤 (`ARCHDOC_ENCRYPTION_KEY`)
-
-```bash
-# 生成 32 字节（256-bit）随机主密钥（64 位 Hex）
-openssl rand -hex 32
-```
-
-**主密钥安全轮换操作流程**：
-1. 提前备份 `archdoc_llm_configs` 表与旧主密钥（保留于企业 KMS/密钥保险库）；
-2. 生成新 32 字节主密钥并更新运行环境中的 `ARCHDOC_ENCRYPTION_KEY`，重启 `code-archdoc-server`；
-3. 管理员（`archdoc_admin` / `super_admin`）登录门户进入「模块治理 → LLM 模型配置」，对 `flagship` 与 `fast` 档位重新提交 APIKey（触发使用新密钥重新加密落库）并点击「探活测试」确认连通；
-4. 验证无误后销毁旧密钥副本。
+> **内网 LLM 配置说明**：服务启动后不再强制配置任何密钥加密环境变量，管理员登录后可在「模块治理 → LLM 模型配置」直接新增内网模型并手动设置唯一默认模型，所有接口返回与审计快照均对 API Key 执行脱敏保护。
 
 ### 2.2 核心生产推荐参数说明
 
@@ -162,9 +150,8 @@ ps -ef | grep -E 'code-archdoc-server|git' | grep -v grep || echo "no orphan pro
 
 | 目录 / 存储 | 路径 | 备份优先级 | 说明与恢复策略 |
 | :--- | :--- | :---: | :--- |
-| **PostgreSQL 数据库** | 共享实例 `archdoc_*` 16 张表 | **P0 每日必备** | 存放文档、不可变修订历史、证据锚点、漂移记录、Chat 精修历史、质量度量与加密 LLM 配置 |
+| **PostgreSQL 数据库** | 共享实例 `archdoc_*` 18 张表 | **P0 每日必备** | 存放文档、不可变修订历史、证据锚点、漂移记录、Chat 精修历史、质量度量与模型池配置 |
 | **DocType 唯一事实源** | `<data_dir>/doc_types/` | **P0 每日必备** | 所有自定义与内置 `DocType` 的 `meta.json`/`template.md`/Prompt 文件（数据库仅存索引与快照） |
-| **加密主密钥** | `ARCHDOC_ENCRYPTION_KEY` | **P0 离线托管** | 丢失后已加密的 `api_key_cipher` 无法解密，需重新录入 LLM APIKey |
 | **已发布静态产物** | `<publish_dir>/` | **P2 可选** | 源数据在 PG 中，可对已审批文档重新触发发布重建 |
 | **Code IR 缓存** | `<ir_cache>/` | **无需备份** | 确定性静态抽取缓存，缺失时自动按 `commit_sha` 重抽 |
 | **Git 沙箱工作区** | `<sandbox_dir>/` | **无需备份** | 只读临时克隆目录，受 LRU 配额自动治理，缺失时按需重拉 |
@@ -174,7 +161,7 @@ ps -ef | grep -E 'code-archdoc-server|git' | grep -v grep || echo "no orphan pro
 | 故障现象 | 常见原因 | 排查与处置步骤 |
 | :--- | :--- | :--- |
 | **`make build` 报 `CGO Check Failed`** | 未开启 `CGO_ENABLED=1` 或缺少 `gcc`/`cc` | 安装 `build-essential` / `gcc`，执行 `CGO_ENABLED=1 make build` |
-| **保存 LLM APIKey 返回 `500` 或提示未配置主密钥** | `standalone_mode=false` 且未设置 `ARCHDOC_ENCRYPTION_KEY` | 使用 `openssl rand -hex 32` 生成主密钥并注入环境变量后重启服务 |
+| **触发生成或精修提示无可用默认模型** | 模型池为空或默认模型已停用 / 指定模型名称不存在 | 管理员进入「模块治理 → LLM 模型配置」新增或启用模型并手动「设为默认」 |
 | **Git 同步 30 秒内报鉴权失败** | 宿主机运行用户缺少只读 SSH Key 或 `known_hosts` 未信任 | 切换至服务运行用户执行 `ssh -T -o BatchMode=yes git@<host>` 验证免密连通性 |
 | **任务立即失败 `TOKEN_BUDGET_EXCEEDED`** | 仓库有效文件数或预估 Token 超过 `max_tokens_per_task`/`max_files_per_task` | 查看任务详情 `budget_advice` 裁剪建议：添加 `.archdocignore`、拆分 Monorepo 子目录或由管理员调大预算 |
 | **点击发布返回 `422 VERIFIER_BLOCKED`** | 草稿命中 Verifier 明文凭据/高熵密钥阻断规则 | 在 Canvas Studio 顶部 Verifier 告警条定位具体章节，手工直编移除明文凭据后重新保存并发布 |
@@ -225,6 +212,6 @@ make lint && make build && make clean
 - [x] `make lint-arch` 通过（`pkg/*` 零 DB/Gin 依赖、`services/` 零 `models.DB`、CGO 严格封闭于 `pkg/codeir/treesitter/`、16 张自有表均以 `archdoc_` 开头）；
 - [x] `make eval-baseline` 通过（C/C++/Proto + Java + Python 抽取准确率与 0 密钥残留全部达标）；
 - [x] 全部 12 个 P0 验收场景（`SC-01`、`SC-02`、`SC-04`~`SC-13`）在物理隔离库中全量通过；
-- [x] 所有写操作接口接入 `commonAudit` 字段级审计，管理员接口挂载 `RequireAdmin("archdoc_admin")`，`APIKey` 全链路 AES-256-GCM 加密且脱敏为 `sk-****`；
+- [x] 所有写操作接口接入 `commonAudit` 字段级审计，管理员接口挂载 `RequireAdmin("archdoc_admin")`，`APIKey` 全链路接口/日志/审计均脱敏为 `sk-****`；
 - [x] 前端全页面通过亮/暗双模主题自检，无硬编码色值、无 `any`、URL 同步 5 页滑动分页默认 25 条/页；
 - [x] `make lint && make build && make clean` 零错误完成，`:8100` 与 `:5182` 无残留后台进程。

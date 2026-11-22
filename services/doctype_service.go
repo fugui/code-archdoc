@@ -41,7 +41,7 @@ type DocTypeSummaryVO struct {
 	Description         string    `json:"description"`
 	IsBuiltin           bool      `json:"is_builtin"`
 	IsActive            bool      `json:"is_active"`
-	ModelTier           string    `json:"model_tier"`
+	PreferredModel      string    `json:"preferred_model"`
 	TimeoutSeconds      int       `json:"timeout_seconds"`
 	IRFacets            []string  `json:"ir_facets"`
 	SlotCount           int       `json:"slot_count"`
@@ -96,7 +96,7 @@ type DocTypeAuditSnapshot struct {
 	Description         string   `json:"description"`
 	IsActive            bool     `json:"is_active"`
 	IsBuiltin           bool     `json:"is_builtin"`
-	ModelTier           string   `json:"model_tier"`
+	PreferredModel      string   `json:"preferred_model"`
 	TimeoutSeconds      int      `json:"timeout_seconds"`
 	LatestRevisionID    *uint    `json:"latest_revision_id"`
 	LatestRevisionNo    int      `json:"latest_revision_no"`
@@ -113,7 +113,7 @@ type CreateDocTypeRequest struct {
 	Category           string                          `json:"category"`
 	Description        string                          `json:"description"`
 	IsActive           *bool                           `json:"is_active"`
-	ModelTier          string                          `json:"model_tier"`
+	PreferredModel     string                          `json:"preferred_model"`
 	TimeoutSeconds     int                             `json:"timeout_seconds"`
 	MaxOutputTokens    int                             `json:"max_output_tokens,omitempty"`
 	ScopeProfile       *doctype.ScopeProfileConfig     `json:"scope_profile,omitempty"`
@@ -263,7 +263,7 @@ func (s *DocTypeService) Create(ctx context.Context, req CreateDocTypeRequest, o
 		Description:        strings.TrimSpace(req.Description),
 		IsActive:           isActive,
 		IsBuiltin:          false,
-		ModelTier:          strings.TrimSpace(req.ModelTier),
+		PreferredModel:     strings.TrimSpace(req.PreferredModel),
 		TimeoutSeconds:     req.TimeoutSeconds,
 		MaxOutputTokens:    req.MaxOutputTokens,
 		ScopeProfile:       req.ScopeProfile,
@@ -651,7 +651,7 @@ func (s *DocTypeService) syncBundle(ctx context.Context, b *doctype.AssetBundle,
 		Description:    b.Meta.Description,
 		IsBuiltin:      b.Meta.IsBuiltin,
 		IsActive:       b.Meta.IsActive,
-		ModelTier:      b.Meta.ModelTier,
+		PreferredModel: strings.TrimSpace(b.Meta.PreferredModel),
 		TimeoutSeconds: b.Meta.TimeoutSeconds,
 		IRFacetsJSON:   datatypes.JSON(irFacetsJSON),
 		UpdatedBy:      operatorID,
@@ -768,7 +768,7 @@ func buildDocTypeAuditSnapshot(d *DocTypeDetailVO) *DocTypeAuditSnapshot {
 		Description:         d.Description,
 		IsActive:            d.IsActive,
 		IsBuiltin:           d.IsBuiltin,
-		ModelTier:           d.ModelTier,
+		PreferredModel:      d.PreferredModel,
 		TimeoutSeconds:      d.TimeoutSeconds,
 		LatestRevisionID:    d.LatestRevisionID,
 		LatestRevisionNo:    d.LatestRevisionNo,
@@ -811,7 +811,7 @@ func toDocTypeSummaryVO(dt *models.DocType, slotCount int, pubCount int64) DocTy
 		Description:         dt.Description,
 		IsBuiltin:           dt.IsBuiltin,
 		IsActive:            dt.IsActive,
-		ModelTier:           dt.ModelTier,
+		PreferredModel:      dt.PreferredModel,
 		TimeoutSeconds:      dt.TimeoutSeconds,
 		IRFacets:            facets,
 		SlotCount:           slotCount,

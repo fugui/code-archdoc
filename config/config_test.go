@@ -7,8 +7,6 @@ import (
 )
 
 func TestLoadConfigDefaultsAndOverrides(t *testing.T) {
-	t.Setenv("ARCHDOC_ENCRYPTION_KEY", "")
-
 	// 1. 写入最小配置文件（省略新增 4 节），验证全部安全默认值生效
 	tmpDir := t.TempDir()
 	minCfgPath := filepath.Join(tmpDir, "min.yaml")
@@ -37,16 +35,13 @@ func TestLoadConfigDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("Drift 默认值异常: %+v", AppConfig.Drift)
 	}
 
-	// 2. 验证显式关闭 poll_enabled 及环境变量覆盖 ARCHDOC_ENCRYPTION_KEY
-	t.Setenv("ARCHDOC_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	// 2. 验证显式关闭 poll_enabled 及自定义 Storage/Drift 参数覆盖
 	customCfgPath := filepath.Join(tmpDir, "custom.yaml")
 	customYAML := `
 storage:
   data_dir: "/tmp/archdoc-data"
   publish_dir: "/tmp/archdoc-pub"
   max_file_bytes: 524288
-security:
-  encryption_key: "from-yaml-should-be-overridden"
 drift:
   poll_enabled: false
   poll_interval_minutes: 30
@@ -60,9 +55,6 @@ drift:
 	}
 	if AppConfig.Drift.PollEnabled {
 		t.Fatal("显式设置 poll_enabled: false 时应保持 false")
-	}
-	if AppConfig.Security.EncryptionKey != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
-		t.Fatalf("环境变量 ARCHDOC_ENCRYPTION_KEY 未覆盖 YAML 配置: %q", AppConfig.Security.EncryptionKey)
 	}
 	if AppConfig.Storage.EffectivePublishDir() != "/tmp/archdoc-pub" {
 		t.Fatalf("自定义 PublishDir 未生效: %q", AppConfig.Storage.EffectivePublishDir())

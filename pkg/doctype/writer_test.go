@@ -20,7 +20,7 @@ func sampleDocTypeMeta(slug, displayName string) doctype.Meta {
 		Description:    "用于安全架构评审",
 		IsActive:       true,
 		IsBuiltin:      false,
-		ModelTier:      "flagship",
+		PreferredModel: "DeepSeek-V3",
 		TimeoutSeconds: 300,
 		IRFacets:       []string{"tree", "http_routes"},
 		Slots: []doctype.SlotSpec{

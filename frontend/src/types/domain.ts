@@ -1,7 +1,5 @@
 // 领域核心类型与后端 VO 契约（严格对齐 docs/03-api/02-data-model-and-dto-contract.md §6 及 Go 服务 VO，严禁 any）
 
-export type ModelTier = 'fast' | 'flagship';
-
 export type FacetName =
   | 'tree'
   | 'build'
@@ -49,7 +47,7 @@ export interface DocTypeMeta {
   description?: string;
   is_active?: boolean;
   is_builtin?: boolean;
-  model_tier?: ModelTier;
+  preferred_model?: string;
   timeout_seconds?: number;
   max_output_tokens?: number;
   scope_profile?: ScopeProfileConfig;
@@ -431,7 +429,7 @@ export interface DocTypeSummaryVO {
   description: string;
   is_builtin: boolean;
   is_active: boolean;
-  model_tier: ModelTier;
+  preferred_model: string;
   timeout_seconds: number;
   ir_facets: FacetName[];
   slot_count: number;
@@ -583,7 +581,7 @@ export interface ChatMessageVO {
   proposal_items?: ChatProposalItemVO[];
   proposal_status: ProposalStatus;
   applied_revision_id?: number | null;
-  model_tier: string;
+  model_name: string;
   created_at: string;
 }
 
@@ -647,7 +645,7 @@ export interface GenSlotTaskVO {
   document_id: number | null;
   status: SlotTaskStatus;
   attempt_count: number;
-  model_tier: ModelTier;
+  model_name: string;
   error_message: string;
   started_at: string | null;
   finished_at: string | null;
@@ -825,7 +823,7 @@ export interface UnpublishResultVO {
 
 export interface LLMConfigVO {
   id: number;
-  tier: ModelTier;
+  name: string;
   base_url: string;
   model_name: string;
   api_key_masked: string;
@@ -835,13 +833,15 @@ export interface LLMConfigVO {
   max_tokens_per_task: number;
   max_files_per_task: number;
   is_active: boolean;
+  is_default: boolean;
   last_probe_status: 'unknown' | 'ok' | 'failed';
   last_probe_latency_ms: number;
   last_probed_at: string | null;
 }
 
 export interface LLMProbeResultVO {
-  tier: ModelTier;
+  id?: number;
+  name?: string;
   reachable: boolean;
   latency_ms: number;
   model_echo: string;
@@ -930,7 +930,7 @@ export interface SlotHeatmapVO {
   slots: SlotHeatmapItemVO[];
 }
 
-// ─── M6: 存储配额、调度队列与近 30 天成本观测 (F-27 W2) ───
+// ─── M6: 受控本地存储配额与双优先级调度态势 (F-27 W2) ───
 
 export interface SandboxStorageStatVO {
   used_mb: number;
@@ -958,20 +958,11 @@ export interface SchedulerStatsVO {
   max_concurrency: number;
 }
 
-export interface UsageSummaryVO {
-  model_tier: string;
-  doc_type_slug: string;
-  total_tokens: number;
-  cached_prompt_tokens: number;
-  call_count: number;
-}
-
 export interface StorageStatsVO {
   sandbox: SandboxStorageStatVO;
   ir_cache: IRCacheStorageStatVO;
   publish_dir: PublishStorageStatVO;
   scheduler: SchedulerStatsVO;
-  usage_last_30d: UsageSummaryVO[];
 }
 
 export interface ReapResultVO {

@@ -29,7 +29,7 @@
 | 11 | `archdoc_chat_messages` | `PK (id)` | `(session_id)`, `(proposal_status)` | 持久化消息与 Diff 提案 |
 | 12 | `archdoc_repo_remote_heads` | `(repo_id, ref_name)` | `(next_retry_at)` | `UPSERT` 原地更新巡检与退避态 |
 | 13 | `archdoc_document_drifts` | `(document_id, drift_type)` | `(has_drift)` | `UPSERT` 原地更新当前双维漂移快照 |
-| 14 | `archdoc_llm_configs` | `(tier)` | — | 固定 `fast`/`flagship` 两行幂等 Seed |
+| 14 | `archdoc_llm_configs` | `(name)` | `(is_default)` | 内网平等模型池配置（手动切换全局唯一默认模型） |
 | 15 | `archdoc_llm_usage_logs` | `PK (id)` | `(task_id)`, `(document_id)`, `(repo_id)`, `(doc_type_slug)`, `(doc_type_revision_id)`, `(stage)`, `(created_at)` | 只追加观测流水 |
 | 16 | `archdoc_quality_metrics` | `PK (id)` | `(document_id)`, `(repo_id)`, `(doc_type_slug, doc_type_revision_id)`, `(metric_event)`, `(created_at)` | 只追加度量事件 |
 
@@ -215,7 +215,6 @@ type SlotDefinition struct {
 
 | 枚举域 | 合法枚举值集合 | 备注 |
 | :--- | :--- | :--- |
-| **`ModelTier`** | `fast` \| `flagship` | `LLMConfig.Tier` 与 `DocType.ModelTier` |
 | **`FacetName`** | `tree` \| `build` \| `deps` \| `config_keys` \| `symbols` \| `idl_contracts` \| `http_routes` \| `data_models` \| `runtime_primitives` | 9 大 Canonical Code IR 分片 |
 | **`SectionOwnership`** | `auto` \| `hybrid` \| `locked` | 章节所有权模式 |
 | **`DocumentStatus`** | `draft` \| `approved` | `approved` 仅通过发布门禁进入，撤回退回 `draft` |
@@ -327,15 +326,20 @@ type DriftRepo interface {
 // GovernanceRepo 管理 archdoc_llm_configs / archdoc_llm_usage_logs / archdoc_quality_metrics
 type GovernanceRepo interface {
 	ListLLMConfigs(ctx context.Context) ([]models.LLMConfig, error)
-	GetLLMConfigByTier(ctx context.Context, tier string) (*models.LLMConfig, error)
-	SaveLLMConfig(ctx context.Context, cfg *models.LLMConfig) error
-	UpdateLLMProbeResult(ctx context.Context, tier, status string, latencyMs int64, probedAt time.Time) error
+	ListLLMConfigs(ctx context.Context) ([]models.LLMConfig, error)
+	GetLLMConfigByID(ctx context.Context, id uint) (*models.LLMConfig, error)
+	GetLLMConfigByName(ctx context.Context, name string) (*models.LLMConfig, error)
+	GetDefaultLLMConfig(ctx context.Context) (*models.LLMConfig, error)
+	CreateLLMConfig(ctx context.Context, cfg *models.LLMConfig) error
+	UpdateLLMConfig(ctx context.Context, cfg *models.LLMConfig) error
+	SetDefaultLLMConfig(ctx context.Context, id uint) (*models.LLMConfig, error)
+	DeleteLLMConfig(ctx context.Context, id uint) error
+	UpdateLLMProbeResult(ctx context.Context, id uint, status string, latencyMs int64, probedAt time.Time) error
 	RecordLLMUsage(ctx context.Context, log *models.LLMUsageLog) error
 	RecordQualityMetric(ctx context.Context, metric *models.QualityMetric) error
 	AggregateMetricsOverview(ctx context.Context, filter MetricsFilter) (*MetricsOverviewRecord, error)
 	CompareMetricsByRevisions(ctx context.Context, docTypeSlug string, days int) ([]RevisionMetricPoint, error)
 	AggregateSlotHeatmap(ctx context.Context, docTypeSlug string, revID *uint, days int) ([]SlotHeatmapPoint, error)
-	AggregateUsageLast30d(ctx context.Context) ([]UsageSummaryRecord, error)
 }
 ```
 
@@ -343,7 +347,7 @@ type GovernanceRepo interface {
 
 ## 5. `config/config.go` 与 `config.yaml` 扩展配置数据模型
 
-为支撑本地存储目录、`APIKey` 加密、调度并发与远端巡检，在现有 `Config` 结构体上扩展 4 个配置节（均提供安全默认值，向后兼容既有 `config.yaml`）：
+为支撑本地存储目录、调度并发与远端巡检，在现有 `Config` 结构体上扩展 3 个配置节（均提供安全默认值，向后兼容既有 `config.yaml`）：
 
 ```go
 type StorageSection struct {
@@ -353,10 +357,6 @@ type StorageSection struct {
 	IRCacheMaxMB     int64  `yaml:"ir_cache_max_mb"`    // 默认 10240 (10 GB)
 	MaxFileBytes     int64  `yaml:"max_file_bytes"`     // L1 降噪单文件上限，默认 1048576 (1 MB)
 	ReapIntervalMins int    `yaml:"reap_interval_mins"` // LRU 回收周期，默认 10 分钟
-}
-
-type SecuritySection struct {
-	EncryptionKey string `yaml:"encryption_key"` // AES-256-GCM 主密钥（优先由环境变量 ARCHDOC_ENCRYPTION_KEY 注入）
 }
 
 type SchedulerSection struct {
@@ -382,7 +382,6 @@ type DriftSection struct {
 ```typescript
 // frontend/src/types/domain.ts
 
-export type ModelTier = 'fast' | 'flagship';
 export type FacetName =
   | 'tree' | 'build' | 'deps' | 'config_keys' | 'symbols'
   | 'idl_contracts' | 'http_routes' | 'data_models' | 'runtime_primitives';
@@ -531,7 +530,7 @@ export interface DocTypeSummaryVO {
   description: string;
   is_builtin: boolean;
   is_active: boolean;
-  model_tier: ModelTier;
+  preferred_model: string;
   timeout_seconds: number;
   ir_facets: FacetName[];
   slot_count: number;
@@ -544,7 +543,7 @@ export interface DocTypeSummaryVO {
 
 export interface LLMConfigVO {
   id: number;
-  tier: ModelTier;
+  name: string;
   base_url: string;
   model_name: string;
   api_key_masked: string;
@@ -554,6 +553,7 @@ export interface LLMConfigVO {
   max_tokens_per_task: number;
   max_files_per_task: number;
   is_active: boolean;
+  is_default: boolean;
   last_probe_status: 'unknown' | 'ok' | 'failed';
   last_probe_latency_ms: number;
   last_probed_at: string | null;
@@ -561,7 +561,7 @@ export interface LLMConfigVO {
 
 // frontend/src/types/sse.ts — Chat 精修 SSE 强类型辨识联合
 export type ChatRefineSSEEvent =
-  | { event: 'meta'; data: { session_id: number; message_id: number; slot_id: string; base_revision_no: number; model_tier: ModelTier } }
+  | { event: 'meta'; data: { session_id: number; message_id: number; slot_id: string; base_revision_no: number; model_name: string } }
   | { event: 'delta'; data: { text: string } }
   | { event: 'diff_proposal'; data: { proposal_id: number; slot_id: string; before_md: string; after_md: string; unified_diff: string; cited_anchors: EvidenceAnchor[] } }
   | { event: 'verifier_preview'; data: Pick<VerifierReport, 'can_approve' | 'blocker_count' | 'error_count' | 'warning_count'> & { issues: unknown[] } }
@@ -649,7 +649,7 @@ export interface CreateDocTypePayload {
   category?: string;
   description: string;
   is_active?: boolean;
-  model_tier: ModelTier;
+  preferred_model?: string;
   timeout_seconds: number;
   max_output_tokens?: number;
   scope_profile?: ScopeProfileConfig;

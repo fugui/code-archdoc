@@ -69,11 +69,6 @@ func (s StorageSection) effectiveDataDir() string {
 	return "./data"
 }
 
-// SecuritySection 定义凭据加密与安全边界配置
-type SecuritySection struct {
-	EncryptionKey string `yaml:"encryption_key"` // AES-256-GCM 主密钥（优先由环境变量 ARCHDOC_ENCRYPTION_KEY 注入）
-}
-
 // SchedulerSection 定义任务调度双队列与并发信号量配置
 type SchedulerSection struct {
 	MaxLLMConcurrency   int `yaml:"max_llm_concurrency"`   // 全局 LLM 并发信号量，默认 8
@@ -102,7 +97,6 @@ type Config struct {
 	Database  commonModels.DatabaseConfig `yaml:"database"`
 	Auth      AuthSection                 `yaml:"auth"`
 	Storage   StorageSection              `yaml:"storage"`
-	Security  SecuritySection             `yaml:"security"`
 	Scheduler SchedulerSection            `yaml:"scheduler"`
 	Extract   ExtractSection              `yaml:"extract"`
 	Drift     DriftSection                `yaml:"drift"`
@@ -152,11 +146,6 @@ func applyDefaults() {
 		AppConfig.Auth.JWTSecret = envSecret
 	}
 	configutil.EnsureJWTSecret(&AppConfig.Auth.JWTSecret, ServiceName)
-
-	// 环境变量 ARCHDOC_ENCRYPTION_KEY 优先于配置文件
-	if envEncKey := strings.TrimSpace(os.Getenv("ARCHDOC_ENCRYPTION_KEY")); envEncKey != "" {
-		AppConfig.Security.EncryptionKey = envEncKey
-	}
 
 	// Storage 默认值
 	if strings.TrimSpace(AppConfig.Storage.DataDir) == "" {

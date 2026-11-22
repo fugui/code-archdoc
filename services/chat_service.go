@@ -149,7 +149,7 @@ type ChatMessageVO struct {
 	ProposalItems     []ChatProposalItemVO   `json:"proposal_items,omitempty"`
 	ProposalStatus    string                 `json:"proposal_status"`
 	AppliedRevisionID *uint                  `json:"applied_revision_id,omitempty"`
-	ModelTier         string                 `json:"model_tier"`
+	ModelName         string                 `json:"model_name"`
 	CreatedAt         time.Time              `json:"created_at"`
 }
 
@@ -202,7 +202,7 @@ type PreparedChatRefine struct {
 	UserPrompt       string
 	Session          *models.ChatSession
 	AssistantMsg     *models.ChatMessage
-	ModelTier        string
+	ModelName        string
 	Endpoint         llm.EndpointConfig
 	PromptMessages   []llm.Message
 	PromptNonce      string
@@ -225,7 +225,6 @@ type ChatService struct {
 	reviewRepo  ReviewCommentRepo
 	moduleRepo  ModuleRepo
 	masterRepo  SharedMasterRepo
-	cipher      *security.Cipher
 	llmClient   *llm.Client
 	verifier    *verifier.Verifier
 	redactor    *security.SecretRedactor
@@ -240,7 +239,6 @@ func NewChatService(
 	revSvc *RevisionService,
 	snapSvc *SnapshotService,
 	previewSvc *SourcePreviewService,
-	cipher *security.Cipher,
 	llmClient *llm.Client,
 ) *ChatService {
 	if llmClient == nil {
@@ -255,7 +253,6 @@ func NewChatService(
 		revSvc:      revSvc,
 		snapSvc:     snapSvc,
 		previewSvc:  previewSvc,
-		cipher:      cipher,
 		llmClient:   llmClient,
 		verifier:    verifier.New(),
 		redactor:    security.NewSecretRedactor(),
@@ -355,7 +352,7 @@ func (s *ChatService) ListSessions(ctx context.Context, docID uint) ([]ChatSessi
 				ProposalItems:     itemVOs,
 				ProposalStatus:    m.ProposalStatus,
 				AppliedRevisionID: m.AppliedRevisionID,
-				ModelTier:         m.ModelTier,
+				ModelName:         m.ModelName,
 				CreatedAt:         m.CreatedAt,
 			})
 		}
@@ -502,7 +499,7 @@ func (s *ChatService) PrepareRefine(
 		}
 	}
 
-	dtBundle, preferredTier := s.loadDocTypeBundle(ctx, doc.DocTypeSlug, curRev.DocTypeRevisionID)
+	dtBundle, preferredModel := s.loadDocTypeBundle(ctx, doc.DocTypeSlug, curRev.DocTypeRevisionID)
 	slotSpecMap := make(map[string]doctype.SlotSpec, len(snaps))
 	for _, sn := range snaps {
 		slotSpecMap[sn.SlotID] = doctype.SlotSpec{
@@ -527,7 +524,7 @@ func (s *ChatService) PrepareRefine(
 		targetSlot = doctype.SlotSpec{SlotID: globalChatSlotID, Title: "全文档审阅"}
 	}
 
-	endpointCfg, resolvedTier, err := s.resolveEndpoint(ctx, preferredTier)
+	endpointCfg, resolvedModelName, err := s.resolveEndpoint(ctx, preferredModel)
 	if err != nil {
 		return nil, err
 	}
@@ -603,7 +600,7 @@ func (s *ChatService) PrepareRefine(
 		BaseRevisionNo:  baseRevNo,
 		ContextRefsJSON: datatypes.JSON(ctxRefs),
 		ProposalStatus:  models.ProposalStatusNone,
-		ModelTier:       resolvedTier,
+		ModelName:       resolvedModelName,
 	}
 	if err := s.chatRepo.CreateMessage(ctx, userMsg); err != nil {
 		return nil, err
@@ -634,7 +631,7 @@ func (s *ChatService) PrepareRefine(
 		PlanSummaryJSON:     datatypes.JSON(`{}`),
 		ContextRefsJSON:     datatypes.JSON(ctxRefs),
 		ProposalStatus:      models.ProposalStatusNone,
-		ModelTier:           resolvedTier,
+		ModelName:           resolvedModelName,
 	}
 	if err := s.chatRepo.CreateMessage(ctx, assistantMsg); err != nil {
 		return nil, err
@@ -736,7 +733,7 @@ func (s *ChatService) PrepareRefine(
 		UserPrompt:       promptText,
 		Session:          sess,
 		AssistantMsg:     assistantMsg,
-		ModelTier:        resolvedTier,
+		ModelName:        resolvedModelName,
 		Endpoint:         endpointCfg,
 		PromptMessages:   promptMsgs,
 		PromptNonce:      promptNonce,
@@ -773,7 +770,7 @@ func (s *ChatService) ExecuteRefineStream(
 		"mode":             prep.Mode,
 		"scope_type":       prep.ScopeType,
 		"base_revision_no": prep.CurrentRev.RevisionNo,
-		"model_tier":       prep.ModelTier,
+		"model_name":       prep.ModelName,
 	}); err != nil {
 		s.cleanupAbortedRefine(prep, "CLIENT_DISCONNECTED")
 		return
@@ -1899,7 +1896,6 @@ func (s *ChatService) recordUsageLog(
 		DocTypeRevisionID:  dtRevID,
 		SlotID:             slotID,
 		Stage:              stage,
-		ModelTier:          prep.ModelTier,
 		ModelName:          modelName,
 		PromptTokens:       promptTokens,
 		CachedPromptTokens: cachedTokens,
@@ -1915,13 +1911,11 @@ func (s *ChatService) recordUsageLog(
 
 func (s *ChatService) loadDocTypeBundle(ctx context.Context, slug string, docTypeRevID uint) (*doctype.AssetBundle, string) {
 	var dtBundle *doctype.AssetBundle
-	preferredTier := models.ModelTierFlagship
+	preferredModel := ""
 	if s.docTypeSvc != nil && s.docTypeSvc.Registry() != nil {
 		if b, bErr := s.docTypeSvc.Registry().LoadOne(slug); bErr == nil && b != nil {
 			dtBundle = b
-			if models.IsValidModelTier(b.Meta.ModelTier) {
-				preferredTier = b.Meta.ModelTier
-			}
+			preferredModel = strings.TrimSpace(b.Meta.PreferredModel)
 		}
 	}
 	if dtBundle == nil && s.docTypeRepo != nil && docTypeRevID > 0 {
@@ -1935,52 +1929,19 @@ func (s *ChatService) loadDocTypeBundle(ctx context.Context, slug string, docTyp
 					GenerationPromptMD: dtRev.GenerationPromptMD,
 					RefinePromptMD:     dtRev.RefinePromptMD,
 				}
-				if models.IsValidModelTier(meta.ModelTier) {
-					preferredTier = meta.ModelTier
-				}
+				preferredModel = strings.TrimSpace(meta.PreferredModel)
 			}
 		}
 	}
-	return dtBundle, preferredTier
+	return dtBundle, preferredModel
 }
 
-func (s *ChatService) resolveEndpoint(ctx context.Context, preferredTier string) (llm.EndpointConfig, string, error) {
-	if s.govRepo == nil {
-		return llm.EndpointConfig{}, "", ErrChatLLMNotConfigured
+func (s *ChatService) resolveEndpoint(ctx context.Context, preferredModel string) (llm.EndpointConfig, string, error) {
+	ep, cfg, err := ResolveLLMEndpoint(ctx, s.govRepo, preferredModel)
+	if err != nil {
+		return llm.EndpointConfig{}, "", err
 	}
-	tiers := []string{preferredTier}
-	if preferredTier == models.ModelTierFlagship {
-		tiers = append(tiers, models.ModelTierFast)
-	} else {
-		tiers = append(tiers, models.ModelTierFlagship)
-	}
-
-	for _, tier := range tiers {
-		cfg, err := s.govRepo.GetLLMConfigByTier(ctx, tier)
-		if err != nil || cfg == nil {
-			continue
-		}
-		if !cfg.IsActive || strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.ModelName) == "" {
-			continue
-		}
-		var apiKey string
-		if cfg.APIKeyCipher != "" && s.cipher != nil {
-			dec, decErr := s.cipher.Decrypt(cfg.APIKeyCipher)
-			if decErr != nil {
-				return llm.EndpointConfig{}, "", fmt.Errorf("解密 %s 档位 APIKey 失败: %w", tier, decErr)
-			}
-			apiKey = dec
-		}
-		return llm.EndpointConfig{
-			BaseURL:        cfg.BaseURL,
-			ModelName:      cfg.ModelName,
-			APIKey:         apiKey,
-			TimeoutSeconds: cfg.TimeoutSeconds,
-			MaxRetries:     cfg.MaxRetries,
-		}, tier, nil
-	}
-
-	return llm.EndpointConfig{}, "", ErrChatLLMNotConfigured
+	return ep, DisplayModelLabel(cfg), nil
 }
 
 func (s *ChatService) collectEvidenceSnippets(

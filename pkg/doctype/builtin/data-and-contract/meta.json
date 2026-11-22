@@ -6,7 +6,6 @@
   "description": "面向接口消费方与核心研发的 RPC/Proto/HTTP 契约签名、数据存储模型、协议边界与统一错误码体系文档",
   "is_active": true,
   "is_builtin": true,
-  "model_tier": "flagship",
   "timeout_seconds": 300,
   "scope_profile": {
     "max_depth": 12,

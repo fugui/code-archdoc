@@ -23,7 +23,6 @@ import (
 	"code-archdoc/pkg/codeir/treesitter"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	"code-common/backend/gitsync"
 	commonModels "code-common/backend/models"
@@ -425,26 +424,20 @@ func TestIncrementalRefreshOnlyRegeneratesAffectedNonLockedSlots(t *testing.T) {
 	}))
 	defer mockLLM.Close()
 
-	// 配置加密 LLM 端点
-	cipher, err := security.NewCipher("test-master-key-32bytes-01234567", "jwt", true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 配置默认 LLM 端点
 	govStore := models.NewGovernanceStore(db)
-	llmCfgSvc := services.NewLLMConfigService(govStore, cipher)
-	for _, tier := range []string{models.ModelTierFast, models.ModelTierFlagship} {
-		if _, _, _, err := llmCfgSvc.UpdateConfig(ctx, tier, services.UpdateLLMConfigRequest{
-			BaseURL:          mockLLM.URL + "/v1",
-			ModelName:        "mock-" + tier,
-			APIKey:           "sk-test-key-123456",
-			TimeoutSeconds:   30,
-			MaxRetries:       1,
-			MaxTokensPerTask: 200000,
-			MaxFilesPerTask:  2000,
-			IsActive:         true,
-		}, owner.ID); err != nil {
-			t.Fatal(err)
-		}
+	llmCfgSvc := services.NewLLMConfigService(govStore)
+	if _, _, err := llmCfgSvc.CreateConfig(ctx, services.LLMConfigUpsertRequest{
+		Name:             "DeepSeek-V3",
+		BaseURL:          mockLLM.URL + "/v1",
+		ModelName:        "mock-deepseek-v3",
+		APIKey:           "sk-test-key-123456",
+		TimeoutSeconds:   30,
+		MaxRetries:       1,
+		MaxTokensPerTask: 200000,
+		MaxFilesPerTask:  2000,
+	}, owner.ID); err != nil {
+		t.Fatal(err)
 	}
 
 	tmpDir := t.TempDir()
@@ -477,7 +470,7 @@ func TestIncrementalRefreshOnlyRegeneratesAffectedNonLockedSlots(t *testing.T) {
 
 	snapSvc := services.NewSnapshotService(snapStore, facetStore, agg, services.DefaultGitSyncer{}, filepath.Join(tmpDir, "sandbox_dir"), 1048576).
 		WithLeaseManager(leaseMgr)
-	genSvc := services.NewGenerationOrchestrator(masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, cipher, llm.NewClient(), 4).
+	genSvc := services.NewGenerationOrchestrator(masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, llm.NewClient(), 4).
 		WithGovernance(leaseMgr, nil)
 	driftOrch := services.NewDriftOrchestrator(masterStore, docStore, docTypeStore, docTypeSvc, driftStore, rbacSvc, genSvc, agg, leaseMgr, filepath.Join(tmpDir, "sandbox_dir"), 15)
 

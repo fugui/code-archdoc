@@ -6,7 +6,6 @@ import type {
   ChatScopeType,
   ChatVerifierPreviewVO,
   EvidenceAnchor,
-  ModelTier,
 } from './domain';
 
 export type ChatRefineStageName = 'planning' | 'refining_slot' | 'drafting_diff' | 'verifying';
@@ -22,7 +21,7 @@ export type ChatRefineSSEEvent =
         mode?: ChatIntentMode;
         scope_type?: ChatScopeType;
         base_revision_no: number;
-        model_tier: ModelTier;
+        model_name: string;
       };
     }
   | {

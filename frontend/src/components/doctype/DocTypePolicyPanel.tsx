@@ -10,7 +10,7 @@ import type {
   CanonicalFacetName,
   ContextInputName,
   FacetName,
-  ModelTier,
+  LLMConfigVO,
   ModuleDigestSourceConfig,
   ScopeProfileConfig,
   VerifyPolicyConfig,
@@ -28,7 +28,8 @@ export interface DocTypePolicyPanelProps {
   shortName: string;
   category: string;
   description: string;
-  modelTier: ModelTier;
+  preferredModel: string;
+  llmConfigs: LLMConfigVO[];
   timeoutSeconds: number;
   maxOutputTokens: string;
   isActive: boolean;
@@ -48,7 +49,7 @@ export interface DocTypePolicyPanelProps {
   onShortNameChange: (v: string) => void;
   onCategoryChange: (v: string) => void;
   onDescriptionChange: (v: string) => void;
-  onModelTierChange: (v: ModelTier) => void;
+  onPreferredModelChange: (v: string) => void;
   onTimeoutSecondsChange: (v: number) => void;
   onMaxOutputTokensChange: (v: string) => void;
   onIsActiveChange: (v: boolean) => void;
@@ -95,7 +96,8 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
   shortName,
   category,
   description,
-  modelTier,
+  preferredModel,
+  llmConfigs,
   timeoutSeconds,
   maxOutputTokens,
   isActive,
@@ -112,7 +114,7 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
   onShortNameChange,
   onCategoryChange,
   onDescriptionChange,
-  onModelTierChange,
+  onPreferredModelChange,
   onTimeoutSecondsChange,
   onMaxOutputTokensChange,
   onIsActiveChange,
@@ -212,14 +214,23 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
         </div>
 
         <div className="code-archdoc-form-field">
-          <label className="code-archdoc-field-label">默认模型档位 (model_tier)</label>
+          <label className="code-archdoc-field-label">指定生成模型（可选）</label>
           <select
             className="code-archdoc-select"
-            value={modelTier}
-            onChange={(e) => onModelTierChange(e.target.value as ModelTier)}
+            value={preferredModel}
+            onChange={(e) => onPreferredModelChange(e.target.value)}
           >
-            <option value="flagship">flagship (旗舰推理模型)</option>
-            <option value="fast">fast (轻量高速模型)</option>
+            <option value="">跟随系统默认模型</option>
+            {llmConfigs.map((cfg) => (
+              <option key={cfg.id} value={cfg.name}>
+                {cfg.name}
+                {cfg.is_default ? '（当前默认）' : ''}
+                {!cfg.is_active ? ' [已停用]' : ''}
+              </option>
+            ))}
+            {preferredModel && !llmConfigs.some((cfg) => cfg.name === preferredModel) && (
+              <option value={preferredModel}>{preferredModel}（未在模型池中找到）</option>
+            )}
           </select>
         </div>
 

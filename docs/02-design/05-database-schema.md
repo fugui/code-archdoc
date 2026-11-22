@@ -123,7 +123,7 @@ type DocType struct {
 	Description         string         `gorm:"type:text;default:''" json:"description"`                        // 文档类型说明
 	IsBuiltin           bool           `gorm:"default:false;not null" json:"is_builtin"`                       // 是否内置 5 类之一
 	IsActive            bool           `gorm:"default:true;not null;index" json:"is_active"`                   // 是否启用（停用不影响历史已发布文档）
-	ModelTier           string         `gorm:"size:20;default:'flagship';not null" json:"model_tier"`          // 默认模型档位: fast | flagship
+	PreferredModel      string         `gorm:"size:80;default:'';not null" json:"preferred_model"`          // 可选显式指定模型标识；空串表示跟随全局默认模型
 	TimeoutSeconds      int            `gorm:"default:300;not null" json:"timeout_seconds"`                    // 生成超时（秒）
 	IRFacetsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"ir_facets"`              // 订阅的 Code IR facet 名称数组
 	LatestRevisionID    *uint          `gorm:"index" json:"latest_revision_id"`                                // 指向最新不可变修订 ID
@@ -243,7 +243,7 @@ type GenSlotTask struct {
 	DocumentID        *uint      `gorm:"index" json:"document_id"`
 	Status            string     `gorm:"size:24;not null;default:'pending';index" json:"status"` // pending|running|completed|failed|skipped_locked|canceled
 	AttemptCount      int        `gorm:"default:0;not null" json:"attempt_count"`
-	ModelTier         string     `gorm:"size:20;default:''" json:"model_tier"`
+	ModelName         string     `gorm:"size:128;default:''" json:"model_name"`
 	OutputMarkdown    string     `gorm:"type:text;default:''" json:"output_markdown"`            // 本槽位生成产物（供单槽位重试/P1 断点恢复复用）
 	CitedAnchorsJSON  datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"cited_anchors"`
 	ErrorMessage      string     `gorm:"type:text;default:''" json:"error_message"`
@@ -362,7 +362,7 @@ type ChatMessage struct {
 	ContextRefsJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"context_refs"` // M12: 引用的选区锚点 / slot_id / comment_ids
 	ProposalStatus      string         `gorm:"size:20;default:'none';not null;index" json:"proposal_status"` // none | pending | accepted | rejected | superseded
 	AppliedRevisionID   *uint          `json:"applied_revision_id"`
-	ModelTier           string         `gorm:"size:20;default:''" json:"model_tier"`
+	ModelName           string         `gorm:"size:128;default:''" json:"model_name"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }
@@ -458,30 +458,31 @@ func (DocumentDrift) TableName() string { return config.TablePrefix + "document_
 ### 3.7 治理、成本观测与质量度量域（`F-14`、`F-26`、`F-27`）
 
 ```go
-// LLMConfig 内网 OpenAI Compatible 分层模型配置（fast / flagship 各自一行）
+// LLMConfig 内网 OpenAI Compatible 平等模型配置（不按档位分层，单系统允许 1 个默认模型）
 type LLMConfig struct {
-	ID                uint      `gorm:"primaryKey" json:"id"`
-	Tier              string    `gorm:"size:20;uniqueIndex;not null" json:"tier"`                // fast | flagship
-	BaseURL           string    `gorm:"size:512;not null;default:''" json:"base_url"`            // 内网 OpenAI Compatible 接口基址
-	ModelName         string    `gorm:"size:128;not null;default:''" json:"model_name"`          // 模型名称
-	APIKeyCipher      string    `gorm:"type:text;not null;default:''" json:"-"`                  // AES-256-GCM 密文（json:"-" 永不序列化返回）
-	APIKeyMasked      string    `gorm:"size:64;not null;default:''" json:"api_key_masked"`       // 仅保存脱敏预览 sk-****1234
-	TimeoutSeconds    int       `gorm:"default:120;not null" json:"timeout_seconds"`
-	MaxRetries        int       `gorm:"default:3;not null" json:"max_retries"`
-	MaxTokensPerTask  int       `gorm:"default:200000;not null" json:"max_tokens_per_task"`      // 单任务预估 Token 熔断上限
-	MaxFilesPerTask   int       `gorm:"default:2000;not null" json:"max_files_per_task"`         // 单任务有效文件数熔断上限
-	IsActive          bool      `gorm:"default:true;not null" json:"is_active"`
-	LastProbeStatus   string    `gorm:"size:20;default:'unknown'" json:"last_probe_status"`      // unknown | ok | failed
-	LastProbeLatencyMs int64    `gorm:"default:0" json:"last_probe_latency_ms"`
-	LastProbedAt      *time.Time `json:"last_probed_at"`
-	UpdatedBy         *uint     `json:"updated_by"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                 uint       `gorm:"primaryKey" json:"id"`
+	Name               string     `gorm:"size:80;uniqueIndex;not null" json:"name"`               // 管理员定义模型标识（如 DeepSeek-V3 / GLM-4 / Kimi）
+	BaseURL            string     `gorm:"size:512;not null;default:''" json:"base_url"`           // 内网 OpenAI Compatible 接口基址
+	ModelName          string     `gorm:"size:128;not null;default:''" json:"model_name"`         // 模型请求名
+	APIKey             string     `gorm:"type:text;not null;default:''" json:"-"`                 // 内网 API Key（json:"-" 永不序列化返回）
+	APIKeyMasked       string     `gorm:"size:64;not null;default:''" json:"api_key_masked"`      // 仅保存脱敏预览 sk-****1234
+	TimeoutSeconds     int        `gorm:"default:180;not null" json:"timeout_seconds"`
+	MaxRetries         int        `gorm:"default:3;not null" json:"max_retries"`
+	MaxTokensPerTask   int        `gorm:"default:200000;not null" json:"max_tokens_per_task"`     // 单任务预估 Token 熔断上限
+	MaxFilesPerTask    int        `gorm:"default:2000;not null" json:"max_files_per_task"`        // 单任务有效文件数熔断上限
+	IsActive           bool       `gorm:"default:true;not null" json:"is_active"`
+	IsDefault          bool       `gorm:"default:false;not null;index" json:"is_default"`         // 全局唯一默认模型（仅手动切换）
+	LastProbeStatus    string     `gorm:"size:20;default:'unknown'" json:"last_probe_status"`     // unknown | ok | failed
+	LastProbeLatencyMs int64      `gorm:"default:0" json:"last_probe_latency_ms"`
+	LastProbedAt       *time.Time `json:"last_probed_at"`
+	UpdatedBy          *uint      `json:"updated_by"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 func (LLMConfig) TableName() string { return config.TablePrefix + "llm_configs" }
 
-// LLMUsageLog 每次模型调用的精细成本与延迟观测流水（F-27）
+// LLMUsageLog 每次模型调用的延迟与观测流水
 type LLMUsageLog struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
 	TaskID             *uint     `gorm:"index" json:"task_id"`
@@ -491,7 +492,6 @@ type LLMUsageLog struct {
 	DocTypeRevisionID  *uint     `gorm:"index" json:"doc_type_revision_id"`
 	SlotID             string    `gorm:"size:64;default:''" json:"slot_id"`
 	Stage              string    `gorm:"size:24;not null;index" json:"stage"`       // glossary | slot_gen | slot_retry | chat_refine | probe
-	ModelTier          string    `gorm:"size:20;not null" json:"model_tier"`        // fast | flagship
 	ModelName          string    `gorm:"size:128;not null" json:"model_name"`
 	PromptTokens       int       `gorm:"default:0;not null" json:"prompt_tokens"`
 	CachedPromptTokens int       `gorm:"default:0;not null" json:"cached_prompt_tokens"` // 推理服务 KV Cache 命中 Token 数
@@ -569,7 +569,7 @@ func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules
 
 1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 20 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ReviewComment` → `ChatSession` → `ChatMessage` → `ChatProposalItem` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
 2. **幂等初始化**：
-   - `LLMConfig`：若 `fast` / `flagship` 记录不存在，自动 Seed 默认空配置骨架行（`is_active = false`，提示管理员在后台配置）；重复启动零变更；
+   - `LLMConfig`：初始保持为空表，由管理员在门户「LLM 模型配置」中按需新增内网模型；启动前置 `migrateLegacyGovernanceSchema()` 幂等将历史 `tier`/`api_key_cipher` 行清理或迁移（注意旧密文不可再复用，需管理员按需重填）；
    - `DocType`：启动时将内嵌 5 类默认 `DocType` 释放至 `doc_types/`（仅补缺失目录），再调用 `DocTypeRegistry.SyncAll()` 计算聚合哈希同步入库，重复启动零重复记录、零多余修订。
    - **独立开发模式兼容**：遵循 `ADR-01`，仅当独立调试库中 `users`/`departments`/`audit_logs` 尚未存在时由 `commonAuth.EnsureSeedAdmin` 引导默认管理员。
 
@@ -578,12 +578,12 @@ func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules
 - **被引用 `DocType` 删除保护**：物理删除 `DocType` 时在数据库事务中持锁检查 `SELECT COUNT(1) FROM archdoc_documents WHERE doc_type_slug = ? AND status = 'approved'`，若 > 0 返回 `ErrDocTypeInUse`（HTTP `409 Conflict`）；目录删文件与删库操作同在 `slug` 写互斥锁内完成。
 - **逻辑外键与跨表隔离**：为避免对共享库公共表（`users`/`repositories`）强加跨模块物理 `FOREIGN KEY` 约束导致宿主清理/迁移阻塞，跨模块关联一律采用带索引的逻辑外键 + 应用层完整性校验。
 
-### 4.3 `APIKey` 对称加密密钥管理规范
+### 4.3 `APIKey` 脱敏与审计零泄露规范
 
-- **算法**：AES-256-GCM（每次加密生成随机 12 字节 Nonce，密文以 `v1:<base64(nonce || ciphertext || tag)>` 格式存入 `archdoc_llm_configs.api_key_cipher`）。
-- **主密钥来源**：优先读取环境变量 `ARCHDOC_ENCRYPTION_KEY`（要求 32 字节 hex 或 base64 解码后 32 字节）；若未配置则回退从 `config.yaml` 的 `security.encryption_key` 读取；若两者均为空且处于生产模式启动，服务端打印高危告警或拒绝持久化明文凭据（独立开发调试模式允许派生基于 `JWT_SECRET` 的 HKDF 32 字节开发密钥并打印明显提示）。
+- **内网运维简洁化**：鉴于服务与 PostgreSQL 同处内网受控环境，`archdoc_llm_configs.api_key` 直接以 `json:"-"` 私有列持久化，不再强依赖外部主密钥环境变量（免除密钥轮换与启动阻断风险）。
+- **脱敏强约束**：对外返回 `LLMConfigVO` 与 `commonAudit` 审计快照仅暴露 `api_key_masked`（如 `sk-****1234`）与布尔标识 `has_api_key`/`api_key_changed`，接口响应、服务器日志与审计日志严禁输出明文 `APIKey`。
 
 ### 4.4 `testdb.SetupIsolatedDB(t)` 物理隔离测试约束（NFR-2）
 
 - 所有涉及数据库读写的 Go 单元测试与接口集成测试，必须通过 `code-common/backend/testdb.SetupIsolatedDB(t)` 动态创建独立临时测试库，并在 `t.Cleanup` 中自动销毁。
-- 测试辅助函数 `models.SetupTestDB(t, db)` 在隔离测试库中按顺序完成：① 建出共享只读测试表（`departments`、`users`、`repositories`、`architecture_elements`、`audit_logs`）；② 执行全量 16 张 `archdoc_*` 表 `AutoMigrate`；③ 验证 `DocType` 幂等 Seed、`LLMConfig` 加密脱敏、`Document` 乐观锁及联合唯一索引，确保全程 **零外部环境依赖、100% 可重复执行**。
+- 测试辅助函数 `models.SetupTestDB(t, db)` 在隔离测试库中按顺序完成：① 建出共享只读测试表（`departments`、`users`、`repositories`、`architecture_elements`、`audit_logs`）；② 执行全量 `archdoc_*` 自有表 `AutoMigrate`；③ 验证 `DocType` 幂等 Seed、`LLMConfig` 脱敏与默认切换、`Document` 乐观锁及联合唯一索引，确保全程 **零外部环境依赖、100% 可重复执行**。

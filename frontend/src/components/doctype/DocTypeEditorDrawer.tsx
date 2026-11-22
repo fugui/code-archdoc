@@ -23,6 +23,7 @@ import {
   createDocType,
   getDocTypeDetail,
   listDocTypeRevisions,
+  listLLMConfigs,
   updateDocType,
 } from '../../api/admin';
 import type {
@@ -32,7 +33,7 @@ import type {
   DocTypeMeta,
   DocTypeRevisionSummaryVO,
   FacetName,
-  ModelTier,
+  LLMConfigVO,
   ModuleDigestSourceConfig,
   ScopeProfileConfig,
   SlotDefinition,
@@ -122,7 +123,8 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
   const [shortName, setShortName] = useState<string>('');
   const [category, setCategory] = useState<string>('');
   const [description, setDescription] = useState<string>('');
-  const [modelTier, setModelTier] = useState<ModelTier>('flagship');
+  const [preferredModel, setPreferredModel] = useState<string>('');
+  const [llmConfigs, setLLMConfigs] = useState<LLMConfigVO[]>([]);
   const [timeoutSeconds, setTimeoutSeconds] = useState<number>(300);
   const [maxOutputTokens, setMaxOutputTokens] = useState<string>('');
   const [isActive, setIsActive] = useState<boolean>(true);
@@ -194,6 +196,22 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
     [currentSlots],
   );
 
+  // 抽屉打开时拉取最新平等模型池列表用于指定可选模型
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void listLLMConfigs()
+      .then((items) => {
+        if (active) setLLMConfigs(items);
+      })
+      .catch(() => {
+        if (active) setLLMConfigs([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
   // 初始化加载或重置新建状态
   useEffect(() => {
     if (!open) return;
@@ -216,7 +234,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
       setShortName('');
       setCategory('');
       setDescription('');
-      setModelTier('flagship');
+      setPreferredModel('');
       setTimeoutSeconds(300);
       setMaxOutputTokens('');
       setIsActive(true);
@@ -245,7 +263,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
         setShortName(detail.short_name || '');
         setCategory(detail.category || '');
         setDescription(detail.description || '');
-        setModelTier(detail.model_tier);
+        setPreferredModel(detail.preferred_model || '');
         setTimeoutSeconds(detail.timeout_seconds || 300);
 
         const meta = detail.meta ?? {};
@@ -615,7 +633,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
           ...(category.trim() ? { category: category.trim() } : {}),
           description: description.trim(),
           is_active: isActive,
-          model_tier: modelTier,
+          ...(preferredModel.trim() ? { preferred_model: preferredModel.trim() } : {}),
           timeout_seconds: timeoutSeconds,
           ...(parsedMaxOut && parsedMaxOut > 0 ? { max_output_tokens: parsedMaxOut } : {}),
           ir_facets: effectiveTopFacets,
@@ -638,13 +656,18 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
           display_name: displayName.trim(),
           description: description.trim(),
           is_active: isActive,
-          model_tier: modelTier,
           timeout_seconds: timeoutSeconds,
           ir_facets: effectiveTopFacets,
           scope_profile: cleanScopeProfile,
           verify_policy: verifyPolicy,
           slots: compiled.slots,
         };
+        delete (baseMeta as unknown as Record<string, unknown>).model_tier;
+        if (preferredModel.trim()) {
+          baseMeta.preferred_model = preferredModel.trim();
+        } else {
+          delete baseMeta.preferred_model;
+        }
 
         if (shortName.trim()) {
           baseMeta.short_name = shortName.trim();
@@ -783,10 +806,10 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
                 </span>
                 <span
                   className={`code-badge ${
-                    modelTier === 'flagship' ? 'code-badge--purple' : 'code-badge--primary'
+                    preferredModel ? 'code-badge--primary' : 'code-badge--muted'
                   }`}
                 >
-                  {modelTier}
+                  {preferredModel || '默认模型'}
                 </span>
                 {shortName && <span className="code-badge code-badge--muted">{shortName}</span>}
               </div>
@@ -1046,7 +1069,8 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
               shortName={shortName}
               category={category}
               description={description}
-              modelTier={modelTier}
+              preferredModel={preferredModel}
+              llmConfigs={llmConfigs}
               timeoutSeconds={timeoutSeconds}
               maxOutputTokens={maxOutputTokens}
               isActive={isActive}
@@ -1063,7 +1087,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
               onShortNameChange={setShortName}
               onCategoryChange={setCategory}
               onDescriptionChange={setDescription}
-              onModelTierChange={setModelTier}
+              onPreferredModelChange={setPreferredModel}
               onTimeoutSecondsChange={setTimeoutSeconds}
               onMaxOutputTokensChange={setMaxOutputTokens}
               onIsActiveChange={setIsActive}

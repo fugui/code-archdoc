@@ -1,73 +1,9 @@
 package security
 
 import (
-	"encoding/hex"
 	"strings"
 	"testing"
 )
-
-func TestAESGCMRoundTripAndTamperDetect(t *testing.T) {
-	// 1. 32 字节 hex 主密钥加解密往返
-	hexKey := hex.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	cipher, err := NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("NewCipher(hex) 失败: %v", err)
-	}
-
-	plain := "sk-proj-super-secret-api-key-9999"
-	ct1, err := cipher.Encrypt(plain)
-	if err != nil {
-		t.Fatalf("Encrypt #1 失败: %v", err)
-	}
-	ct2, err := cipher.Encrypt(plain)
-	if err != nil {
-		t.Fatalf("Encrypt #2 失败: %v", err)
-	}
-
-	if !strings.HasPrefix(ct1, "v1:") {
-		t.Fatalf("密文应以 v1: 开头，实际为 %q", ct1)
-	}
-	if ct1 == ct2 {
-		t.Fatal("相同明文两次加密应因随机 Nonce 产生不同密文")
-	}
-	if strings.Contains(ct1, plain) {
-		t.Fatal("密文不应包含原始明文")
-	}
-
-	got, err := cipher.Decrypt(ct1)
-	if err != nil {
-		t.Fatalf("Decrypt 失败: %v", err)
-	}
-	if got != plain {
-		t.Fatalf("解密明文不一致: got %q, want %q", got, plain)
-	}
-
-	// 2. 篡改密文应认证失败
-	tampered := ct1[:len(ct1)-2] + "AA"
-	if tampered == ct1 {
-		tampered = ct1[:len(ct1)-2] + "BB"
-	}
-	if _, decErr := cipher.Decrypt(tampered); decErr == nil {
-		t.Fatal("篡改密文后 Decrypt 应返回认证失败错误")
-	}
-
-	// 3. 生产模式未配置主密钥应拒绝初始化；开发模式允许 HKDF 回退
-	if _, prodErr := NewCipher("", "some-jwt-secret", false); prodErr == nil {
-		t.Fatal("生产模式未配置主密钥时应返回错误")
-	}
-	devCipher, devErr := NewCipher("", "dev-jwt-secret-fallback-12345", true)
-	if devErr != nil {
-		t.Fatalf("开发模式 HKDF 回退初始化失败: %v", devErr)
-	}
-	devCT, err := devCipher.Encrypt("sk-dev-12345678")
-	if err != nil {
-		t.Fatal(err)
-	}
-	devPlain, err := devCipher.Decrypt(devCT)
-	if err != nil || devPlain != "sk-dev-12345678" {
-		t.Fatalf("开发模式加解密往返失败: plain=%q err=%v", devPlain, err)
-	}
-}
 
 func TestMaskAPIKey(t *testing.T) {
 	cases := []struct {

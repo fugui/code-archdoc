@@ -89,7 +89,9 @@ export const ScopeDocExpandedGrid: React.FC<ScopeDocExpandedGridProps> = ({
 
                   <div className="code-archdoc-expanded-card-foot">
                     <div className="code-archdoc-expanded-card-meta">
-                      <span className="code-badge code-badge--muted">{dt.model_tier}</span>
+                      {dt.preferred_model && (
+                        <span className="code-badge code-badge--primary">{dt.preferred_model}</span>
+                      )}
                       <span className="text-muted">{dt.slot_count} 槽位</span>
                     </div>
 

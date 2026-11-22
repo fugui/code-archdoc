@@ -64,9 +64,6 @@ func TestAll20TablesPrefixAndAutoMigrate(t *testing.T) {
 
 func TestEnumsAndTaskStateMachine(t *testing.T) {
 	// 1. 合法枚举值校验
-	if !IsValidModelTier(ModelTierFast) || !IsValidModelTier(ModelTierFlagship) || IsValidModelTier("turbo") {
-		t.Fatal("ModelTier 校验失败")
-	}
 	if !IsValidFacetName(FacetIDLContracts) || !IsValidFacetName(FacetRuntimePrimitives) || IsValidFacetName("unknown_facet") {
 		t.Fatal("FacetName 校验失败")
 	}
@@ -174,35 +171,26 @@ func TestUniqueConstraintsAndIdempotentSeeds(t *testing.T) {
 		t.Fatalf("SetupTestDB 失败: %v", err)
 	}
 
-	// 1. 验证 LLMConfig 初始幂等 Seed 已写入 fast 与 flagship 两行，且再次 Seed 不覆盖既有配置
+	// 1. 验证 LLMConfig 初始为空池（无 fast/flagship 空骨架行），且 Name 具备唯一约束
 	var llmConfigs []LLMConfig
-	if err := db.Order("tier ASC").Find(&llmConfigs).Error; err != nil {
+	if err := db.Find(&llmConfigs).Error; err != nil {
 		t.Fatalf("查询 LLMConfig 失败: %v", err)
 	}
-	if len(llmConfigs) != 2 {
-		t.Fatalf("期望默认 Seed 2 行 LLMConfig，实际 %d 行", len(llmConfigs))
+	if len(llmConfigs) != 0 {
+		t.Fatalf("期望新库默认空模型池（0 行），实际 %d 行", len(llmConfigs))
 	}
-	if err := db.Model(&LLMConfig{}).Where("tier = ?", ModelTierFast).Updates(map[string]any{
-		"base_url":   "http://10.0.0.10:8000/v1",
-		"model_name": "qwen2.5-coder",
-		"is_active":  true,
-	}).Error; err != nil {
-		t.Fatalf("更新 fast 配置失败: %v", err)
+	firstModel := LLMConfig{
+		Name:      "DeepSeek-V3",
+		BaseURL:   "http://10.0.0.10:8000/v1",
+		ModelName: "deepseek-v3",
+		IsActive:  true,
+		IsDefault: true,
 	}
-	if err := SeedDefaultLLMConfigs(db); err != nil {
-		t.Fatalf("重复 SeedDefaultLLMConfigs 失败: %v", err)
+	if err := db.Create(&firstModel).Error; err != nil {
+		t.Fatalf("创建首个 LLMConfig 失败: %v", err)
 	}
-	var fastCfg LLMConfig
-	if err := db.Where("tier = ?", ModelTierFast).First(&fastCfg).Error; err != nil {
-		t.Fatal(err)
-	}
-	if fastCfg.BaseURL != "http://10.0.0.10:8000/v1" || !fastCfg.IsActive {
-		t.Fatalf("幂等 Seed 不应覆盖既有 LLM 配置: %+v", fastCfg)
-	}
-
-	// 验证 LLMConfig.Tier 唯一约束
-	if err := db.Create(&LLMConfig{Tier: ModelTierFast}).Error; err == nil {
-		t.Fatal("期望重复创建 tier=fast 触发唯一约束错误")
+	if err := db.Create(&LLMConfig{Name: "DeepSeek-V3", BaseURL: "http://10.0.0.11:8000/v1", ModelName: "ds"}).Error; err == nil {
+		t.Fatal("期望重复创建 name=DeepSeek-V3 触发唯一约束错误")
 	}
 
 	// 2. 验证 DocType.Slug 唯一约束

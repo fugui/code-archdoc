@@ -15,7 +15,6 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/publisher"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	commonServer "code-common/backend/server"
@@ -63,14 +62,7 @@ func main() {
 	// 3. 初始化异步操作审计引擎
 	commonAudit.Init(models.DB)
 
-	// 4. 初始化凭据加解密器（AES-256-GCM；仅独立开发模式允许 HKDF 回退）
-	allowDevFallback := config.AppConfig.Auth.StandaloneMode || config.AppConfig.Auth.PasswordLoginEnabled
-	keyCipher, err := security.NewCipher(config.AppConfig.Security.EncryptionKey, config.AppConfig.Auth.JWTSecret, allowDevFallback)
-	if err != nil {
-		log.Printf("[%s] WARNING: 凭据加密器未启用（未配置 ARCHDOC_ENCRYPTION_KEY），写入新 APIKey 将被拒绝: %v", config.ServiceName, err)
-	}
-
-	// 5. 初始化纯领域引擎（DocType 目录注册表 + Code IR FacetStore + Tree-Sitter 隔离提取器）
+	// 4. 初始化纯领域引擎（DocType 目录注册表 + Code IR FacetStore + Tree-Sitter 隔离提取器）
 	docTypeRegistry, err := doctype.NewRegistry(config.AppConfig.Storage.DocTypesDir())
 	if err != nil {
 		log.Fatalf("[%s] 初始化 DocType 注册表失败: %v", config.ServiceName, err)
@@ -97,7 +89,7 @@ func main() {
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
 		WithModuleRepo(moduleStore)
-	llmSvc := services.NewLLMConfigService(govStore, keyCipher)
+	llmSvc := services.NewLLMConfigService(govStore).WithDocTypeRepo(docTypeStore)
 	docTypeSvc := services.NewDocTypeService(docTypeRegistry, docTypeStore).
 		WithSpecDriftNotifier(docStore, driftStore)
 
@@ -140,7 +132,6 @@ func main() {
 		taskStore,
 		docStore,
 		govStore,
-		keyCipher,
 		llmClient,
 		config.AppConfig.Scheduler.MaxLLMConcurrency,
 	).WithGovernance(leaseMgr, taskScheduler).
@@ -189,7 +180,7 @@ func main() {
 	})
 	genSvc.WithModuleGovernance(moduleStore, moduleSvc, rbacSvc).
 		WithReviewCommentRepo(reviewStore)
-	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, keyCipher, llmClient).
+	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, llmClient).
 		WithReviewCommentRepo(reviewStore).
 		WithModuleContext(moduleStore, masterStore)
 	reviewSvc := services.NewReviewCommentService(reviewStore, docStore)

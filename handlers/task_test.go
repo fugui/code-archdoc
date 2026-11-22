@@ -3,7 +3,6 @@ package handlers_test
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,7 +22,6 @@ import (
 	"code-archdoc/pkg/codeir/treesitter"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	"code-common/backend/gitsync"
@@ -80,7 +78,6 @@ type m2TestEnv struct {
 	otherUser   models.User
 	otherTok    string
 	repo        models.Repository
-	cipher      *security.Cipher
 	docTypesDir string
 }
 
@@ -95,12 +92,6 @@ func setupM2TestEnv(t *testing.T, maxLLMConcurrency int) *m2TestEnv {
 
 	config.AppConfig.Auth.JWTSecret = "m2-unit-test-jwt-secret-key-9876543210"
 	config.AppConfig.Auth.StandaloneMode = true
-
-	hexKey := hex.EncodeToString([]byte("archdoc-m2-test-32byte-key-00002"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("初始化加密器失败: %v", err)
-	}
 
 	wd, err := os.Getwd()
 	if err != nil {
@@ -140,7 +131,7 @@ func setupM2TestEnv(t *testing.T, maxLLMConcurrency int) *m2TestEnv {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore).WithDocTypeRepo(docTypeStore)
 	docTypeSvc := services.NewDocTypeService(reg, docTypeStore)
 
 	if _, err := docTypeSvc.SeedAndSyncAll(context.Background()); err != nil {
@@ -150,7 +141,7 @@ func setupM2TestEnv(t *testing.T, maxLLMConcurrency int) *m2TestEnv {
 	snapSvc := services.NewSnapshotService(snapStore, facetStore, agg, gitSyncer, sandboxDir, 1048576)
 	llmClient := llm.NewClientWithOptions(&http.Client{Timeout: 10 * time.Second}, 10*time.Millisecond)
 	genSvc := services.NewGenerationOrchestrator(
-		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, cipher, llmClient, maxLLMConcurrency,
+		masterStore, docTypeStore, docTypeSvc, snapSvc, taskStore, docStore, govStore, llmClient, maxLLMConcurrency,
 	)
 
 	_ = commonAudit.Close(context.Background())
@@ -199,31 +190,27 @@ func setupM2TestEnv(t *testing.T, maxLLMConcurrency int) *m2TestEnv {
 		otherUser:   other,
 		otherTok:    issueTestToken(t, other),
 		repo:        repo,
-		cipher:      cipher,
 		docTypesDir: docTypesDir,
 	}
 }
 
 func configureMockLLMInDB(t *testing.T, env *m2TestEnv, baseURL string, maxTokensPerTask, maxFilesPerTask int) {
 	t.Helper()
-	encKey, err := env.cipher.Encrypt("sk-mock-llm-token-9999")
-	if err != nil {
-		t.Fatal(err)
+	cfg := models.LLMConfig{
+		Name:             "M2-Default-Model",
+		BaseURL:          baseURL,
+		ModelName:        "mock-deepseek-v3",
+		APIKey:           "sk-mock-llm-token-9999",
+		APIKeyMasked:     "sk-****9999",
+		TimeoutSeconds:   30,
+		MaxRetries:       0,
+		MaxTokensPerTask: maxTokensPerTask,
+		MaxFilesPerTask:  maxFilesPerTask,
+		IsActive:         true,
+		IsDefault:        true,
 	}
-	for _, tier := range []string{models.ModelTierFast, models.ModelTierFlagship} {
-		if err := env.db.Model(&models.LLMConfig{}).Where("tier = ?", tier).Updates(map[string]any{
-			"base_url":            baseURL,
-			"model_name":          "mock-" + tier,
-			"api_key_cipher":      encKey,
-			"api_key_masked":      "sk-****9999",
-			"timeout_seconds":     30,
-			"max_retries":         0,
-			"max_tokens_per_task": maxTokensPerTask,
-			"max_files_per_task":  maxFilesPerTask,
-			"is_active":           true,
-		}).Error; err != nil {
-			t.Fatal(err)
-		}
+	if err := env.db.Create(&cfg).Error; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -902,5 +889,133 @@ func TestListTasksFilterSummaryAndEnrichment(t *testing.T) {
 		if recBad.Code != http.StatusBadRequest || !strings.Contains(recBad.Body.String(), handlers.ErrCodeInvalidParam) {
 			t.Fatalf("非法查询 %s 期望 400 INVALID_PARAM，实际 %d (%s)", badQuery, recBad.Code, recBad.Body.String())
 		}
+	}
+}
+
+func TestModelRoutingPreferredModelAndStrictNoFallback(t *testing.T) {
+	env := setupM2TestEnv(t, 4)
+
+	var defaultCalls, preferredCalls atomic.Int32
+	mockDefault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultCalls.Add(1)
+		var payload struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		userMsg := ""
+		if len(payload.Messages) >= 2 {
+			userMsg = payload.Messages[1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(userMsg, "repo_structure_for_glossary") {
+			_, _ = w.Write([]byte(`{"model":"deepseek-v3","choices":[{"message":{"content":"{\"module_summaries\":[],\"terms\":[]}"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"deepseek-v3","choices":[{"message":{"content":"{\"markdown\":\"默认模型生成内容 ` + "`src/order/order_service.cpp`" + `\",\"cited_anchors\":[]}"}}]}`))
+	}))
+	defer mockDefault.Close()
+
+	mockPreferred := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		preferredCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"glm-4-plus","choices":[{"message":{"content":"{\"markdown\":\"GLM指定模型生成内容 ` + "`src/order/order_service.cpp`" + `\",\"cited_anchors\":[]}"}}]}`))
+	}))
+	defer mockPreferred.Close()
+
+	if err := env.db.Create(&models.LLMConfig{
+		Name: "DeepSeek-V3", BaseURL: mockDefault.URL, ModelName: "deepseek-v3",
+		TimeoutSeconds: 30, MaxRetries: 0, MaxTokensPerTask: 500000, MaxFilesPerTask: 2000,
+		IsActive: true, IsDefault: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := env.db.Create(&models.LLMConfig{
+		Name: "GLM-4", BaseURL: mockPreferred.URL, ModelName: "glm-4-plus",
+		TimeoutSeconds: 30, MaxRetries: 0, MaxTokensPerTask: 500000, MaxFilesPerTask: 2000,
+		IsActive: true, IsDefault: false,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 将 agents-context 显式绑定到 GLM-4
+	dtDetail, err := env.docTypeSvc.GetDetail(context.Background(), "agents-context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := dtDetail.Meta
+	meta.PreferredModel = "GLM-4"
+	if _, _, _, err := env.docTypeSvc.Update(context.Background(), "agents-context", services.UpdateDocTypeRequest{
+		Meta:               meta,
+		TemplateMD:         dtDetail.TemplateMD,
+		GenerationPromptMD: dtDetail.GenerationPromptMD,
+		RefinePromptMD:     dtDetail.RefinePromptMD,
+	}, env.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 触发 agents-context 生成：术语表走默认模型 DeepSeek-V3，3 个槽位走指定的 GLM-4
+	body1, _ := json.Marshal(map[string]any{
+		"repo_id":   env.repo.ID,
+		"doc_types": []string{"agents-context"},
+	})
+	req1 := httptest.NewRequest(http.MethodPost, "/api/tasks/generate", bytes.NewReader(body1))
+	req1.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	env.router.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("提交指定模型生成任务失败: %d %s", rec1.Code, rec1.Body.String())
+	}
+	var task1 services.GenTaskDetailVO
+	_ = json.Unmarshal(rec1.Body.Bytes(), &task1)
+	env.genSvc.WaitAll()
+
+	if defaultCalls.Load() != 1 || preferredCalls.Load() == 0 {
+		t.Fatalf("期望术语表调用默认模型 1 次、槽位调用指定模型 GLM-4，实际 default=%d preferred=%d", defaultCalls.Load(), preferredCalls.Load())
+	}
+
+	// 验证槽位子任务记录了 model_name="GLM-4"
+	reqGet1 := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/tasks/%d", task1.ID), nil)
+	reqGet1.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	recGet1 := httptest.NewRecorder()
+	env.router.ServeHTTP(recGet1, reqGet1)
+	var detail1 services.GenTaskDetailVO
+	_ = json.Unmarshal(recGet1.Body.Bytes(), &detail1)
+	if detail1.Status != models.TaskStatusReady || len(detail1.SlotTasks) == 0 || detail1.SlotTasks[0].ModelName != "GLM-4" {
+		t.Fatalf("期望任务成功且槽位 model_name=GLM-4，实际 status=%s slots=%+v", detail1.Status, detail1.SlotTasks)
+	}
+
+	// 2. 停用默认模型 DeepSeek-V3（GLM-4 仍启用）：触发跟随默认模型的 ops-and-config，必须明确失败且绝不回退到 GLM-4！
+	if err := env.db.Model(&models.LLMConfig{}).Where("name = ?", "DeepSeek-V3").Update("is_active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	prevPreferredCalls := preferredCalls.Load()
+	body2, _ := json.Marshal(map[string]any{
+		"repo_id":   env.repo.ID,
+		"doc_types": []string{"ops-and-config"},
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/tasks/generate", bytes.NewReader(body2))
+	req2.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	env.router.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("提交任务返回非 202: %d %s", rec2.Code, rec2.Body.String())
+	}
+	var task2 services.GenTaskDetailVO
+	_ = json.Unmarshal(rec2.Body.Bytes(), &task2)
+	env.genSvc.WaitAll()
+
+	reqGet2 := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/tasks/%d", task2.ID), nil)
+	reqGet2.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	recGet2 := httptest.NewRecorder()
+	env.router.ServeHTTP(recGet2, reqGet2)
+	var detail2 services.GenTaskDetailVO
+	_ = json.Unmarshal(recGet2.Body.Bytes(), &detail2)
+	if detail2.Status != models.TaskStatusFailed || detail2.ErrorCode != "LLM_CONFIG_INVALID" {
+		t.Fatalf("默认模型停用后应明确失败 LLM_CONFIG_INVALID，实际 status=%s code=%s", detail2.Status, detail2.ErrorCode)
+	}
+	if preferredCalls.Load() != prevPreferredCalls {
+		t.Fatalf("严禁默认模型停用后静默回退到 GLM-4！新增调用=%d", preferredCalls.Load()-prevPreferredCalls)
 	}
 }

@@ -3,7 +3,6 @@ package handlers_test
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,7 +18,6 @@ import (
 	"code-archdoc/handlers"
 	"code-archdoc/models"
 	"code-archdoc/pkg/doctype"
-	"code-archdoc/pkg/security"
 	"code-archdoc/services"
 	commonAudit "code-common/backend/audit"
 	commonModels "code-common/backend/models"
@@ -55,12 +53,6 @@ func setupAdminDocTypeEnv(t *testing.T) *adminDocTypeEnv {
 	config.AppConfig.Auth.JWTSecret = "m5-admin-doctype-test-secret-0123456789"
 	config.AppConfig.Auth.StandaloneMode = true
 
-	hexKey := hex.EncodeToString([]byte("archdoc-m5-test-32byte-key-00005"))
-	cipher, err := security.NewCipher(hexKey, "", false)
-	if err != nil {
-		t.Fatalf("初始化加密器失败: %v", err)
-	}
-
 	docTypesDir := filepath.Join(t.TempDir(), "doc_types")
 	reg, err := doctype.NewRegistry(docTypesDir)
 	if err != nil {
@@ -77,7 +69,7 @@ func setupAdminDocTypeEnv(t *testing.T) *adminDocTypeEnv {
 
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc)
-	llmSvc := services.NewLLMConfigService(govStore, cipher)
+	llmSvc := services.NewLLMConfigService(govStore)
 	docTypeSvc := services.NewDocTypeService(reg, dtStore).
 		WithSpecDriftNotifier(docStore, driftStore)
 	if _, err := docTypeSvc.SeedAndSyncAll(ctx); err != nil {
@@ -153,7 +145,7 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 		"short_name":      "安全评审",
 		"category":        "质量与安全",
 		"description":     "面向研发安全评审的攻击面分析",
-		"model_tier":      "flagship",
+		"preferred_model": "DeepSeek-V3",
 		"timeout_seconds": 300,
 		"ir_facets":       []string{"tree", "http_routes", "config_keys"},
 		"slots": []map[string]any{
@@ -200,6 +192,9 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 	}
 	if created.Slug != "security-review" || created.LatestRevisionNo != 1 || created.LatestRevisionID == nil {
 		t.Fatalf("新建结果异常: %+v", created)
+	}
+	if created.PreferredModel != "DeepSeek-V3" {
+		t.Fatalf("新建 DocType 应保留 preferred_model=DeepSeek-V3，实际 %q", created.PreferredModel)
 	}
 	if created.ShortName != "安全评审" || created.Category != "质量与安全" {
 		t.Fatalf("新建 DocType 应持久化并返回 short_name/category，实际 short=%q category=%q", created.ShortName, created.Category)
@@ -283,7 +278,7 @@ func TestDocTypeLifecycleCreateCloneEditToggleDelete(t *testing.T) {
 			"category":        "安全治理",
 			"description":     "面向研发安全评审的攻击面分析",
 			"is_active":       true,
-			"model_tier":      "flagship",
+			"preferred_model": "GLM-4",
 			"timeout_seconds": 300,
 			"ir_facets":       []string{"tree", "http_routes", "config_keys"},
 			"slots": []map[string]any{
@@ -401,7 +396,6 @@ func TestDocTypeConcurrentWriteSerializedBySlugLock(t *testing.T) {
 	initPayload := map[string]any{
 		"slug":            "concurrent-tpl",
 		"display_name":    "并发模板",
-		"model_tier":      "fast",
 		"timeout_seconds": 300,
 		"ir_facets":       []string{"tree"},
 		"slots": []map[string]any{
@@ -436,7 +430,6 @@ func TestDocTypeConcurrentWriteSerializedBySlugLock(t *testing.T) {
 					"name":            "concurrent-tpl",
 					"display_name":    fmt.Sprintf("并发模板-W%d", worker),
 					"is_active":       true,
-					"model_tier":      "fast",
 					"timeout_seconds": 300,
 					"ir_facets":       []string{"tree"},
 					"slots": []map[string]any{
@@ -506,7 +499,6 @@ func TestCreateDocTypeWithGovernancePoliciesAndSourceTools(t *testing.T) {
 		"category":        "架构设计",
 		"description":     "覆盖整仓裁剪、上下文输入与只读源码工具配置",
 		"is_active":       true,
-		"model_tier":      "flagship",
 		"timeout_seconds": 300,
 		"ir_facets":       []string{"tree", "deps", "symbols", "http_routes"},
 		"repo_ir_facets":  []string{"tree", "deps", "http_routes"},
@@ -601,7 +593,6 @@ func TestCreateDocTypeWithGovernancePoliciesAndSourceTools(t *testing.T) {
 	invalidPayload := map[string]any{
 		"slug":                 "invalid-repo-facet",
 		"display_name":         "非法分片测试",
-		"model_tier":           "fast",
 		"timeout_seconds":      300,
 		"ir_facets":            []string{"tree"},
 		"repo_ir_facets":       []string{"not_a_facet"},

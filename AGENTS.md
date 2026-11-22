@@ -35,7 +35,7 @@ code-archdoc/
   3. **共享库零膨胀与只读边界（ADR-01 / ADR-02）**：严禁对共享表（`users`、`departments`、`repositories`、`architecture_elements`）执行 DDL 变更或创建冗余仓库主表；Code IR 大载荷必须压缩落盘至本地 `FacetStore`（`ir_cache/`），PG 仅存元数据索引与 LRU 字段。
   4. **单事实源与原子落盘红线（ADR-03）**：`DocType` 以 `doc_types/<slug>/` 目录为唯一事实源（零可执行脚本），写盘须持 `slug` 锁并采用临时文件 + `fsync` + 原子 `rename`；定稿发布仅限 `Approved` 修订写入 `publish_dir/`（经 `.staging/` 原子落位），未审批草稿严禁落盘。
   5. **沙箱路径安全与跨模块复用（D-04 / Non-Goal 8）**：Git 同步统一复用 `code-common/backend/gitsync`，严禁在模块内复制粘贴 Git 同步代码；所有沙箱文件访问须经 `SafeJoin` + `EvalSymlinks` 阻断目录穿越与符号链接逃逸；对 `code-bench` 与 `code-common` 的协同改造严禁引入 `archdoc` 专有业务逻辑。
-  6. **凭据防泄漏与不可信数据隔离**：`APIKey` 必须经 AES-256-GCM 加密落库并在接口/日志/审计中脱敏为 `sk-****`；L1 抽取与独立 Verifier 执行双重明文凭据/高熵拦截；仓库源码与注释一律包裹于随机 `nonce` 数据栅栏中防范提示词注入。
+  6. **凭据防泄漏与不可信数据隔离**：内网 `APIKey` 在后端接口响应、服务日志与 `commonAudit` 审计快照中强制脱敏为 `sk-****`（绝不明文回传或写入日志/审计）；L1 抽取与独立 Verifier 执行双重明文凭据/高熵拦截；仓库源码与注释一律包裹于随机 `nonce` 数据栅栏中防范提示词注入。
   7. **Monorepo 模块发现与工作区锁边界（ADR-04）**：`pkg/codeir/slice.go`、`pkg/codeir/modules.go` 为纯函数零 IO 零 DB 依赖；`archdoc_repo_modules` 严禁冗余负责人字段（负责人唯一事实源为 `architecture_elements`）；仓库级工作区可降级读写锁由 `SnapshotService` 唯一持有，`handlers/` 与 `pkg/` 严禁直接操作沙箱工作区或调用 `gitsync.Sync`。
 
 ---

@@ -109,14 +109,6 @@ type SlotHeatmapPoint struct {
 	SampleCount         int64
 }
 
-type UsageSummaryRecord struct {
-	ModelTier          string
-	DocTypeSlug        string
-	TotalTokens        int64
-	CachedPromptTokens int64
-	CallCount          int64
-}
-
 type SectionVerifierMetricRow struct {
 	SlotID              string
 	Title               string
@@ -365,7 +357,7 @@ func (s *DocTypeStore) UpsertFromDirectorySync(ctx context.Context, dt *DocType,
 			"description":     dt.Description,
 			"is_builtin":      dt.IsBuiltin,
 			"is_active":       dt.IsActive,
-			"model_tier":      dt.ModelTier,
+			"preferred_model": dt.PreferredModel,
 			"timeout_seconds": dt.TimeoutSeconds,
 			"ir_facets_json":  dt.IRFacetsJSON,
 			"updated_by":      dt.UpdatedBy,
@@ -406,6 +398,17 @@ func (s *DocTypeStore) CountApprovedDocumentsBySlug(ctx context.Context, slug st
 		return 0, err
 	}
 	return count, nil
+}
+
+func (s *DocTypeStore) ListByPreferredModel(ctx context.Context, modelName string) ([]DocType, error) {
+	var list []DocType
+	if err := s.db.WithContext(ctx).
+		Where("preferred_model = ?", modelName).
+		Order("slug ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 func (s *DocTypeStore) DeleteIfUnused(ctx context.Context, slug string) error {
@@ -1948,15 +1951,15 @@ func NewGovernanceStore(db *gorm.DB) *GovernanceStore {
 
 func (s *GovernanceStore) ListLLMConfigs(ctx context.Context) ([]LLMConfig, error) {
 	var list []LLMConfig
-	if err := s.db.WithContext(ctx).Order("tier ASC").Find(&list).Error; err != nil {
+	if err := s.db.WithContext(ctx).Order("is_default DESC, is_active DESC, id ASC").Find(&list).Error; err != nil {
 		return nil, err
 	}
 	return list, nil
 }
 
-func (s *GovernanceStore) GetLLMConfigByTier(ctx context.Context, tier string) (*LLMConfig, error) {
+func (s *GovernanceStore) GetLLMConfigByID(ctx context.Context, id uint) (*LLMConfig, error) {
 	var cfg LLMConfig
-	err := s.db.WithContext(ctx).Where("tier = ?", tier).First(&cfg).Error
+	err := s.db.WithContext(ctx).First(&cfg, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -1966,13 +1969,92 @@ func (s *GovernanceStore) GetLLMConfigByTier(ctx context.Context, tier string) (
 	return &cfg, nil
 }
 
-func (s *GovernanceStore) SaveLLMConfig(ctx context.Context, cfg *LLMConfig) error {
-	return s.db.WithContext(ctx).Save(cfg).Error
+func (s *GovernanceStore) GetLLMConfigByName(ctx context.Context, name string) (*LLMConfig, error) {
+	var cfg LLMConfig
+	err := s.db.WithContext(ctx).Where("name = ?", name).First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
-func (s *GovernanceStore) UpdateLLMProbeResult(ctx context.Context, tier, status string, latencyMs int64, probedAt time.Time) error {
+func (s *GovernanceStore) GetDefaultLLMConfig(ctx context.Context) (*LLMConfig, error) {
+	var cfg LLMConfig
+	err := s.db.WithContext(ctx).Where("is_default = ?", true).Order("id ASC").First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func (s *GovernanceStore) CreateLLMConfig(ctx context.Context, cfg *LLMConfig) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if cfg.IsDefault {
+			if err := tx.Model(&LLMConfig{}).Where("is_default = ?", true).Update("is_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(cfg).Error
+	})
+}
+
+func (s *GovernanceStore) UpdateLLMConfig(ctx context.Context, cfg *LLMConfig) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if cfg.IsDefault {
+			if err := tx.Model(&LLMConfig{}).Where("id <> ? AND is_default = ?", cfg.ID, true).Update("is_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Save(cfg).Error
+	})
+}
+
+func (s *GovernanceStore) SetDefaultLLMConfig(ctx context.Context, id uint) (*LLMConfig, error) {
+	var target LLMConfig
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&target, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if err := tx.Model(&LLMConfig{}).Where("id <> ? AND is_default = ?", id, true).Update("is_default", false).Error; err != nil {
+			return err
+		}
+		if !target.IsDefault {
+			target.IsDefault = true
+			if err := tx.Model(&target).Update("is_default", true).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &target, nil
+}
+
+func (s *GovernanceStore) DeleteLLMConfig(ctx context.Context, id uint) error {
+	res := s.db.WithContext(ctx).Delete(&LLMConfig{}, id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *GovernanceStore) UpdateLLMProbeResult(ctx context.Context, id uint, status string, latencyMs int64, probedAt time.Time) error {
 	res := s.db.WithContext(ctx).Model(&LLMConfig{}).
-		Where("tier = ?", tier).
+		Where("id = ?", id).
 		Updates(map[string]any{
 			"last_probe_status":     status,
 			"last_probe_latency_ms": latencyMs,
@@ -2031,21 +2113,6 @@ func (s *GovernanceStore) ListLLMUsageLogs(ctx context.Context, filter MetricsFi
 		return nil, err
 	}
 	return list, nil
-}
-
-func (s *GovernanceStore) SummarizeLLMUsageSince(ctx context.Context, since time.Time) ([]UsageSummaryRecord, error) {
-	var rows []UsageSummaryRecord
-	err := s.db.WithContext(ctx).
-		Model(&LLMUsageLog{}).
-		Select("model_tier, doc_type_slug, COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens, COALESCE(SUM(cached_prompt_tokens), 0) AS cached_prompt_tokens, COUNT(*) AS call_count").
-		Where("created_at >= ?", since).
-		Group("model_tier, doc_type_slug").
-		Order("total_tokens DESC, model_tier ASC, doc_type_slug ASC").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	return rows, nil
 }
 
 func (s *GovernanceStore) ListSectionVerifierSummaries(ctx context.Context, docTypeSlug string, docTypeRevID *uint, since time.Time) ([]SectionVerifierMetricRow, error) {

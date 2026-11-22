@@ -36,7 +36,7 @@ export interface ActiveThreadStreamingState {
   scopeType: ChatScopeType;
   slotId: string;
   baseRevisionNo: number;
-  modelTier?: string;
+  modelName?: string;
   stage?: ChatRefineStageName;
   stageSlotId?: string;
   stageIndex?: number;
@@ -298,7 +298,7 @@ export const ChatRefineThreadPanel: React.FC<ChatRefineThreadPanelProps> = ({
                     {msg.intent === 'plan_refine' && (
                       <span className="code-badge code-badge--purple">协同规划</span>
                     )}
-                    {msg.model_tier && <span className="code-archdoc-mono">{msg.model_tier}</span>}
+                    {msg.model_name && <span className="code-archdoc-mono">{msg.model_name}</span>}
                     {msg.base_revision_no > 0 && (
                       <span className="text-muted">base v{msg.base_revision_no}</span>
                     )}

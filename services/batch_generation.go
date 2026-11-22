@@ -253,7 +253,7 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 		assets = append(assets, asset)
 	}
 
-	if _, _, _, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, assets); cfgErr != nil {
+	if _, cfgErr := o.loadLLMEndpointsAndLimits(dbCtx, assets); cfgErr != nil {
 		o.markBatchTaskFailed(dbCtx, parentTaskID, models.TaskStatusExtracting, "LLM_CONFIG_INVALID", cfgErr.Error(), nil, 0)
 		return
 	}

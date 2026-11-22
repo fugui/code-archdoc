@@ -13,7 +13,7 @@
 ### 1.1 Module Federation 联邦契约（`./App` 与 `./menu`）
 
 - **构建契约**：`frontend/vite.config.ts` 保持 `name: 'archdoc'`、`base: '/archdoc/'`、`filename: 'remoteEntry.js'`，共享 `react`、`react-dom`、`react-router-dom`。
-- **`./menu` 侧边栏导出（3 组 7 项）**：
+- **`./menu` 侧边栏导出（3 组 8 项）**：
   - **文档全景（全员可见）**：
     - `/overview`（全局概览：文档资产覆盖、双维漂移健康度、反推生产任务态势与生成质量度量大盘）
     - `/repos`（仓库文档覆盖，`W1`）
@@ -22,8 +22,9 @@
     - `/tasks`（反推任务中心，`W1`）
     - `/drift`（双维漂移雷达，`W2`）
   - **模块治理（`adminOnly: true`，仅 `archdoc_admin` / `super_admin` 可见）**：
-    - `/admin/llm`（LLM 模型配置与探活，`W1`）
+    - `/admin/llm`（LLM 模型配置，`W1`）
     - `/admin/doc-types`（`DocType` 文档类型管理，`W2`）
+    - `/admin/ops`（运行与存储运维，`W2`）
 - **`./App` 内部路由表（双模同时兼容相对子路径与 `/archdoc/*` 完整前缀）**：
 
 | 路由路径（嵌入态均含 `/archdoc` 前缀兼容） | 视图组件 | 波次 | 角色访问边界 |
@@ -36,8 +37,9 @@
 | `/studio/:repoId` & `/studio/:repoId/docs/:docId` | `CanvasStudioPage`（双栏协同审校工作台） | W1 / W2 | 全员只读已发布；负责人可查看/编辑草稿 |
 | `/docs/:docId/evidence` | `CanvasStudioPage`（**深链直达入口**：自动定位 `docId` 并打开只读源码证据抽屉，读取 Query 参数 `commit`、`file`、`symbol`、`lines` 高亮渲染，承接 `code-bench` `D-03` 跳转） | W1 | 登录全员（仅限已发布文档；草稿仅负责人可看） |
 | `/drift` | `DriftRadarPage`（章节级双维漂移雷达，Header 保留极简微标） | W2 | 全员只读；负责人可触发所属范围增量刷新 |
-| `/admin/llm` | `AdminLLMConfigPage`（分层模型配置、预算阈值与探活） | W1 | `archdoc_admin` / `super_admin` |
+| `/admin/llm` | `AdminLLMConfigPage`（平等模型池管理、唯一默认模型手动切换、单任务预算阈值与探活） | W1 | `archdoc_admin` / `super_admin` |
 | `/admin/doc-types` | `AdminDocTypesPage`（`DocType` 注册表 CRUD 与模板编辑器） | W2 | `archdoc_admin` / `super_admin` |
+| `/admin/ops` | `AdminOpsPage`（受控本地存储配额治理、手动 LRU 回收与双优先级调度态势） | W2 | `archdoc_admin` / `super_admin` |
 
 ### 1.2 `@code/common` 复用与视觉编码硬约束（NFR-7）
 
@@ -119,25 +121,28 @@ DriftRadarPage (F-12)
 
 QualityMetricsPage (F-26)
 ├── MetricsFilterBar (时间窗口 | DocType 下拉 | DocTypeRevision 多版本对比选择器)
-├── KPIGrid (平均草稿→定稿修改率 | Chat 采纳率 | Verifier 首次通过率 | 必填槽位完备度 | 平均单篇 Token & KV Cache 命中率)
-├── RevisionTrendChart (原生轻量 SVG 折线/柱状图，对比同一 DocType 不同 DocTypeRevision 的质量指标演进，严格使用 --color-* Token)
+├── KPIGrid (4 大质量指标：平均草稿→定稿修改率 | Chat 采纳率 | Verifier 首次通过率 | 必填槽位完备度)
+├── RevisionTrendChart (原生轻量 SVG 百分比折线图，对比同一 DocType 不同 DocTypeRevision 的质量指标演进，严格使用 --color-* Token)
 └── SlotEditHeatmapTable (展示每个 slot_id 的历史平均修改比例，帮助管理员精准定位需优化 Prompt 的薄弱槽位)
 ```
 
-### 2.4 管理员治理台 (`AdminLLMConfigPage` W1 + `AdminDocTypesPage` W2)
+### 2.4 管理员治理台 (`AdminLLMConfigPage` W1 + `AdminDocTypesPage` / `AdminOpsPage` W2)
 
 ```text
 AdminLLMConfigPage (F-14, W1)
-├── TierConfigTabs (fast 档位配置 | flagship 档位配置)
-├── LLMConfigForm (BaseURL、APIKey [展示脱敏 sk-****，留空保持不变]、ModelName、超时与重试、单任务 Token/文件熔断预算上限)
-├── ConnectivityProbeCard (点击探活：展示连通状态、延迟 ms、模型回显或明确报错)
-└── UsageCostSummaryCard (W2 增强：按档位与 DocType 展示 Token 消耗统计)
+├── LLMModelPoolGrid (内网平等 OpenAI Compatible 模型卡片流：DeepSeek / GLM / Kimi 等；展示默认模型徽章、启停/探活状态、脱敏 api_key_masked)
+├── ModelCardActions (设为唯一默认 [手动切换，不做静默自动降级] | 测试连通性 | 编辑 | 删除 [拦截默认/被引用的模型])
+└── LLMUpsertModal (新增 / 编辑弹窗：支持留空保留原 API Key、清空已保存 Key、保存前预探活测试)
+
+AdminOpsPage (F-27, W2)
+├── StorageQuotaGovernanceCard (sandbox_dir / ir_cache / publish_dir 本地配额水位与手动触发受租约保护的 LRU 回收)
+└── DualPrioritySchedulerCard (全局并发信号量 in_flight/max、HighQ/LowQ 4:1 防饥饿调度排队与活跃沙箱租约态势)
 
 AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
 ├── DocTypeToolbar (新建 DocType | 从目录强制重同步)
-├── DocTypeListTable (slug、display_name、short_name/category、启用状态、当前 Revision、已发布引用数、操作 [编辑/克隆/启停/删除])
+├── DocTypeListTable (slug、display_name、short_name/category、指定模型 [preferred_model 或默认模型]、启用状态、当前 Revision、已发布引用数、操作 [编辑/克隆/启停/删除])
 └── DocTypeEditorDrawer (@code/common Drawer, 支持右上角 xl 标准宽度 ↔ full 宽屏编排切换)
-    ├── DrawerIdentitySummaryBar (展示 slug / display_name / model_tier 摘要，点击直跳基础信息)
+    ├── DrawerIdentitySummaryBar (展示 slug / display_name / preferred_model 或默认模型摘要，点击直跳基础信息)
     ├── Tab 1: 文档蓝图 (Blueprint) —— 编辑既有 DocType 默认激活
     │   ├── GlobalPromptsAccordion (折叠面板：generation_prompt.md 默认展开适中高度；refine_prompt.md 默认折叠带字数徽标)
     │   ├── BlueprintModeToolbar (模式切换：[可视化编排] | [参数化源码 DSL v1] | [预览 template.md]；中部指标：槽位数 · 预算总和 · 去重分片数；右侧操作：新增槽位/静态块 或 插入片段/格式化/语法速查)
@@ -147,7 +152,7 @@ AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
     │   ├── BlueprintSourceEditor (参数化源码 DSL v1 编辑器：Markdown + ```slot <slot_id> 围栏块 + 200ms 防抖行号级诊断条，存在 error 时阻断切换与保存)
     │   └── BlueprintTemplatePreview (只读实时展示 compileFromBlueprint 产出的 template.md)
     ├── Tab 2: 基础信息与策略 (Metadata & Policy) —— 新建 DocType 默认激活
-    │   ├── BasicMetaForm (slug、display_name、short_name、category、description、model_tier、timeout_seconds、max_output_tokens、is_active)
+    │   ├── BasicMetaForm (slug、display_name、short_name、category、description、可选 preferred_model、timeout_seconds、max_output_tokens、is_active)
     │   ├── TopFacetsUnionSection (默认开启「自动聚合自全部章节槽位」，支持切换「手动覆写」与「一键对齐并集」)
     │   └── DocTypePolicyPanel (默认折叠「高级治理策略」：repo_ir_facets 整仓裁剪白名单及预设、context_inputs & module_digest_source、verify_policy、scope_profile)
     ├── Tab 3: 修订历史 (Revisions) —— 仅编辑模式可见，展示历史不可变 DocTypeRevision 聚合哈希、指令哈希与槽位数
@@ -179,7 +184,7 @@ AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
 
 | SSE `event` 名称 | 载荷 JSON Schema | 语义与前端交互行为 |
 | :--- | :--- | :--- |
-| **`meta`** | `{"session_id": 12, "message_id": 88, "slot_id": "...", "mode": "revise", "scope_type": "review_batch", "base_revision_no": 4, "model_tier": "flagship"}` | 首包返回会话、消息与执行模式元数据 |
+| **`meta`** | `{"session_id": 12, "message_id": 88, "slot_id": "...", "mode": "revise", "scope_type": "review_batch", "base_revision_no": 4, "model_name": "DeepSeek-V3"}` | 首包返回会话、消息与执行模式元数据 |
 | **`plan`** | `{"target_slots": [...], "skipped_locked_slots": [...]}` | 阶段 1 路由结果与 `locked` 章节人工修改建议 |
 | **`stage`** | `{"stage": "planning\|refining_slot\|drafting_diff\|verifying", "slot_id": "...", "index": 1, "total": 2}` | 实时结构化阶段进度指示 |
 | **`tool_call`** | `{"round": 1, "tool_name": "read_file_lines", "summary": "...", "is_error": false, "duration_ms": 12, "slot_id": "..."}` | 只读源码工具轨迹（前端默认折叠展示） |

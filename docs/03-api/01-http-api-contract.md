@@ -137,12 +137,15 @@
 | 47 | `GET` | `/api/metrics/overview` | `JWT` | W2 | 按时间窗口/`DocType`/`DocTypeRevision` 聚合质量与成本 KPI | - |
 | 48 | `GET` | `/api/metrics/revisions-compare` | `JWT` | W2 | 同一 `DocType` 不同 `DocTypeRevision` 的质量与成本演进对比 | - |
 | 49 | `GET` | `/api/metrics/slot-heatmap` | `JWT` | W2 | 各 `slot_id` 历史平均草稿→定稿修改率与 Verifier 告警率热力表 | - |
-| **域 9：管理员 LLM 配置与沙箱资源治理（`F-14` W1 / `F-27` W2）** | | | | | | |
-| 50 | `GET` | `/api/admin/llm-configs` | `Admin` | W1 | 获取 `fast` / `flagship` 分层模型配置（`api_key` 强制脱敏） | - |
-| 51 | `PUT` | `/api/admin/llm-configs/:tier` | `Admin` | W1 | 更新指定档位模型配置与单任务预算上限（密钥 AES-256-GCM 加密） | `update / llm_config / P0` |
-| 52 | `POST` | `/api/admin/llm-configs/:tier/probe` | `Admin` | W1 | 执行内网 OpenAI Compatible 模型连通性探活（`max_tokens=1`, 15s） | - |
-| 53 | `GET` | `/api/admin/storage/stats` | `Admin` | W2 | 查询磁盘配额水位、活跃租约、调度队列及 Token 成本统计 | - |
-| 54 | `POST` | `/api/admin/storage/reap` | `Admin` | W2 | 手动触发一次受租约保护的 `sandbox_dir`/`ir_cache` LRU 空间回收 | `trigger / storage_reap / P2` |
+| **域 9：管理员 LLM 配置与运行存储运维（`F-14` W1 / `F-27` W2）** | | | | | | |
+| 50 | `GET` | `/api/admin/llm-configs` | `Admin` | W1 | 获取内网平等 LLM 模型池列表（`api_key` 强制脱敏） | - |
+| 51 | `POST` | `/api/admin/llm-configs` | `Admin` | W1 | 新增内网 OpenAI Compatible 模型配置 | `create / llm_config / P0` |
+| 52 | `PUT` | `/api/admin/llm-configs/:id` | `Admin` | W1 | 更新指定模型配置与单任务预算上限 | `update / llm_config / P0` |
+| 53 | `DELETE` | `/api/admin/llm-configs/:id` | `Admin` | W1 | 删除模型配置（默认模型与被 DocType 指定模型受保护） | `delete / llm_config / P0` |
+| 54 | `POST` | `/api/admin/llm-configs/:id/default` | `Admin` | W1 | 手动将指定已启用模型切换为全局唯一默认模型 | `update / llm_config / P0` |
+| 55 | `POST` | `/api/admin/llm-configs/probe` & `/:id/probe` | `Admin` | W1 | 执行预检或已保存模型连通性探活（`max_tokens=1`, 15s） | - |
+| 56 | `GET` | `/api/admin/storage/stats` | `Admin` | W2 | 查询磁盘配额水位、活跃租约与双优先级调度队列态势 | - |
+| 57 | `POST` | `/api/admin/storage/reap` | `Admin` | W2 | 手动触发一次受租约保护的 `sandbox_dir`/`ir_cache` LRU 空间回收 | `trigger / storage_reap / P2` |
 
 > *注：表内共列出 54 条独立路由（含 OAuth2 授权与回调拆分为 2 条）。脚手架占位路由 `/api/items*` 与 `/api/admin/settings` 将在 M1 实施时彻底清除。*
 
@@ -302,7 +305,7 @@
       "description": "面向架构师与研发骨干的运行时分层、并发、容错与核心链路文档",
       "is_builtin": true,
       "is_active": true,
-      "model_tier": "flagship",
+      "preferred_model": "",
       "timeout_seconds": 300,
       "ir_facets": ["tree", "deps", "build", "runtime_primitives", "symbols", "idl_contracts", "http_routes", "config_keys"],
       "slot_count": 5,
@@ -332,7 +335,7 @@
   "category": "质量与安全",
   "description": "面向研发安全评审的入口面、鉴权与敏感数据流分析",
   "is_active": true,
-  "model_tier": "flagship",
+  "preferred_model": "DeepSeek-V3",
   "timeout_seconds": 300,
   "max_output_tokens": 16000,
   "ir_facets": ["tree", "http_routes", "idl_contracts", "config_keys", "data_models"],
@@ -484,7 +487,7 @@
       "document_id": 42,
       "status": "completed",
       "attempt_count": 1,
-      "model_tier": "flagship",
+      "model_name": "DeepSeek-V3",
       "error_message": "",
       "started_at": "2026-11-19T15:10:05+08:00",
       "finished_at": "2026-11-19T15:10:18+08:00"
@@ -705,7 +708,7 @@
 - **SSE 事件流契约（严格对齐 `04-workbench-and-security.md` §3.2）**：
 ```text
 event: meta
-data: {"session_id":12,"message_id":88,"slot_id":"core_request_flows","base_revision_no":5,"model_tier":"flagship"}
+data: {"session_id":12,"message_id":88,"slot_id":"core_request_flows","base_revision_no":5,"model_name":"DeepSeek-V3"}
 
 event: delta
 data: {"text":"已结合 src/order/order_service.cpp 中的重试逻辑生成更新方案..."}
@@ -890,7 +893,7 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
 
 ---
 
-### 3.10 域 9：管理员 LLM 配置与沙箱资源治理（`F-14` W1 / `F-27` W2）
+### 3.10 域 9：管理员 LLM 配置与运行存储运维（`F-14` W1 / `F-27` W2）
 
 #### `GET /api/admin/llm-configs` (`Admin`, W1)
 - **响应 (`200 OK`)**：
@@ -899,16 +902,17 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
   "items": [
     {
       "id": 1,
-      "tier": "fast",
+      "name": "DeepSeek-V3",
       "base_url": "http://10.0.10.20:8000/v1",
-      "model_name": "qwen2.5-coder-32b-instruct",
+      "model_name": "deepseek-chat",
       "api_key_masked": "sk-****9f2a",
       "has_api_key": true,
-      "timeout_seconds": 120,
+      "timeout_seconds": 180,
       "max_retries": 3,
       "max_tokens_per_task": 200000,
       "max_files_per_task": 2000,
       "is_active": true,
+      "is_default": true,
       "last_probe_status": "ok",
       "last_probe_latency_ms": 342,
       "last_probed_at": "2026-11-19T14:00:00+08:00"
@@ -916,35 +920,42 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
   ]
 }
 ```
-> **脱敏强约束**：响应体绝不包含明文 `api_key` 或密文 `api_key_cipher`（`SC-09` / `F-14`）。
+> **脱敏强约束**：响应体绝不包含明文 `api_key`；审计日志仅记录 `api_key_masked` 与 `api_key_changed`。
 
-#### `PUT /api/admin/llm-configs/:tier` (`Admin`, W1)
-- **路径参数**：`tier` 必须为 `fast` 或 `flagship`（其余返回 `400 INVALID_PARAM`）。
-- **请求体**：
+#### `POST /api/admin/llm-configs` & `PUT /api/admin/llm-configs/:id` (`Admin`, W1)
+- **请求体 (`LLMConfigUpsertRequest`)**：
 ```json
 {
+  "name": "DeepSeek-V3",
   "base_url": "http://10.0.10.20:8000/v1",
-  "model_name": "deepseek-v3",
+  "model_name": "deepseek-chat",
   "api_key": "",
+  "clear_api_key": false,
   "timeout_seconds": 180,
   "max_retries": 3,
   "max_tokens_per_task": 250000,
   "max_files_per_task": 2500,
-  "is_active": true
+  "is_active": true,
+  "is_default": true
 }
 ```
-  - `api_key` 语义：为空字符串 `""` 时**保持原密文不变**；非空时使用 AES-256-GCM 加密写入 `api_key_cipher` 并刷新 `api_key_masked`；审计日志严禁写入明文或密文。
-- **响应 (`200 OK`)**：返回更新后的脱敏 `LLMConfigVO`。
+  - `api_key` 语义：`PUT` 时留空 `""` 且 `clear_api_key=false` 表示**保留原密钥不变**；`clear_api_key=true` 表示清空已保存密钥；非空时更新存储并刷新 `api_key_masked`；审计日志严禁写入明文。
+- **响应**：新增返回 `201 Created`、更新返回 `200 OK`，均为脱敏 `LLMConfigVO`。
 
-#### `POST /api/admin/llm-configs/:tier/probe` (`Admin`, W1)
-- **请求体（可选）**：允许传入临时未保存的 `{ "base_url", "model_name", "api_key" }` 做预测试（`api_key` 留空则复用已保存密文解密调用）。
+#### `POST /api/admin/llm-configs/:id/default` & `DELETE /api/admin/llm-configs/:id` (`Admin`, W1)
+- `POST /:id/default`：手动将已启用模型切换为全局唯一默认模型（同步事务取消原默认标记）。
+- `DELETE /:id`：若目标为非唯一默认模型或仍被某个 `DocType.preferred_model` 显式引用，返回 `409 CONFLICT`。
+
+#### `POST /api/admin/llm-configs/probe` & `POST /api/admin/llm-configs/:id/probe` (`Admin`, W1)
+- **请求体（可选）**：允许传入临时未保存的 `{ "base_url", "model_name", "api_key" }` 做预测试（`/:id/probe` 模式下 `api_key` 留空则复用已保存密钥调用）。
 - **响应 (`200 OK`)**：
 ```json
 {
-  "tier": "flagship",
+  "id": 1,
+  "name": "DeepSeek-V3",
   "reachable": true,
   "latency_ms": 418,
-  "model_echo": "deepseek-v3",
+  "model_echo": "deepseek-chat",
   "error_message": ""
 }
 ```
@@ -956,10 +967,7 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
   "sandbox": { "used_mb": 4210, "max_mb": 20480, "repo_count": 38, "active_leases": 2 },
   "ir_cache": { "used_mb": 1120, "max_mb": 10240, "facet_count": 412, "evicted_count": 15 },
   "publish_dir": { "used_mb": 18, "published_files": 210 },
-  "scheduler": { "interactive_queue_len": 1, "batch_queue_len": 4, "running_llm_calls": 3, "max_concurrency": 8 },
-  "usage_last_30d": [
-    { "model_tier": "flagship", "doc_type_slug": "system-architecture", "total_tokens": 1840000, "cached_prompt_tokens": 920000, "call_count": 146 }
-  ]
+  "scheduler": { "interactive_queue_len": 1, "batch_queue_len": 4, "running_llm_calls": 3, "max_concurrency": 8 }
 }
 ```
 

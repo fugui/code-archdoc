@@ -39,7 +39,7 @@ type ChatMessage struct {
 	ContextRefsJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"context_refs"`
 	ProposalStatus      string         `gorm:"size:20;default:'none';not null;index" json:"proposal_status"`
 	AppliedRevisionID   *uint          `json:"applied_revision_id"`
-	ModelTier           string         `gorm:"size:20;default:''" json:"model_tier"`
+	ModelName           string         `gorm:"size:128;default:''" json:"model_name"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }

@@ -190,7 +190,7 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
                   sessionId: ev.data.session_id,
                   messageId: ev.data.message_id,
                   baseRevisionNo: ev.data.base_revision_no,
-                  modelTier: ev.data.model_tier,
+                  modelName: ev.data.model_name,
                 };
               case 'plan':
                 return {

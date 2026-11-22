@@ -29,6 +29,7 @@ type DocTypeRepo interface {
 	GetRevisionByID(ctx context.Context, revID uint) (*models.DocTypeRevision, error)
 	UpsertFromDirectorySync(ctx context.Context, dt *models.DocType, newRev *models.DocTypeRevision) (createdRev bool, err error)
 	CountApprovedDocumentsBySlug(ctx context.Context, slug string) (int64, error)
+	ListByPreferredModel(ctx context.Context, modelName string) ([]models.DocType, error)
 	DeleteIfUnused(ctx context.Context, slug string) error
 }
 
@@ -152,13 +153,17 @@ type DriftRepo interface {
 // GovernanceRepo 管理 archdoc_llm_configs / archdoc_llm_usage_logs / archdoc_quality_metrics
 type GovernanceRepo interface {
 	ListLLMConfigs(ctx context.Context) ([]models.LLMConfig, error)
-	GetLLMConfigByTier(ctx context.Context, tier string) (*models.LLMConfig, error)
-	SaveLLMConfig(ctx context.Context, cfg *models.LLMConfig) error
-	UpdateLLMProbeResult(ctx context.Context, tier, status string, latencyMs int64, probedAt time.Time) error
+	GetLLMConfigByID(ctx context.Context, id uint) (*models.LLMConfig, error)
+	GetLLMConfigByName(ctx context.Context, name string) (*models.LLMConfig, error)
+	GetDefaultLLMConfig(ctx context.Context) (*models.LLMConfig, error)
+	CreateLLMConfig(ctx context.Context, cfg *models.LLMConfig) error
+	UpdateLLMConfig(ctx context.Context, cfg *models.LLMConfig) error
+	SetDefaultLLMConfig(ctx context.Context, id uint) (*models.LLMConfig, error)
+	DeleteLLMConfig(ctx context.Context, id uint) error
+	UpdateLLMProbeResult(ctx context.Context, id uint, status string, latencyMs int64, probedAt time.Time) error
 	RecordLLMUsage(ctx context.Context, log *models.LLMUsageLog) error
 	RecordQualityMetric(ctx context.Context, metric *models.QualityMetric) error
 	ListQualityMetrics(ctx context.Context, filter models.MetricsFilter) ([]models.QualityMetric, error)
 	ListLLMUsageLogs(ctx context.Context, filter models.MetricsFilter) ([]models.LLMUsageLog, error)
-	SummarizeLLMUsageSince(ctx context.Context, since time.Time) ([]models.UsageSummaryRecord, error)
 	ListSectionVerifierSummaries(ctx context.Context, docTypeSlug string, docTypeRevID *uint, since time.Time) ([]models.SectionVerifierMetricRow, error)
 }

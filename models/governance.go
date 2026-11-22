@@ -8,19 +8,20 @@ import (
 	"gorm.io/datatypes"
 )
 
-// LLMConfig 内网 OpenAI Compatible 分层模型配置（fast / flagship 各自一行）
+// LLMConfig 内网 OpenAI Compatible 模型池配置（支持多条平等模型与唯一默认模型）
 type LLMConfig struct {
 	ID                 uint       `gorm:"primaryKey" json:"id"`
-	Tier               string     `gorm:"size:20;uniqueIndex;not null" json:"tier"`
+	Name               string     `gorm:"size:80;uniqueIndex;not null" json:"name"`
 	BaseURL            string     `gorm:"size:512;not null;default:''" json:"base_url"`
 	ModelName          string     `gorm:"size:128;not null;default:''" json:"model_name"`
-	APIKeyCipher       string     `gorm:"type:text;not null;default:''" json:"-"`
+	APIKey             string     `gorm:"type:text;not null;default:''" json:"-"`
 	APIKeyMasked       string     `gorm:"size:64;not null;default:''" json:"api_key_masked"`
-	TimeoutSeconds     int        `gorm:"default:120;not null" json:"timeout_seconds"`
+	TimeoutSeconds     int        `gorm:"default:180;not null" json:"timeout_seconds"`
 	MaxRetries         int        `gorm:"default:3;not null" json:"max_retries"`
 	MaxTokensPerTask   int        `gorm:"default:200000;not null" json:"max_tokens_per_task"`
 	MaxFilesPerTask    int        `gorm:"default:2000;not null" json:"max_files_per_task"`
-	IsActive           bool       `gorm:"default:false;not null" json:"is_active"`
+	IsActive           bool       `gorm:"default:true;not null" json:"is_active"`
+	IsDefault          bool       `gorm:"default:false;not null;index" json:"is_default"`
 	LastProbeStatus    string     `gorm:"size:20;default:'unknown'" json:"last_probe_status"`
 	LastProbeLatencyMs int64      `gorm:"default:0" json:"last_probe_latency_ms"`
 	LastProbedAt       *time.Time `json:"last_probed_at"`
@@ -31,7 +32,7 @@ type LLMConfig struct {
 
 func (LLMConfig) TableName() string { return config.TablePrefix + "llm_configs" }
 
-// LLMUsageLog 每次模型调用的精细成本与延迟观测流水（F-27）
+// LLMUsageLog 每次模型调用的延迟与观测流水（F-27）
 type LLMUsageLog struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
 	TaskID             *uint     `gorm:"index" json:"task_id"`
@@ -41,7 +42,6 @@ type LLMUsageLog struct {
 	DocTypeRevisionID  *uint     `gorm:"index" json:"doc_type_revision_id"`
 	SlotID             string    `gorm:"size:64;default:''" json:"slot_id"`
 	Stage              string    `gorm:"size:24;not null;index" json:"stage"`
-	ModelTier          string    `gorm:"size:20;not null" json:"model_tier"`
 	ModelName          string    `gorm:"size:128;not null" json:"model_name"`
 	PromptTokens       int       `gorm:"default:0;not null" json:"prompt_tokens"`
 	CachedPromptTokens int       `gorm:"default:0;not null" json:"cached_prompt_tokens"`
