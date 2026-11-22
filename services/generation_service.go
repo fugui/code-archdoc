@@ -262,7 +262,7 @@ func NewGenerationOrchestrator(
 	maxLLMConcurrency int,
 ) *GenerationOrchestrator {
 	if llmClient == nil {
-		llmClient = llm.NewClient()
+		llmClient = llm.NewClient().WithUserAgent(config.AppConfig.LLM.EffectiveUserAgent())
 	}
 	if maxLLMConcurrency <= 0 {
 		maxLLMConcurrency = 8

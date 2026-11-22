@@ -77,3 +77,7 @@ drift:
   poll_enabled: true                    # 是否启用后台 git ls-remote 周期巡检（仅巡检含已发布文档的活跃仓库）
   poll_interval_minutes: 15             # 巡检周期（分钟，生产推荐 15~30）
   poll_concurrency: 4                   # 并发巡检仓库上限（失败仓自动指数退避 15m->30m->1h->4h->24h，不阻塞健康仓）
+
+# ── LLM HTTP 客户端配置 ──
+llm:
+  user_agent: ""                        # 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"（版本号取自构建版本规则）

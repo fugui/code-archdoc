@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"code-archdoc/config"
 	"code-archdoc/models"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/security"
@@ -101,6 +102,7 @@ type LLMConfigService struct {
 	govRepo     GovernanceRepo
 	docTypeRepo DocTypeRepo
 	httpClient  *http.Client
+	userAgent   string
 }
 
 func NewLLMConfigService(govRepo GovernanceRepo) *LLMConfigService {
@@ -110,6 +112,12 @@ func NewLLMConfigService(govRepo GovernanceRepo) *LLMConfigService {
 			Timeout: llmProbeTimeout,
 		},
 	}
+}
+
+// WithUserAgent 配置连通性探活请求使用的 User-Agent（留空回退全局配置）。
+func (s *LLMConfigService) WithUserAgent(ua string) *LLMConfigService {
+	s.userAgent = strings.TrimSpace(ua)
+	return s
 }
 
 // WithDocTypeRepo 注入 DocType 仓储，用于在删除模型前拦截仍被显式指定的配置。
@@ -533,6 +541,11 @@ func (s *LLMConfigService) executeProbe(
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	ua := strings.TrimSpace(s.userAgent)
+	if ua == "" {
+		ua = config.AppConfig.LLM.EffectiveUserAgent()
+	}
+	httpReq.Header.Set("User-Agent", ua)
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -644,6 +657,7 @@ func ResolveLLMEndpoint(ctx context.Context, govRepo GovernanceRepo, preferredMo
 		APIKey:         cfg.APIKey,
 		TimeoutSeconds: cfg.TimeoutSeconds,
 		MaxRetries:     cfg.MaxRetries,
+		UserAgent:      config.AppConfig.LLM.EffectiveUserAgent(),
 	}, cfg, nil
 }
 

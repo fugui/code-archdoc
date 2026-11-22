@@ -347,7 +347,7 @@ type GovernanceRepo interface {
 
 ## 5. `config/config.go` 与 `config.yaml` 扩展配置数据模型
 
-为支撑本地存储目录、调度并发与远端巡检，在现有 `Config` 结构体上扩展 3 个配置节（均提供安全默认值，向后兼容既有 `config.yaml`）：
+为支撑本地存储目录、调度并发、远端巡检与 LLM HTTP 客户端标识，在现有 `Config` 结构体上扩展 4 个配置节（均提供安全默认值，向后兼容既有 `config.yaml`）：
 
 ```go
 type StorageSection struct {
@@ -370,6 +370,10 @@ type DriftSection struct {
 	PollEnabled         bool `yaml:"poll_enabled"`          // 默认 true（单元测试中可关闭后台 Ticker）
 	PollIntervalMinutes int  `yaml:"poll_interval_minutes"` // 默认 15 分钟
 	PollConcurrency     int  `yaml:"poll_concurrency"`      // 轻量 ls-remote 并发上限，默认 4
+}
+
+type LLMSection struct {
+	UserAgent string `yaml:"user_agent"` // 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"
 }
 ```
 

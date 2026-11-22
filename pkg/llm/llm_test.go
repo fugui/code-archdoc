@@ -262,3 +262,90 @@ func TestClientRetry429AndContextCancel(t *testing.T) {
 		t.Fatalf("ctx 取消响应过慢: %v", time.Since(start))
 	}
 }
+
+func TestClientUserAgentPrecedence(t *testing.T) {
+	uaCh := make(chan string, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uaCh <- r.Header.Get("User-Agent")
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		if stream, _ := payload["stream"].(bool); stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"model\":\"mock\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"mock","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	req := llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ping"}}}
+
+	// 1. 默认客户端发送 llm.DefaultUserAgent（不得退回 Go-http-client/1.1）
+	defaultClient := llm.NewClientWithOptions(srv.Client(), 10*time.Millisecond)
+	if _, err := defaultClient.ChatCompletion(context.Background(), llm.EndpointConfig{
+		BaseURL:   srv.URL,
+		ModelName: "mock",
+	}, req); err != nil {
+		t.Fatalf("默认非流式调用失败: %v", err)
+	}
+	if got := <-uaCh; got != llm.DefaultUserAgent || strings.HasPrefix(got, "Go-http-client") {
+		t.Fatalf("默认 User-Agent 异常: got=%q want=%q", got, llm.DefaultUserAgent)
+	}
+
+	if _, err := defaultClient.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:   srv.URL,
+		ModelName: "mock",
+	}, req, nil); err != nil {
+		t.Fatalf("默认流式调用失败: %v", err)
+	}
+	if got := <-uaCh; got != llm.DefaultUserAgent {
+		t.Fatalf("默认流式 User-Agent 异常: got=%q want=%q", got, llm.DefaultUserAgent)
+	}
+
+	// 2. Client.WithUserAgent 生效
+	configuredClient := llm.NewClientWithOptions(srv.Client(), 10*time.Millisecond).WithUserAgent("Code-Archdoc/1.0.0")
+	if _, err := configuredClient.ChatCompletion(context.Background(), llm.EndpointConfig{
+		BaseURL:   srv.URL,
+		ModelName: "mock",
+	}, req); err != nil {
+		t.Fatalf("WithUserAgent 非流式调用失败: %v", err)
+	}
+	if got := <-uaCh; got != "Code-Archdoc/1.0.0" {
+		t.Fatalf("WithUserAgent 期望 Code-Archdoc/1.0.0，实际 %q", got)
+	}
+	if _, err := configuredClient.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:   srv.URL,
+		ModelName: "mock",
+	}, req, nil); err != nil {
+		t.Fatalf("WithUserAgent 流式调用失败: %v", err)
+	}
+	if got := <-uaCh; got != "Code-Archdoc/1.0.0" {
+		t.Fatalf("WithUserAgent 流式期望 Code-Archdoc/1.0.0，实际 %q", got)
+	}
+
+	// 3. EndpointConfig.UserAgent 优先级高于 Client.WithUserAgent
+	if _, err := configuredClient.ChatCompletion(context.Background(), llm.EndpointConfig{
+		BaseURL:   srv.URL,
+		ModelName: "mock",
+		UserAgent: "MyOrg-Archdoc/2.0",
+	}, req); err != nil {
+		t.Fatalf("EndpointConfig.UserAgent 调用失败: %v", err)
+	}
+	if got := <-uaCh; got != "MyOrg-Archdoc/2.0" {
+		t.Fatalf("EndpointConfig.UserAgent 期望 MyOrg-Archdoc/2.0，实际 %q", got)
+	}
+
+	// 4. ExtraHeaders["User-Agent"] 可覆盖单次请求头
+	if _, err := configuredClient.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:      srv.URL,
+		ModelName:    "mock",
+		UserAgent:    "MyOrg-Archdoc/2.0",
+		ExtraHeaders: map[string]string{"User-Agent": "MyOrg-CustomHeader/3.0"},
+	}, req, nil); err != nil {
+		t.Fatalf("ExtraHeaders 覆盖调用失败: %v", err)
+	}
+	if got := <-uaCh; got != "MyOrg-CustomHeader/3.0" {
+		t.Fatalf("ExtraHeaders 期望 MyOrg-CustomHeader/3.0，实际 %q", got)
+	}
+}

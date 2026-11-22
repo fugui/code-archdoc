@@ -46,6 +46,7 @@ func main() {
 	flag.Parse()
 
 	handlers.AppVersion = Version
+	config.AppVersion = Version
 	log.Printf("[%s] 启动微前端业务子服务 (Version=%s, Commit=%s, BuildTime=%s)",
 		config.ServiceName, Version, CommitID, BuildTime)
 
@@ -72,7 +73,8 @@ func main() {
 		log.Fatalf("[%s] 初始化 Code IR FacetStore 失败: %v", config.ServiceName, err)
 	}
 	irAggregator := codeir.NewAggregator(treesitter.DefaultExtractors()...)
-	llmClient := llm.NewClient()
+	llmUserAgent := config.AppConfig.LLM.EffectiveUserAgent()
+	llmClient := llm.NewClient().WithUserAgent(llmUserAgent)
 
 	// 6. 依赖注入组合根：Store -> Service -> Handler
 	masterStore := models.NewSharedMasterStore(models.DB)
@@ -89,7 +91,9 @@ func main() {
 	rbacSvc := services.NewRBACService(masterStore)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
 		WithModuleRepo(moduleStore)
-	llmSvc := services.NewLLMConfigService(govStore).WithDocTypeRepo(docTypeStore)
+	llmSvc := services.NewLLMConfigService(govStore).
+		WithDocTypeRepo(docTypeStore).
+		WithUserAgent(llmUserAgent)
 	docTypeSvc := services.NewDocTypeService(docTypeRegistry, docTypeStore).
 		WithSpecDriftNotifier(docStore, driftStore)
 

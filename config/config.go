@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,6 +21,34 @@ const (
 	TablePrefix = "archdoc_"
 	DefaultPort = ":8100"
 )
+
+// AppVersion 构建期版本号（默认 "dev"，与 main.Version 同步，由 Makefile -ldflags 或启动入口注入）
+var AppVersion = "dev"
+
+// LLMSection 定义全局 LLM HTTP 客户端配置
+type LLMSection struct {
+	UserAgent string `yaml:"user_agent"` // 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"
+}
+
+// DefaultLLMUserAgent 按项目构建版本规则生成默认 User-Agent（"Code-Archdoc/<version>"）。
+// 若版本号以 "v"/"V" + 数字开头（如 "v1.0.0"、"v1.2.3-4-g8fce409"），归一化去除前导 "v"；为空则回退 "dev"。
+func DefaultLLMUserAgent(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	} else if len(v) > 1 && (v[0] == 'v' || v[0] == 'V') && v[1] >= '0' && v[1] <= '9' {
+		v = v[1:]
+	}
+	return ServiceName + "/" + v
+}
+
+// EffectiveUserAgent 返回最终生效的 LLM 请求 User-Agent（显式配置优先，留空回退为默认版本标识）。
+func (s LLMSection) EffectiveUserAgent() string {
+	if ua := strings.TrimSpace(s.UserAgent); ua != "" {
+		return ua
+	}
+	return DefaultLLMUserAgent(AppVersion)
+}
 
 // AuthSection 定义模块认证与独立运行开关配置
 type AuthSection struct {
@@ -100,6 +129,7 @@ type Config struct {
 	Scheduler SchedulerSection            `yaml:"scheduler"`
 	Extract   ExtractSection              `yaml:"extract"`
 	Drift     DriftSection                `yaml:"drift"`
+	LLM       LLMSection                  `yaml:"llm"`
 }
 
 // AppConfig 全局运行时配置单例
@@ -120,7 +150,9 @@ func LoadConfig(filename string) error {
 			actualPath = "config.yaml.example"
 		} else {
 			log.Printf("[%s] 配置文件不存在，启用内置默认安全配置", ServiceName)
-			applyDefaults()
+			if defErr := applyDefaults(); defErr != nil {
+				return defErr
+			}
 			return nil
 		}
 	}
@@ -133,11 +165,13 @@ func LoadConfig(filename string) error {
 		return err
 	}
 
-	applyDefaults()
+	if err := applyDefaults(); err != nil {
+		return err
+	}
 	return nil
 }
 
-func applyDefaults() {
+func applyDefaults() error {
 	configutil.ApplyServerDefaults(&AppConfig.Server, DefaultPort)
 
 	// 支持环境变量覆盖 JWT_SECRET（生产环境推荐通过环境变量或密钥管理系统注入）
@@ -217,4 +251,15 @@ func applyDefaults() {
 			AppConfig.Auth.OAuth2.RedirectURL = strings.TrimRight(AppConfig.Server.ExternalURL, "/") + "/api/oauth2/callback"
 		}
 	}
+
+	// LLM 客户端默认值与合法性校验
+	if strings.ContainsAny(AppConfig.LLM.UserAgent, "\r\n") {
+		return fmt.Errorf("llm.user_agent 非法：不可包含换行符")
+	}
+	AppConfig.LLM.UserAgent = strings.TrimSpace(AppConfig.LLM.UserAgent)
+	if AppConfig.LLM.UserAgent == "" {
+		AppConfig.LLM.UserAgent = DefaultLLMUserAgent(AppVersion)
+	}
+
+	return nil
 }

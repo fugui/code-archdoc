@@ -66,3 +66,85 @@ drift:
 			AppConfig.Storage.SandboxDir(), AppConfig.Storage.IRCacheDir(), AppConfig.Storage.DocTypesDir())
 	}
 }
+
+func TestLLMUserAgentDefaultsAndOverrides(t *testing.T) {
+	origVersion := AppVersion
+	origCfg := AppConfig
+	t.Cleanup(func() {
+		AppVersion = origVersion
+		AppConfig = origCfg
+	})
+
+	cases := []struct {
+		version string
+		want    string
+	}{
+		{version: "v1.0.0", want: "Code-Archdoc/1.0.0"},
+		{version: "V2.1.0-3-g8fce409", want: "Code-Archdoc/2.1.0-3-g8fce409"},
+		{version: "1.0.0", want: "Code-Archdoc/1.0.0"},
+		{version: "8fce409", want: "Code-Archdoc/8fce409"},
+		{version: "dev", want: "Code-Archdoc/dev"},
+		{version: "", want: "Code-Archdoc/dev"},
+		{version: "   ", want: "Code-Archdoc/dev"},
+	}
+	for _, tc := range cases {
+		if got := DefaultLLMUserAgent(tc.version); got != tc.want {
+			t.Fatalf("DefaultLLMUserAgent(%q) = %q, want %q", tc.version, got, tc.want)
+		}
+	}
+
+	tmpDir := t.TempDir()
+
+	// 1. 未配置 llm.user_agent 时回退为基于 AppVersion 的默认标识
+	AppVersion = "v1.0.0"
+	omitPath := filepath.Join(tmpDir, "omit-ua.yaml")
+	if err := os.WriteFile(omitPath, []byte("auth:\n  jwt_secret: \"unit-test-jwt-secret-value-123456\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(omitPath); err != nil {
+		t.Fatalf("LoadConfig 失败: %v", err)
+	}
+	if AppConfig.LLM.UserAgent != "Code-Archdoc/1.0.0" || AppConfig.LLM.EffectiveUserAgent() != "Code-Archdoc/1.0.0" {
+		t.Fatalf("期望默认 UserAgent 为 Code-Archdoc/1.0.0，实际 field=%q effective=%q",
+			AppConfig.LLM.UserAgent, AppConfig.LLM.EffectiveUserAgent())
+	}
+
+	// 2. 仅填写空白字符串时同样回退为默认标识
+	blankPath := filepath.Join(tmpDir, "blank-ua.yaml")
+	if err := os.WriteFile(blankPath, []byte("llm:\n  user_agent: \"   \"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(blankPath); err != nil {
+		t.Fatalf("LoadConfig 空白 user_agent 失败: %v", err)
+	}
+	if AppConfig.LLM.UserAgent != "Code-Archdoc/1.0.0" {
+		t.Fatalf("空白 user_agent 期望回退 Code-Archdoc/1.0.0，实际 %q", AppConfig.LLM.UserAgent)
+	}
+
+	// 3. 显式配置 llm.user_agent 时执行首尾裁剪并覆盖默认值
+	customPath := filepath.Join(tmpDir, "custom-ua.yaml")
+	if err := os.WriteFile(customPath, []byte("llm:\n  user_agent: \"  MyOrg-Archdoc/2.0  \"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(customPath); err != nil {
+		t.Fatalf("LoadConfig 自定义 user_agent 失败: %v", err)
+	}
+	if AppConfig.LLM.UserAgent != "MyOrg-Archdoc/2.0" || AppConfig.LLM.EffectiveUserAgent() != "MyOrg-Archdoc/2.0" {
+		t.Fatalf("期望自定义 UserAgent 为 MyOrg-Archdoc/2.0，实际 field=%q effective=%q",
+			AppConfig.LLM.UserAgent, AppConfig.LLM.EffectiveUserAgent())
+	}
+
+	// 4. 含 CR/LF 换行符的非法 User-Agent 应被拒绝
+	for _, badYAML := range []string{
+		"llm:\n  user_agent: \"Bad\\nHeader\"\n",
+		"llm:\n  user_agent: \"Bad\\rHeader\"\n",
+	} {
+		badPath := filepath.Join(tmpDir, "bad-ua.yaml")
+		if err := os.WriteFile(badPath, []byte(badYAML), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := LoadConfig(badPath); err == nil {
+			t.Fatalf("期望包含换行符的 llm.user_agent 校验失败，但成功加载: %s", badYAML)
+		}
+	}
+}

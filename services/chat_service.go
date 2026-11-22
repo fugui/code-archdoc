@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"code-archdoc/config"
 	"code-archdoc/models"
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/doctype"
@@ -242,7 +243,7 @@ func NewChatService(
 	llmClient *llm.Client,
 ) *ChatService {
 	if llmClient == nil {
-		llmClient = llm.NewClient()
+		llmClient = llm.NewClient().WithUserAgent(config.AppConfig.LLM.EffectiveUserAgent())
 	}
 	return &ChatService{
 		chatRepo:    chatRepo,

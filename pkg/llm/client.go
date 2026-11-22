@@ -50,6 +50,9 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
+// DefaultUserAgent 未显式配置时发往上游 LLM 网关的默认客户端标识。
+const DefaultUserAgent = "Code-Archdoc/dev"
+
 // EndpointConfig 单次调用的目标模型端点与重试配置。
 type EndpointConfig struct {
 	BaseURL        string
@@ -57,6 +60,7 @@ type EndpointConfig struct {
 	APIKey         string
 	TimeoutSeconds int
 	MaxRetries     int
+	UserAgent      string
 	ExtraHeaders   map[string]string
 }
 
@@ -136,6 +140,7 @@ func IsToolUnsupportedError(err error) bool {
 type Client struct {
 	httpClient  *http.Client
 	baseBackoff time.Duration
+	userAgent   string
 }
 
 // NewClient 创建默认客户端。
@@ -143,6 +148,7 @@ func NewClient() *Client {
 	return &Client{
 		httpClient:  &http.Client{},
 		baseBackoff: 300 * time.Millisecond,
+		userAgent:   DefaultUserAgent,
 	}
 }
 
@@ -157,7 +163,16 @@ func NewClientWithOptions(httpClient *http.Client, baseBackoff time.Duration) *C
 	return &Client{
 		httpClient:  httpClient,
 		baseBackoff: baseBackoff,
+		userAgent:   DefaultUserAgent,
 	}
+}
+
+// WithUserAgent 配置客户端默认发送的 User-Agent（空串保持现有值）。
+func (c *Client) WithUserAgent(ua string) *Client {
+	if trimmed := strings.TrimSpace(ua); trimmed != "" {
+		c.userAgent = trimmed
+	}
+	return c
 }
 
 type openAIChatPayload struct {
@@ -306,6 +321,14 @@ func (c *Client) doOnce(
 		return nil, false, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	ua := strings.TrimSpace(cfg.UserAgent)
+	if ua == "" {
+		ua = strings.TrimSpace(c.userAgent)
+	}
+	if ua == "" {
+		ua = DefaultUserAgent
+	}
+	httpReq.Header.Set("User-Agent", ua)
 	if stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	}
