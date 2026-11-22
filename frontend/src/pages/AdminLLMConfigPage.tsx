@@ -115,6 +115,9 @@ export const AdminLLMConfigPage: React.FC = () => {
     [configs],
   );
 
+  // 仅当编辑对象为「已启用且为默认模型」时锁定状态开关；已停用的历史异常默认模型允许勾选启用或取消默认标记
+  const isLockedActiveDefault = Boolean(editingConfig?.is_default && editingConfig?.is_active);
+
   const openCreateModal = () => {
     setEditingConfig(null);
     setForm({
@@ -305,6 +308,10 @@ export const AdminLLMConfigPage: React.FC = () => {
       showToast(maxFilesRes.error, 'error');
       return;
     }
+    if (form.isDefault && !form.isActive) {
+      showToast('默认模型必须处于启用状态，请先勾选「启用该模型」或取消默认标记', 'error');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -319,7 +326,7 @@ export const AdminLLMConfigPage: React.FC = () => {
         max_tokens_per_task: maxTokensRes.value,
         max_files_per_task: maxFilesRes.value,
         is_active: form.isActive,
-        is_default: editingConfig?.is_default ? true : form.isDefault,
+        is_default: isLockedActiveDefault ? true : form.isDefault,
       };
 
       if (editingConfig) {
@@ -805,15 +812,17 @@ export const AdminLLMConfigPage: React.FC = () => {
               <div>
                 <div className="code-archdoc-llm-toggle-title">启用该模型</div>
                 <div className="code-archdoc-llm-toggle-desc">
-                  {editingConfig?.is_default
+                  {isLockedActiveDefault
                     ? '当前模型为系统默认模型，请先将其他模型设为默认后再停用'
-                    : '停用后，指定该模型的文档类型将拒绝触发任务'}
+                    : editingConfig?.is_default && !editingConfig?.is_active
+                      ? '当前默认模型处于已停用状态，请勾选启用后再保存，或先取消默认标记'
+                      : '停用后，指定该模型的文档类型将拒绝触发任务'}
                 </div>
               </div>
               <input
                 type="checkbox"
                 checked={form.isActive}
-                disabled={Boolean(editingConfig?.is_default)}
+                disabled={isLockedActiveDefault}
                 onChange={(e) =>
                   setForm((p) => ({
                     ...p,
@@ -834,7 +843,7 @@ export const AdminLLMConfigPage: React.FC = () => {
               <input
                 type="checkbox"
                 checked={form.isDefault}
-                disabled={!form.isActive || Boolean(editingConfig?.is_default)}
+                disabled={isLockedActiveDefault || (!form.isActive && !form.isDefault)}
                 onChange={(e) => setForm((p) => ({ ...p, isDefault: e.target.checked }))}
               />
             </label>

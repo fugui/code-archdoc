@@ -328,15 +328,14 @@ func (s *LLMConfigService) UpdateConfig(
 
 	nextDefault := cfg.IsDefault
 	if req.IsDefault != nil {
-		if cfg.IsDefault && !*req.IsDefault {
+		// 仅锁定处于启用状态的正常默认模型，允许已停用的历史异常默认模型解除默认标记或勾选启用恢复
+		if cfg.IsDefault && cfg.IsActive && !*req.IsDefault {
 			return nil, LLMConfigAuditSnapshot{}, LLMConfigAuditSnapshot{}, fmt.Errorf("%w: 不能直接取消默认模型标记，请将其他已启用模型设为默认", ErrInvalidLLMParam)
 		}
-		if *req.IsDefault {
-			nextDefault = true
-		}
+		nextDefault = *req.IsDefault
 	}
 
-	if cfg.IsDefault && !nextActive {
+	if cfg.IsDefault && cfg.IsActive && !nextActive {
 		return nil, LLMConfigAuditSnapshot{}, LLMConfigAuditSnapshot{}, fmt.Errorf("%w: 当前模型为系统默认模型，请先将其他模型设为默认后再停用", ErrInvalidLLMParam)
 	}
 	if nextDefault && !nextActive {
@@ -587,7 +586,11 @@ func (s *LLMConfigService) executeProbe(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		result.Reachable = false
-		result.ErrorMessage = fmt.Sprintf("模型接口返回 HTTP %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized && strings.TrimSpace(apiKey) == "" {
+			result.ErrorMessage = fmt.Sprintf("模型接口返回 HTTP %d（当前未配置 API Key）", resp.StatusCode)
+		} else {
+			result.ErrorMessage = fmt.Sprintf("模型接口返回 HTTP %d", resp.StatusCode)
+		}
 		if persist && modelID > 0 {
 			s.recordProbeStatus(ctx, modelID, "failed", latencyMs, now)
 		}

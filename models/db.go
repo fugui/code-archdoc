@@ -66,6 +66,10 @@ func SetupWithDB(db *gorm.DB) error {
 		return fmt.Errorf("迁移 archdoc_* 数据表结构失败: %w", err)
 	}
 
+	if err := repairInconsistentLLMConfigs(DB); err != nil {
+		return fmt.Errorf("修复异常 LLM 模型配置失败: %w", err)
+	}
+
 	// 仅在独立调试库已存在 users 表时，按需引导默认管理员（避免在共享生产库触碰公共表 DDL）
 	if DB.Migrator().HasTable(&User{}) {
 		if err := commonAuth.EnsureSeedAdmin(DB, config.AdminRole); err != nil {
@@ -134,9 +138,7 @@ func migrateLegacyGovernanceSchema(db *gorm.DB) error {
 					}
 				}
 			}
-			if defaultIdx == -1 && len(rows) > 0 {
-				defaultIdx = 0
-			}
+			// 绝不将 is_active=false 的历史记录自动标记为默认模型，避免制造「已停用且默认」的非法状态
 
 			for i, row := range rows {
 				candidate := strings.TrimSpace(row.ModelName)
@@ -195,6 +197,20 @@ func migrateLegacyGovernanceSchema(db *gorm.DB) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// repairInconsistentLLMConfigs 幂等清理历史遗留的「已停用但仍标记为默认」异常模型配置，避免前端与更新守卫死锁。
+func repairInconsistentLLMConfigs(db *gorm.DB) error {
+	res := db.Model(&LLMConfig{}).
+		Where("is_default = ? AND is_active = ?", true, false).
+		Update("is_default", false)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		log.Printf("[%s] 检测到并已自动修复 %d 条「已停用但仍标记为默认」的异常 LLM 配置（已清除默认标记）", config.ServiceName, res.RowsAffected)
 	}
 	return nil
 }

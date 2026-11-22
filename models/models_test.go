@@ -286,3 +286,117 @@ func TestUniqueConstraintsAndIdempotentSeeds(t *testing.T) {
 		t.Fatalf("期望被已发布文档引用的 DocType 删除返回 ErrDocTypeInUse，实际返回: %v", err)
 	}
 }
+
+func TestMigrateLegacyInactiveLLMAndRepairInconsistentDefault(t *testing.T) {
+	// 场景 A：历史表仅含 is_active = false 记录时，迁移不应将其强制标记为默认模型
+	dbLegacy := testdb.SetupIsolatedDB(t, config.ModuleKey)
+	if err := EnsureSharedTablesForTest(dbLegacy); err != nil {
+		t.Fatalf("初始化共享表失败: %v", err)
+	}
+
+	llmTable := (LLMConfig{}).TableName()
+	createLegacySQL := `
+		CREATE TABLE ` + llmTable + ` (
+			id BIGSERIAL PRIMARY KEY,
+			tier varchar(24) NOT NULL DEFAULT '',
+			base_url varchar(512) NOT NULL DEFAULT '',
+			model_name varchar(128) NOT NULL DEFAULT '',
+			api_key_cipher text NOT NULL DEFAULT '',
+			api_key_masked varchar(64) NOT NULL DEFAULT '',
+			timeout_seconds bigint NOT NULL DEFAULT 180,
+			max_retries bigint NOT NULL DEFAULT 3,
+			max_tokens_per_task bigint NOT NULL DEFAULT 200000,
+			max_files_per_task bigint NOT NULL DEFAULT 2000,
+			is_active boolean NOT NULL DEFAULT true,
+			last_probe_status varchar(20) DEFAULT 'unknown',
+			last_probe_latency_ms bigint DEFAULT 0,
+			last_probed_at timestamptz,
+			updated_by bigint,
+			created_at timestamptz,
+			updated_at timestamptz
+		);`
+	if err := dbLegacy.Exec(createLegacySQL).Error; err != nil {
+		t.Fatalf("构造历史表失败: %v", err)
+	}
+	if err := dbLegacy.Exec(
+		`INSERT INTO `+llmTable+` (tier, base_url, model_name, api_key_cipher, api_key_masked, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+		"flagship", "https://api.deepseek.com", "deepseek-flash", "cipher-placeholder", "sk-****18c2", false,
+	).Error; err != nil {
+		t.Fatalf("插入历史停用模型失败: %v", err)
+	}
+
+	if err := SetupWithDB(dbLegacy); err != nil {
+		t.Fatalf("SetupWithDB 迁移失败: %v", err)
+	}
+
+	var migrated LLMConfig
+	if err := dbLegacy.First(&migrated).Error; err != nil {
+		t.Fatalf("查询迁移后模型失败: %v", err)
+	}
+	if migrated.Name != "deepseek-flash" || migrated.IsActive || migrated.IsDefault || migrated.APIKeyMasked != "" {
+		t.Fatalf("停用历史模型迁移结果异常（期望 is_default=false 且清空无效掩码）: %+v", migrated)
+	}
+	if dbLegacy.Migrator().HasColumn(&LLMConfig{}, "tier") || dbLegacy.Migrator().HasColumn(&LLMConfig{}, "api_key_cipher") {
+		t.Fatal("迁移后不应保留历史 tier 或 api_key_cipher 列")
+	}
+
+	// 场景 B：启动时自动修复库中已存在的「is_default=true 且 is_active=false」异常记录，且不影响正常默认记录
+	dbRepair := testdb.SetupIsolatedDB(t, config.ModuleKey)
+	if err := SetupTestDB(t, dbRepair); err != nil {
+		t.Fatalf("SetupTestDB 失败: %v", err)
+	}
+
+	broken := LLMConfig{Name: "broken-inactive-default", BaseURL: "https://a.example.com/v1", ModelName: "m1"}
+	normalInactive := LLMConfig{Name: "normal-inactive", BaseURL: "https://b.example.com/v1", ModelName: "m2"}
+	normalActive := LLMConfig{Name: "normal-active", BaseURL: "https://c.example.com/v1", ModelName: "m3"}
+	for _, item := range []*LLMConfig{&broken, &normalInactive, &normalActive} {
+		if err := dbRepair.Create(item).Error; err != nil {
+			t.Fatalf("插入测试模型失败: %v", err)
+		}
+	}
+	if err := dbRepair.Model(&LLMConfig{}).Where("id = ?", broken.ID).Updates(map[string]any{"is_active": false, "is_default": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := dbRepair.Model(&LLMConfig{}).Where("id = ?", normalInactive.ID).Updates(map[string]any{"is_active": false, "is_default": false}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetupWithDB(dbRepair); err != nil {
+		t.Fatalf("SetupWithDB 启动修复失败: %v", err)
+	}
+
+	var gotBroken, gotNormalInactive, gotNormalActive LLMConfig
+	if err := dbRepair.First(&gotBroken, broken.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := dbRepair.First(&gotNormalInactive, normalInactive.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := dbRepair.First(&gotNormalActive, normalActive.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gotBroken.IsDefault || gotBroken.IsActive {
+		t.Fatalf("期望异常停用默认记录被清除 is_default 标记，实际 %+v", gotBroken)
+	}
+	if gotNormalInactive.IsDefault || gotNormalInactive.IsActive {
+		t.Fatalf("普通停用记录状态不应变更: %+v", gotNormalInactive)
+	}
+	if gotNormalActive.IsDefault || !gotNormalActive.IsActive {
+		t.Fatalf("正常非默认启用记录状态不应变更: %+v", gotNormalActive)
+	}
+
+	activeDefault := LLMConfig{Name: "active-default", BaseURL: "https://d.example.com/v1", ModelName: "m4", IsActive: true, IsDefault: true}
+	if err := dbRepair.Create(&activeDefault).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := SetupWithDB(dbRepair); err != nil {
+		t.Fatalf("再次 SetupWithDB 失败: %v", err)
+	}
+	var gotActiveDefault LLMConfig
+	if err := dbRepair.First(&gotActiveDefault, activeDefault.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !gotActiveDefault.IsDefault || !gotActiveDefault.IsActive {
+		t.Fatalf("正常已启用默认模型不应被清除默认标记: %+v", gotActiveDefault)
+	}
+}

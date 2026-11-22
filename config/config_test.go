@@ -138,13 +138,41 @@ func TestLLMUserAgentDefaultsAndOverrides(t *testing.T) {
 	for _, badYAML := range []string{
 		"llm:\n  user_agent: \"Bad\\nHeader\"\n",
 		"llm:\n  user_agent: \"Bad\\rHeader\"\n",
+		"llm:\n  user-agent: \"Bad\\nAlias\"\n",
+		"llm:\n  user-agent: \"Bad\\rAlias\"\n",
 	} {
 		badPath := filepath.Join(tmpDir, "bad-ua.yaml")
 		if err := os.WriteFile(badPath, []byte(badYAML), 0644); err != nil {
 			t.Fatal(err)
 		}
 		if err := LoadConfig(badPath); err == nil {
-			t.Fatalf("期望包含换行符的 llm.user_agent 校验失败，但成功加载: %s", badYAML)
+			t.Fatalf("期望包含换行符的 llm user_agent/user-agent 校验失败，但成功加载: %s", badYAML)
 		}
+	}
+
+	// 5. 兼容 kebab-case 键名 llm.user-agent
+	aliasPath := filepath.Join(tmpDir, "alias-ua.yaml")
+	if err := os.WriteFile(aliasPath, []byte("llm:\n  user-agent: \"  opencode/1.18.31  \"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(aliasPath); err != nil {
+		t.Fatalf("LoadConfig 兼容 user-agent 失败: %v", err)
+	}
+	if AppConfig.LLM.UserAgent != "opencode/1.18.31" || AppConfig.LLM.EffectiveUserAgent() != "opencode/1.18.31" {
+		t.Fatalf("期望兼容 user-agent 为 opencode/1.18.31，实际 field=%q effective=%q",
+			AppConfig.LLM.UserAgent, AppConfig.LLM.EffectiveUserAgent())
+	}
+
+	// 6. 同时配置 user_agent 与 user-agent 时，规范键名 user_agent 优先
+	bothPath := filepath.Join(tmpDir, "both-ua.yaml")
+	if err := os.WriteFile(bothPath, []byte("llm:\n  user_agent: \"Canonical-UA/1.0\"\n  user-agent: \"Alias-UA/2.0\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(bothPath); err != nil {
+		t.Fatalf("LoadConfig 同时配置 user_agent 与 user-agent 失败: %v", err)
+	}
+	if AppConfig.LLM.UserAgent != "Canonical-UA/1.0" || AppConfig.LLM.EffectiveUserAgent() != "Canonical-UA/1.0" {
+		t.Fatalf("期望 user_agent 优先为 Canonical-UA/1.0，实际 field=%q effective=%q",
+			AppConfig.LLM.UserAgent, AppConfig.LLM.EffectiveUserAgent())
 	}
 }

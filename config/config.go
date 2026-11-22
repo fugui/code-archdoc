@@ -27,7 +27,8 @@ var AppVersion = "dev"
 
 // LLMSection 定义全局 LLM HTTP 客户端配置
 type LLMSection struct {
-	UserAgent string `yaml:"user_agent"` // 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"
+	UserAgent      string `yaml:"user_agent"` // 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"
+	UserAgentAlias string `yaml:"user-agent"` // 兼容误写为 kebab-case 的 user-agent 键名
 }
 
 // DefaultLLMUserAgent 按项目构建版本规则生成默认 User-Agent（"Code-Archdoc/<version>"）。
@@ -46,6 +47,9 @@ func DefaultLLMUserAgent(version string) string {
 func (s LLMSection) EffectiveUserAgent() string {
 	if ua := strings.TrimSpace(s.UserAgent); ua != "" {
 		return ua
+	}
+	if alias := strings.TrimSpace(s.UserAgentAlias); alias != "" {
+		return alias
 	}
 	return DefaultLLMUserAgent(AppVersion)
 }
@@ -253,10 +257,14 @@ func applyDefaults() error {
 	}
 
 	// LLM 客户端默认值与合法性校验
-	if strings.ContainsAny(AppConfig.LLM.UserAgent, "\r\n") {
+	if strings.ContainsAny(AppConfig.LLM.UserAgent, "\r\n") || strings.ContainsAny(AppConfig.LLM.UserAgentAlias, "\r\n") {
 		return fmt.Errorf("llm.user_agent 非法：不可包含换行符")
 	}
 	AppConfig.LLM.UserAgent = strings.TrimSpace(AppConfig.LLM.UserAgent)
+	if AppConfig.LLM.UserAgent == "" {
+		AppConfig.LLM.UserAgent = strings.TrimSpace(AppConfig.LLM.UserAgentAlias)
+	}
+	AppConfig.LLM.UserAgentAlias = ""
 	if AppConfig.LLM.UserAgent == "" {
 		AppConfig.LLM.UserAgent = DefaultLLMUserAgent(AppVersion)
 	}

@@ -704,3 +704,187 @@ func TestLLMConfigPoolCRUDMaskAuditDefaultAndProbe(t *testing.T) {
 		t.Fatalf("非法 ID 期望返回 400，实际 %d", recBadID.Code)
 	}
 }
+
+func TestLLMConfigInactiveDefaultRecoveryAndValidation(t *testing.T) {
+	db, router, _ := setupM1TestEnv(t)
+
+	adminUser := createTestUser(t, db, "archdoc_admin_recover", "架构文档管理员", []string{"user", config.AdminRole}, nil)
+	adminTok := issueTestToken(t, adminUser)
+
+	// 构造历史异常记录：is_active=false 且 is_default=true，且 api_key 为空
+	broken := models.LLMConfig{
+		Name:             "deepseek-flash",
+		BaseURL:          "https://api.deepseek.com",
+		ModelName:        "deepseek-flash",
+		TimeoutSeconds:   180,
+		MaxRetries:       3,
+		MaxTokensPerTask: 200000,
+		MaxFilesPerTask:  2010,
+	}
+	if err := db.Create(&broken).Error; err != nil {
+		t.Fatalf("创建异常测试记录失败: %v", err)
+	}
+	if err := db.Model(&models.LLMConfig{}).Where("id = ?", broken.ID).Updates(map[string]any{
+		"is_active":  false,
+		"is_default": true,
+		"api_key":    "",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 异常停用默认记录若仍提交 is_active=false, is_default=true -> 返回 400 并提示默认模型必须处于启用状态
+	badPayload, _ := json.Marshal(map[string]any{
+		"name":                "deepseek-flash",
+		"base_url":            "https://api.deepseek.com",
+		"model_name":          "deepseek-flash",
+		"api_key":             "sk-recovered-0000",
+		"timeout_seconds":     180,
+		"max_retries":         3,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2010,
+		"is_active":           false,
+		"is_default":          true,
+	})
+	reqBad := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", broken.ID), bytes.NewReader(badPayload))
+	reqBad.Header.Set("Authorization", "Bearer "+adminTok)
+	reqBad.Header.Set("Content-Type", "application/json")
+	recBad := httptest.NewRecorder()
+	router.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusBadRequest || !strings.Contains(recBad.Body.String(), "默认模型必须处于启用状态") {
+		t.Fatalf("异常记录提交 is_active=false & is_default=true 期望返回 400 默认模型必须处于启用状态，实际 %d (%s)", recBad.Code, recBad.Body.String())
+	}
+
+	// 2. 异常停用默认记录可选择取消默认标记并保持停用保存密钥 -> 200
+	clearDefaultPayload, _ := json.Marshal(map[string]any{
+		"name":                "deepseek-flash",
+		"base_url":            "https://api.deepseek.com",
+		"model_name":          "deepseek-flash",
+		"api_key":             "sk-recovered-1111",
+		"timeout_seconds":     180,
+		"max_retries":         3,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2010,
+		"is_active":           false,
+		"is_default":          false,
+	})
+	reqClearDef := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", broken.ID), bytes.NewReader(clearDefaultPayload))
+	reqClearDef.Header.Set("Authorization", "Bearer "+adminTok)
+	reqClearDef.Header.Set("Content-Type", "application/json")
+	recClearDef := httptest.NewRecorder()
+	router.ServeHTTP(recClearDef, reqClearDef)
+	if recClearDef.Code != http.StatusOK {
+		t.Fatalf("异常停用默认模型取消默认标记应成功，实际 %d (%s)", recClearDef.Code, recClearDef.Body.String())
+	}
+	var voClearDef services.LLMConfigVO
+	if err := json.Unmarshal(recClearDef.Body.Bytes(), &voClearDef); err != nil {
+		t.Fatal(err)
+	}
+	if voClearDef.IsDefault || voClearDef.IsActive || !voClearDef.HasAPIKey || voClearDef.APIKeyMasked != "sk-****1111" {
+		t.Fatalf("取消默认标记后 VO 异常: %+v", voClearDef)
+	}
+	var dbAfter1 models.LLMConfig
+	if err := db.First(&dbAfter1, broken.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if dbAfter1.APIKey != "sk-recovered-1111" || dbAfter1.IsDefault || dbAfter1.IsActive {
+		t.Fatalf("取消默认标记后数据库状态异常: %+v", dbAfter1)
+	}
+
+	// 3. 再次重置为异常态 (is_active=false, is_default=true)，验证直接勾选启用保存恢复 -> 200
+	if err := db.Model(&models.LLMConfig{}).Where("id = ?", broken.ID).Updates(map[string]any{
+		"is_active":  false,
+		"is_default": true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	enablePayload, _ := json.Marshal(map[string]any{
+		"name":                "deepseek-flash",
+		"base_url":            "https://api.deepseek.com",
+		"model_name":          "deepseek-flash",
+		"api_key":             "sk-recovered-2222",
+		"timeout_seconds":     180,
+		"max_retries":         3,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2010,
+		"is_active":           true,
+		"is_default":          true,
+	})
+	reqEnable := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", broken.ID), bytes.NewReader(enablePayload))
+	reqEnable.Header.Set("Authorization", "Bearer "+adminTok)
+	reqEnable.Header.Set("Content-Type", "application/json")
+	recEnable := httptest.NewRecorder()
+	router.ServeHTTP(recEnable, reqEnable)
+	if recEnable.Code != http.StatusOK {
+		t.Fatalf("异常停用默认模型启用恢复应成功，实际 %d (%s)", recEnable.Code, recEnable.Body.String())
+	}
+	var voEnabled services.LLMConfigVO
+	if err := json.Unmarshal(recEnable.Body.Bytes(), &voEnabled); err != nil {
+		t.Fatal(err)
+	}
+	if !voEnabled.IsDefault || !voEnabled.IsActive || !voEnabled.HasAPIKey || voEnabled.APIKeyMasked != "sk-****2222" {
+		t.Fatalf("启用恢复后 VO 异常: %+v", voEnabled)
+	}
+	var dbAfter2 models.LLMConfig
+	if err := db.First(&dbAfter2, broken.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if dbAfter2.APIKey != "sk-recovered-2222" || !dbAfter2.IsDefault || !dbAfter2.IsActive {
+		t.Fatalf("启用恢复后数据库状态异常: %+v", dbAfter2)
+	}
+
+	// 4. 已恢复为正常已启用默认模型后，禁止直接停用或直接取消默认标记 -> 400
+	disableActivePayload, _ := json.Marshal(map[string]any{
+		"name":                "deepseek-flash",
+		"base_url":            "https://api.deepseek.com",
+		"model_name":          "deepseek-flash",
+		"timeout_seconds":     180,
+		"max_retries":         3,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2010,
+		"is_active":           false,
+		"is_default":          true,
+	})
+	reqDisableActive := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", broken.ID), bytes.NewReader(disableActivePayload))
+	reqDisableActive.Header.Set("Authorization", "Bearer "+adminTok)
+	reqDisableActive.Header.Set("Content-Type", "application/json")
+	recDisableActive := httptest.NewRecorder()
+	router.ServeHTTP(recDisableActive, reqDisableActive)
+	if recDisableActive.Code != http.StatusBadRequest || !strings.Contains(recDisableActive.Body.String(), "当前模型为系统默认模型") {
+		t.Fatalf("正常已启用默认模型停用期望返回 400，实际 %d (%s)", recDisableActive.Code, recDisableActive.Body.String())
+	}
+
+	unsetDefaultPayload, _ := json.Marshal(map[string]any{
+		"name":                "deepseek-flash",
+		"base_url":            "https://api.deepseek.com",
+		"model_name":          "deepseek-flash",
+		"timeout_seconds":     180,
+		"max_retries":         3,
+		"max_tokens_per_task": 200000,
+		"max_files_per_task":  2010,
+		"is_active":           true,
+		"is_default":          false,
+	})
+	reqUnsetDef := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/llm-configs/%d", broken.ID), bytes.NewReader(unsetDefaultPayload))
+	reqUnsetDef.Header.Set("Authorization", "Bearer "+adminTok)
+	reqUnsetDef.Header.Set("Content-Type", "application/json")
+	recUnsetDef := httptest.NewRecorder()
+	router.ServeHTTP(recUnsetDef, reqUnsetDef)
+	if recUnsetDef.Code != http.StatusBadRequest || !strings.Contains(recUnsetDef.Body.String(), "不能直接取消默认模型标记") {
+		t.Fatalf("正常已启用默认模型取消默认期望返回 400，实际 %d (%s)", recUnsetDef.Code, recUnsetDef.Body.String())
+	}
+
+	// 5. 刷新审计日志并验证无明文 APIKey 泄露
+	if err := commonAudit.Close(context.Background()); err != nil {
+		t.Fatalf("刷新审计队列失败: %v", err)
+	}
+	var auditLogs []models.SysAuditLog
+	if err := db.Where("target_type = ?", "llm_config").Find(&auditLogs).Error; err != nil {
+		t.Fatalf("查询审计表失败: %v", err)
+	}
+	for _, al := range auditLogs {
+		combined := al.Summary + " " + al.BeforeData + " " + al.AfterData + " " + al.DiffSummary
+		if strings.Contains(combined, "sk-recovered-") {
+			t.Fatalf("严重安全漏洞：审计日志泄露了明文 APIKey！log=%+v", al)
+		}
+	}
+}

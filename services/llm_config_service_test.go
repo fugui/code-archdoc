@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,5 +146,68 @@ func TestLLMConfigServiceUserAgentProbeAndResolve(t *testing.T) {
 	}
 	if got := <-uaCh; got != "MyOrg-Probe/3.0" {
 		t.Fatalf("WithUserAgent 期望 MyOrg-Probe/3.0，实际 %q", got)
+	}
+}
+
+func TestProbeEmptyAPIKeyUnauthorizedMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid upstream secret token"}}`))
+	}))
+	defer srv.Close()
+
+	noKeyCfg := models.LLMConfig{
+		ID:        1,
+		Name:      "no-key",
+		BaseURL:   srv.URL,
+		ModelName: "deepseek-flash",
+		APIKey:    "",
+		IsActive:  true,
+	}
+	withKeyCfg := models.LLMConfig{
+		ID:        2,
+		Name:      "with-key",
+		BaseURL:   srv.URL,
+		ModelName: "deepseek-flash",
+		APIKey:    "sk-invalid-1234",
+		IsActive:  true,
+	}
+	repo := &stubGovernanceRepo{
+		configs: map[uint]models.LLMConfig{
+			1: noKeyCfg,
+			2: withKeyCfg,
+		},
+	}
+	svc := NewLLMConfigService(repo)
+
+	resNoKey, err := svc.ProbeConfig(context.Background(), 1, nil)
+	if err != nil {
+		t.Fatalf("ProbeConfig(noKey) 返回意外错误: %v", err)
+	}
+	if resNoKey.Reachable || !strings.Contains(resNoKey.ErrorMessage, "HTTP 401") || !strings.Contains(resNoKey.ErrorMessage, "当前未配置 API Key") {
+		t.Fatalf("空 API Key 探活 401 提示不符合预期: %+v", resNoKey)
+	}
+	if strings.Contains(resNoKey.ErrorMessage, "invalid upstream secret token") {
+		t.Fatalf("探活错误不应回显上游原始响应体: %s", resNoKey.ErrorMessage)
+	}
+
+	resAdhocNoKey, err := svc.ProbeAdhoc(context.Background(), ProbeLLMConfigRequest{
+		BaseURL:   srv.URL,
+		ModelName: "deepseek-flash",
+		APIKey:    "   ",
+	})
+	if err != nil {
+		t.Fatalf("ProbeAdhoc(noKey) 返回意外错误: %v", err)
+	}
+	if resAdhocNoKey.Reachable || !strings.Contains(resAdhocNoKey.ErrorMessage, "当前未配置 API Key") {
+		t.Fatalf("ProbeAdhoc 空 API Key 探活 401 提示不符合预期: %+v", resAdhocNoKey)
+	}
+
+	resWithKey, err := svc.ProbeConfig(context.Background(), 2, nil)
+	if err != nil {
+		t.Fatalf("ProbeConfig(withKey) 返回意外错误: %v", err)
+	}
+	if resWithKey.Reachable || resWithKey.ErrorMessage != "模型接口返回 HTTP 401" {
+		t.Fatalf("已配置 API Key 探活 401 提示不符合预期: %+v", resWithKey)
 	}
 }
