@@ -14,6 +14,7 @@ type LLMConfig struct {
 	Name               string     `gorm:"size:80;uniqueIndex;not null" json:"name"`
 	BaseURL            string     `gorm:"size:512;not null;default:''" json:"base_url"`
 	ModelName          string     `gorm:"size:128;not null;default:''" json:"model_name"`
+	OpenCodeModel      string     `gorm:"column:opencode_model;size:128;not null;default:''" json:"opencode_model"`
 	APIKey             string     `gorm:"type:text;not null;default:''" json:"-"`
 	APIKeyMasked       string     `gorm:"size:64;not null;default:''" json:"api_key_masked"`
 	TimeoutSeconds     int        `gorm:"default:180;not null" json:"timeout_seconds"`
@@ -41,7 +42,8 @@ type LLMUsageLog struct {
 	DocTypeSlug        string    `gorm:"size:64;default:'';index" json:"doc_type_slug"`
 	DocTypeRevisionID  *uint     `gorm:"index" json:"doc_type_revision_id"`
 	SlotID             string    `gorm:"size:64;default:''" json:"slot_id"`
-	Stage              string    `gorm:"size:24;not null;index" json:"stage"`
+	Engine             string    `gorm:"size:20;not null;default:'native';index" json:"engine"`
+	Stage              string    `gorm:"size:32;not null;index" json:"stage"`
 	ModelName          string    `gorm:"size:128;not null" json:"model_name"`
 	PromptTokens       int       `gorm:"default:0;not null" json:"prompt_tokens"`
 	CachedPromptTokens int       `gorm:"default:0;not null" json:"cached_prompt_tokens"`

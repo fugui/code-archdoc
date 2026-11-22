@@ -98,7 +98,13 @@ func (h *AppHandlers) TriggerIncrementalRefresh(c *gin.Context) {
 
 	vo, err := h.driftSvc.TriggerIncrementalRefresh(c.Request.Context(), docID, req, user.ID)
 	if err != nil {
+		var engErr *services.EngineUnavailableError
 		switch {
+		case errors.As(err, &engErr):
+			WriteError(c, http.StatusBadRequest, ErrCodeEngineUnavailable, engErr.Error(), gin.H{
+				"engine": engErr.Engine,
+				"reason": engErr.Reason,
+			})
 		case errors.Is(err, models.ErrNotFound):
 			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标文档不存在", nil)
 		case errors.Is(err, services.ErrNoRefreshableSlots), errors.Is(err, services.ErrInvalidTaskParam):

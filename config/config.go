@@ -27,8 +27,26 @@ var AppVersion = "dev"
 
 // LLMSection 定义全局 LLM HTTP 客户端配置
 type LLMSection struct {
-	UserAgent      string `yaml:"user_agent"` // 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"
-	UserAgentAlias string `yaml:"user-agent"` // 兼容误写为 kebab-case 的 user-agent 键名
+	UserAgent               string `yaml:"user_agent"`                 // 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"
+	UserAgentAlias          string `yaml:"user-agent"`                 // 兼容误写为 kebab-case 的 user-agent 键名
+	FirstByteTimeoutSeconds int    `yaml:"first_byte_timeout_seconds"` // Native 流式首包超时（默认 90s）
+	IdleTimeoutSeconds      int    `yaml:"idle_timeout_seconds"`       // Native 流式帧间空闲超时（默认 60s）
+}
+
+// EffectiveFirstByteTimeoutSeconds 返回生效的首包等待超时秒数（默认 90）。
+func (s LLMSection) EffectiveFirstByteTimeoutSeconds() int {
+	if s.FirstByteTimeoutSeconds <= 0 {
+		return 90
+	}
+	return s.FirstByteTimeoutSeconds
+}
+
+// EffectiveIdleTimeoutSeconds 返回生效的流式空闲超时秒数（默认 60）。
+func (s LLMSection) EffectiveIdleTimeoutSeconds() int {
+	if s.IdleTimeoutSeconds <= 0 {
+		return 60
+	}
+	return s.IdleTimeoutSeconds
 }
 
 // DefaultLLMUserAgent 按项目构建版本规则生成默认 User-Agent（"Code-Archdoc/<version>"）。
@@ -124,6 +142,80 @@ type DriftSection struct {
 	PollConcurrency     int  `yaml:"poll_concurrency"`      // 轻量 ls-remote 并发上限，默认 4
 }
 
+// OpenCodeSection 定义 OpenCode CLI 深度 Agent 引擎配置（ADR-08；*bool 避免 YAML 缺省时零值误关）
+type OpenCodeSection struct {
+	Enabled                *bool  `yaml:"enabled"`                  // 总开关，nil 视为 true
+	BinaryPath             string `yaml:"binary_path"`              // 可选显式路径；留空按 PATH -> ~/.opencode/bin/opencode -> /usr/local/bin/opencode 查找
+	DefaultEngine          string `yaml:"default_engine"`           // native | opencode，默认 "native"
+	MaxConcurrency         int    `yaml:"max_concurrency"`          // OpenCode 子进程最大并发数，默认 2
+	TimeoutSeconds         int    `yaml:"timeout_seconds"`          // 单次文档生成超时（秒），默认 600
+	IdleTimeoutSeconds     int    `yaml:"idle_timeout_seconds"`     // 无 stdout/stderr 活动空闲看门狗（秒），默认 120
+	ContinuationEnabled    *bool  `yaml:"continuation_enabled"`     // 是否允许 --session 断点续跑，nil 视为 true
+	ContinuationMaxSeconds int    `yaml:"continuation_max_seconds"` // 续跑阶段预算上限（秒），默认 180
+}
+
+// IsEnabled 返回是否启用 OpenCode 引擎（缺省 nil 时默认 true）。
+func (s OpenCodeSection) IsEnabled() bool {
+	if s.Enabled == nil {
+		return true
+	}
+	return *s.Enabled
+}
+
+// IsContinuationEnabled 返回是否启用 --session 断点续跑（缺省 nil 时默认 true）。
+func (s OpenCodeSection) IsContinuationEnabled() bool {
+	if s.ContinuationEnabled == nil {
+		return true
+	}
+	return *s.ContinuationEnabled
+}
+
+// EffectiveBinaryPath 返回去空白后的显式 CLI 路径（留空表示自动探测）。
+func (s OpenCodeSection) EffectiveBinaryPath() string {
+	return strings.TrimSpace(s.BinaryPath)
+}
+
+// EffectiveDefaultEngine 返回合法默认生成引擎（仅支持 native | opencode，默认 native）。
+func (s OpenCodeSection) EffectiveDefaultEngine() string {
+	v := strings.ToLower(strings.TrimSpace(s.DefaultEngine))
+	if v == "opencode" {
+		return "opencode"
+	}
+	return "native"
+}
+
+// EffectiveMaxConcurrency 返回 OpenCode CLI 最大并发数（默认 2）。
+func (s OpenCodeSection) EffectiveMaxConcurrency() int {
+	if s.MaxConcurrency <= 0 {
+		return 2
+	}
+	return s.MaxConcurrency
+}
+
+// EffectiveTimeoutSeconds 返回单次 OpenCode 生成超时秒数（默认 600）。
+func (s OpenCodeSection) EffectiveTimeoutSeconds() int {
+	if s.TimeoutSeconds <= 0 {
+		return 600
+	}
+	return s.TimeoutSeconds
+}
+
+// EffectiveIdleTimeoutSeconds 返回 OpenCode 无活动空闲看门狗超时秒数（默认 120）。
+func (s OpenCodeSection) EffectiveIdleTimeoutSeconds() int {
+	if s.IdleTimeoutSeconds <= 0 {
+		return 120
+	}
+	return s.IdleTimeoutSeconds
+}
+
+// EffectiveContinuationMaxSeconds 返回 --session 续跑阶段预算上限秒数（默认 180）。
+func (s OpenCodeSection) EffectiveContinuationMaxSeconds() int {
+	if s.ContinuationMaxSeconds <= 0 {
+		return 180
+	}
+	return s.ContinuationMaxSeconds
+}
+
 // Config 定义模块全局配置结构
 type Config struct {
 	Server    configutil.ServerConfig     `yaml:"server"`
@@ -134,6 +226,7 @@ type Config struct {
 	Extract   ExtractSection              `yaml:"extract"`
 	Drift     DriftSection                `yaml:"drift"`
 	LLM       LLMSection                  `yaml:"llm"`
+	OpenCode  OpenCodeSection             `yaml:"opencode"`
 }
 
 // AppConfig 全局运行时配置单例
@@ -267,6 +360,36 @@ func applyDefaults() error {
 	AppConfig.LLM.UserAgentAlias = ""
 	if AppConfig.LLM.UserAgent == "" {
 		AppConfig.LLM.UserAgent = DefaultLLMUserAgent(AppVersion)
+	}
+	if AppConfig.LLM.FirstByteTimeoutSeconds <= 0 {
+		AppConfig.LLM.FirstByteTimeoutSeconds = 90
+	}
+	if AppConfig.LLM.IdleTimeoutSeconds <= 0 {
+		AppConfig.LLM.IdleTimeoutSeconds = 60
+	}
+
+	// OpenCode 引擎配置默认值（*bool 缺省 nil 视为 true）
+	if AppConfig.OpenCode.Enabled == nil {
+		t := true
+		AppConfig.OpenCode.Enabled = &t
+	}
+	if AppConfig.OpenCode.ContinuationEnabled == nil {
+		t := true
+		AppConfig.OpenCode.ContinuationEnabled = &t
+	}
+	AppConfig.OpenCode.BinaryPath = strings.TrimSpace(AppConfig.OpenCode.BinaryPath)
+	AppConfig.OpenCode.DefaultEngine = AppConfig.OpenCode.EffectiveDefaultEngine()
+	if AppConfig.OpenCode.MaxConcurrency <= 0 {
+		AppConfig.OpenCode.MaxConcurrency = 2
+	}
+	if AppConfig.OpenCode.TimeoutSeconds <= 0 {
+		AppConfig.OpenCode.TimeoutSeconds = 600
+	}
+	if AppConfig.OpenCode.IdleTimeoutSeconds <= 0 {
+		AppConfig.OpenCode.IdleTimeoutSeconds = 120
+	}
+	if AppConfig.OpenCode.ContinuationMaxSeconds <= 0 {
+		AppConfig.OpenCode.ContinuationMaxSeconds = 180
 	}
 
 	return nil

@@ -17,6 +17,7 @@ import (
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
+	"code-archdoc/pkg/opencode"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/verifier"
 	"code-common/backend/gitsync"
@@ -36,7 +37,42 @@ var (
 	ErrSlotNotRetryable = errors.New("仅允许对失败状态的槽位子任务发起独立重试")
 	// ErrBatchForbidden 批量生成包含当前用户无写权限的范围（HTTP 403 FORBIDDEN）。
 	ErrBatchForbidden = errors.New("批量生成包含无权操作的子目录或整仓范围")
+	// ErrEngineUnavailable 所选生成引擎非法、被禁用或 OpenCode CLI 探活不可用（HTTP 400 ENGINE_UNAVAILABLE）。
+	ErrEngineUnavailable = errors.New("所选文档生成引擎不可用")
 )
+
+// EngineUnavailableError 携带引擎名称与详细不可用原因，供 Handler 返回 400 ENGINE_UNAVAILABLE。
+type EngineUnavailableError struct {
+	Engine string
+	Reason string
+}
+
+func (e *EngineUnavailableError) Error() string {
+	if strings.TrimSpace(e.Reason) != "" {
+		return fmt.Sprintf("生成引擎 %q 不可用: %s", e.Engine, e.Reason)
+	}
+	return fmt.Sprintf("生成引擎 %q 不可用", e.Engine)
+}
+
+func (e *EngineUnavailableError) Unwrap() error {
+	return ErrEngineUnavailable
+}
+
+// EngineInfoVO 描述单个文档生成引擎的运行时可用性与默认属性（对应 GET /api/engines）。
+type EngineInfoVO struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Available   bool   `json:"available"`
+	Default     bool   `json:"default"`
+	Version     string `json:"version,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// EnginesResponse 对应 GET /api/engines 响应结构。
+type EnginesResponse struct {
+	Engines       []EngineInfoVO `json:"engines"`
+	DefaultEngine string         `json:"default_engine"`
+}
 
 // BatchForbiddenError 携带越权范围明细的批量生成权限错误。
 type BatchForbiddenError struct {
@@ -60,6 +96,7 @@ type BatchGenerateRequest struct {
 	IncludeRepoScope bool     `json:"include_repo_scope"`
 	DocTypes         []string `json:"doc_types"`
 	Mode             string   `json:"mode"` // generate | regenerate
+	Engine           string   `json:"engine"`
 }
 
 // BatchSummaryVO 批量父任务的聚合子任务进度摘要。
@@ -76,8 +113,18 @@ type GenerateTaskRequest struct {
 	RepoID       uint     `json:"repo_id"`
 	Subdirectory string   `json:"subdirectory"`
 	RefName      string   `json:"ref_name"`
+	DocType      string   `json:"doc_type"`
 	DocTypes     []string `json:"doc_types"`
 	Mode         string   `json:"mode"` // generate | regenerate
+	Engine       string   `json:"engine"`
+}
+
+// GenerateTaskSubmitResponse 对应 POST /api/tasks/generate (202) 响应：
+// 匿名内嵌首任务 GenTaskDetailVO 向下兼容旧客户端，同时暴露 created_count 与全部单文档拆单任务 tasks[]。
+type GenerateTaskSubmitResponse struct {
+	GenTaskDetailVO
+	CreatedCount int               `json:"created_count"`
+	Tasks        []GenTaskDetailVO `json:"tasks"`
 }
 
 // GenSlotTaskVO 对应任务详情中的单个槽位子任务视图。
@@ -106,6 +153,7 @@ type GenTaskDetailVO struct {
 	SnapshotID       *uint                `json:"snapshot_id,omitempty"`
 	CommitSHA        string               `json:"commit_sha,omitempty"`
 	TaskKind         string               `json:"task_kind"`
+	Engine           string               `json:"engine"`
 	Priority         string               `json:"priority"`
 	DocTypes         []string             `json:"doc_types"`
 	TargetDocumentID *uint                `json:"target_document_id,omitempty"`
@@ -165,12 +213,14 @@ type GenerationOrchestrator struct {
 	moduleSvc         *ModuleService
 	rbacSvc           *RBACService
 	llmClient         *llm.Client
+	opencodeRunner    opencode.DocGenerator
 	verifier          *verifier.Verifier
 	leaseMgr          *ActiveLeaseManager
 	scheduler         *TaskScheduler
 	maxTokensPerBatch int
 
 	llmSem      chan struct{}
+	opencodeSem chan struct{}
 	baseCtx     context.Context
 	baseCancel  context.CancelFunc
 	cancelMu    sync.Mutex
@@ -207,6 +257,132 @@ func (o *GenerationOrchestrator) WithBatchBudgetLimit(maxTokens int) *Generation
 	return o
 }
 
+// WithOpenCodeRunner 注入自定义 OpenCode 文档生成引擎及可选独立并发配额（主要供集成测试注入 Mock）。
+func (o *GenerationOrchestrator) WithOpenCodeRunner(runner opencode.DocGenerator, maxConcurrency int) *GenerationOrchestrator {
+	if runner != nil {
+		o.opencodeRunner = runner
+	}
+	if maxConcurrency > 0 {
+		o.opencodeSem = make(chan struct{}, maxConcurrency)
+	}
+	return o
+}
+
+func (o *GenerationOrchestrator) acquireOpenCodeSlot(ctx context.Context) (func(), error) {
+	if o.opencodeSem == nil {
+		return func() {}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case o.opencodeSem <- struct{}{}:
+	}
+	if ctx.Err() != nil {
+		<-o.opencodeSem
+		return nil, ctx.Err()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() { <-o.opencodeSem })
+	}, nil
+}
+
+// CheckEngineAvailable 校验生成引擎名称合法性及 OpenCode CLI 可用性，返回规范化引擎名或 *EngineUnavailableError。
+func (o *GenerationOrchestrator) CheckEngineAvailable(ctx context.Context, rawEngine string) (string, error) {
+	trimmed := strings.TrimSpace(rawEngine)
+	if trimmed == "" {
+		return models.EngineNative, nil
+	}
+	if !models.IsValidEngine(trimmed) {
+		return "", &EngineUnavailableError{
+			Engine: trimmed,
+			Reason: fmt.Sprintf("不支持的文档生成引擎 %q，仅支持 native 或 opencode", trimmed),
+		}
+	}
+	engine := models.NormalizeEngine(trimmed)
+	if engine == models.EngineNative {
+		return engine, nil
+	}
+	if !config.AppConfig.OpenCode.IsEnabled() {
+		return "", &EngineUnavailableError{
+			Engine: engine,
+			Reason: "服务端配置已禁用 OpenCode 引擎",
+		}
+	}
+	if o.opencodeRunner == nil {
+		return "", &EngineUnavailableError{
+			Engine: engine,
+			Reason: "OpenCode Runner 未初始化",
+		}
+	}
+	probe := o.opencodeRunner.Probe(ctx)
+	if !probe.Available {
+		reason := strings.TrimSpace(probe.Reason)
+		if reason == "" {
+			reason = "未检测到可用的 OpenCode CLI"
+		}
+		return "", &EngineUnavailableError{
+			Engine: engine,
+			Reason: reason,
+		}
+	}
+	return engine, nil
+}
+
+// ListEngines 返回服务端双引擎（Native / OpenCode）实时探活状态与默认推荐引擎。
+func (o *GenerationOrchestrator) ListEngines(ctx context.Context) EnginesResponse {
+	ocProbe := opencode.ProbeStatus{
+		Available: false,
+		Reason:    "OpenCode Runner 未初始化",
+	}
+	if o.opencodeRunner != nil {
+		ocProbe = o.opencodeRunner.Probe(ctx)
+	}
+	ocAvailable := config.AppConfig.OpenCode.IsEnabled() && ocProbe.Available
+	ocReason := strings.TrimSpace(ocProbe.Reason)
+	if !config.AppConfig.OpenCode.IsEnabled() && ocReason == "" {
+		ocReason = "服务端已禁用 OpenCode 引擎"
+	}
+
+	defaultCfg := config.AppConfig.OpenCode.EffectiveDefaultEngine()
+	defaultEngine := models.EngineNative
+	if defaultCfg == models.EngineOpenCode && ocAvailable {
+		defaultEngine = models.EngineOpenCode
+	}
+
+	return EnginesResponse{
+		DefaultEngine: defaultEngine,
+		Engines: []EngineInfoVO{
+			{
+				Name:        models.EngineNative,
+				DisplayName: "Native 内置引擎",
+				Available:   true,
+				Default:     defaultEngine == models.EngineNative,
+			},
+			{
+				Name:        models.EngineOpenCode,
+				DisplayName: "OpenCode 深度探索引擎",
+				Available:   ocAvailable,
+				Default:     defaultEngine == models.EngineOpenCode,
+				Version:     ocProbe.Version,
+				Reason:      ocReason,
+			},
+		},
+	}
+}
+
+// ResolveLatestEngineForDocument 查询目标文档最近一次生成/增量刷新任务的引擎偏好。
+func (o *GenerationOrchestrator) ResolveLatestEngineForDocument(ctx context.Context, docID uint) string {
+	if o == nil || o.taskRepo == nil || docID == 0 {
+		return models.EngineNative
+	}
+	eng, err := o.taskRepo.GetLatestEngineByDocumentID(ctx, docID)
+	if err != nil {
+		return models.EngineNative
+	}
+	return models.NormalizeEngine(eng)
+}
+
 func (o *GenerationOrchestrator) acquireLLMSlot(ctx context.Context) (func(), error) {
 	if o.scheduler != nil {
 		return o.scheduler.AcquireLLMSlot(ctx)
@@ -226,7 +402,7 @@ func (o *GenerationOrchestrator) acquireLLMSlot(ctx context.Context) (func(), er
 	}, nil
 }
 
-func (o *GenerationOrchestrator) dispatchJob(job ScheduledJob) error {
+func (o *GenerationOrchestrator) wrapScheduledJob(job ScheduledJob) ScheduledJob {
 	wrapped := job.Run
 	origDrop := job.OnDrop
 	o.wg.Add(1)
@@ -240,6 +416,11 @@ func (o *GenerationOrchestrator) dispatchJob(job ScheduledJob) error {
 			origDrop()
 		}
 	}
+	return job
+}
+
+func (o *GenerationOrchestrator) dispatchJob(job ScheduledJob) error {
+	job = o.wrapScheduledJob(job)
 	if o.scheduler != nil {
 		if err := o.scheduler.Enqueue(job); err != nil {
 			o.wg.Done()
@@ -268,6 +449,18 @@ func NewGenerationOrchestrator(
 	if maxLLMConcurrency <= 0 {
 		maxLLMConcurrency = 8
 	}
+	ocRunner := opencode.NewRunnerWithConfigGetter(func() opencode.Config {
+		cfg := config.AppConfig.OpenCode
+		return opencode.Config{
+			Enabled:                cfg.IsEnabled(),
+			BinaryPath:             cfg.EffectiveBinaryPath(),
+			TimeoutSeconds:         cfg.EffectiveTimeoutSeconds(),
+			IdleTimeoutSeconds:     cfg.EffectiveIdleTimeoutSeconds(),
+			ContinuationEnabled:    cfg.IsContinuationEnabled(),
+			ContinuationMaxSeconds: cfg.EffectiveContinuationMaxSeconds(),
+		}
+	})
+	ocMaxConc := config.AppConfig.OpenCode.EffectiveMaxConcurrency()
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 	return &GenerationOrchestrator{
 		masterRepo:        masterRepo,
@@ -278,9 +471,11 @@ func NewGenerationOrchestrator(
 		docRepo:           docRepo,
 		govRepo:           govRepo,
 		llmClient:         llmClient,
+		opencodeRunner:    ocRunner,
 		verifier:          verifier.New(),
 		maxTokensPerBatch: 1000000,
 		llmSem:            make(chan struct{}, maxLLMConcurrency),
+		opencodeSem:       make(chan struct{}, ocMaxConc),
 		baseCtx:           baseCtx,
 		baseCancel:        baseCancel,
 		cancelFuncs:       make(map[uint]context.CancelFunc),
@@ -325,12 +520,12 @@ func (o *GenerationOrchestrator) WaitAllWithContext(ctx context.Context) error {
 	}
 }
 
-// SubmitGenerateTask 校验参数并异步入队生成任务（返回 202 视图）。
+// SubmitGenerateTask 校验参数、两阶段预留队列容量并按 (Scope × DocType) 拆单入队（返回 202 视图）。
 func (o *GenerationOrchestrator) SubmitGenerateTask(
 	ctx context.Context,
 	req GenerateTaskRequest,
 	operatorID uint,
-) (*GenTaskDetailVO, error) {
+) (*GenerateTaskSubmitResponse, error) {
 	if req.RepoID == 0 {
 		return nil, fmt.Errorf("%w: repo_id 必填", ErrInvalidTaskParam)
 	}
@@ -338,7 +533,13 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 	if err != nil {
 		return nil, err
 	}
-	if len(req.DocTypes) == 0 {
+
+	rawSlugs := make([]string, 0, len(req.DocTypes)+1)
+	if strings.TrimSpace(req.DocType) != "" {
+		rawSlugs = append(rawSlugs, req.DocType)
+	}
+	rawSlugs = append(rawSlugs, req.DocTypes...)
+	if len(rawSlugs) == 0 {
 		return nil, fmt.Errorf("%w: doc_types 不能为空", ErrInvalidTaskParam)
 	}
 
@@ -350,15 +551,20 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 		return nil, fmt.Errorf("%w: mode 仅支持 generate 或 regenerate", ErrInvalidTaskParam)
 	}
 
+	engine, engErr := o.CheckEngineAvailable(ctx, req.Engine)
+	if engErr != nil {
+		return nil, engErr
+	}
+
 	repo, err := o.masterRepo.GetRepository(ctx, req.RepoID)
 	if err != nil {
 		return nil, err
 	}
 
 	// 去重并校验全部勾选的 DocType 均存在且启用中
-	seenSlugs := make(map[string]bool, len(req.DocTypes))
-	dedupSlugs := make([]string, 0, len(req.DocTypes))
-	for _, rawSlug := range req.DocTypes {
+	seenSlugs := make(map[string]bool, len(rawSlugs))
+	dedupSlugs := make([]string, 0, len(rawSlugs))
+	for _, rawSlug := range rawSlugs {
 		slug := strings.TrimSpace(rawSlug)
 		if slug == "" || seenSlugs[slug] {
 			continue
@@ -382,49 +588,90 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 		return nil, err
 	}
 
-	docTypesJSON, _ := json.Marshal(dedupSlugs)
-	task := &models.GenTask{
-		RepoID:          repo.ID,
-		Subdirectory:    normSubdir,
-		RefName:         refName,
-		TaskKind:        taskKind,
-		Priority:        models.TaskPriorityInteractive,
-		DocTypesJSON:    datatypes.JSON(docTypesJSON),
-		Status:          models.TaskStatusPending,
-		ProgressPercent: 0,
-		TriggeredBy:     operatorID,
+	// 步骤 1：两阶段队列容量预留（队列余量不足 N 时立刻返 429 QUEUE_FULL，零 DB 写入）
+	var (
+		commitSlots   func([]ScheduledJob) error
+		rollbackSlots func()
+	)
+	if o.scheduler != nil {
+		commitSlots, rollbackSlots, err = o.scheduler.ReserveSlots(models.TaskPriorityInteractive, len(dedupSlugs))
+		if err != nil {
+			return nil, err
+		}
 	}
-	if err := o.taskRepo.CreateTask(ctx, task); err != nil {
+
+	// 步骤 2：单事务批量创单（遵守 1 GenTask = 1 Scope × 1 DocType 硬不变量）
+	tasks := make([]*models.GenTask, 0, len(dedupSlugs))
+	for _, slug := range dedupSlugs {
+		docTypesJSON, _ := json.Marshal([]string{slug})
+		tasks = append(tasks, &models.GenTask{
+			RepoID:          repo.ID,
+			Subdirectory:    normSubdir,
+			RefName:         refName,
+			TaskKind:        taskKind,
+			Engine:          engine,
+			Priority:        models.TaskPriorityInteractive,
+			DocTypesJSON:    datatypes.JSON(docTypesJSON),
+			Status:          models.TaskStatusPending,
+			ProgressPercent: 0,
+			TriggeredBy:     operatorID,
+		})
+	}
+	if err := o.taskRepo.CreateTasksBatch(ctx, tasks); err != nil {
+		if rollbackSlots != nil {
+			rollbackSlots()
+		}
 		return nil, fmt.Errorf("创建生成任务失败: %w", err)
 	}
 
-	// 预先注册可取消上下文（继承全局 baseCtx，确保停机时可一键取消），确保在异步执行前即可响应 CancelTask
-	taskCtx, cancel := context.WithCancel(o.baseCtx)
-	o.registerCancel(task.ID, cancel)
+	// 步骤 3：注册可取消句柄、构建 VO 并原子提交入队
+	jobs := make([]ScheduledJob, 0, len(tasks))
+	taskVOs := make([]GenTaskDetailVO, 0, len(tasks))
+	for i, task := range tasks {
+		slug := dedupSlugs[i]
+		taskID := task.ID
+		taskCtx, cancel := context.WithCancel(o.baseCtx)
+		o.registerCancel(taskID, cancel)
 
-	if err := o.dispatchJob(ScheduledJob{
-		ID:       fmt.Sprintf("gen-task-%d", task.ID),
-		UserID:   operatorID,
-		Priority: task.Priority,
-		Ctx:      taskCtx,
-		Run: func(runCtx context.Context) {
-			defer o.unregisterCancel(task.ID)
-			o.executeGenerateTask(runCtx, task.ID, repo, dedupSlugs, operatorID)
-		},
-		OnDrop: func() {
-			o.unregisterCancel(task.ID)
-			cancel()
-			o.markTaskCanceled(context.Background(), task.ID, models.TaskStatusPending)
-		},
-	}); err != nil {
-		o.unregisterCancel(task.ID)
-		cancel()
-		o.markTaskFailed(ctx, task.ID, models.TaskStatusPending, "QUEUE_FULL", err.Error(), nil, 0)
-		return nil, err
+		job := ScheduledJob{
+			ID:       fmt.Sprintf("gen-task-%d", taskID),
+			UserID:   operatorID,
+			Priority: task.Priority,
+			Ctx:      taskCtx,
+			Run: func(runCtx context.Context) {
+				defer o.unregisterCancel(taskID)
+				o.executeGenerateTask(runCtx, taskID, repo, []string{slug}, operatorID)
+			},
+			OnDrop: func() {
+				o.unregisterCancel(taskID)
+				cancel()
+				o.markTaskCanceled(context.Background(), taskID, models.TaskStatusPending)
+			},
+		}
+		jobs = append(jobs, job)
+		taskVOs = append(taskVOs, toGenTaskDetailVO(task, repo.Name, "", nil))
 	}
 
-	vo := toGenTaskDetailVO(task, repo.Name, "", nil)
-	return &vo, nil
+	if commitSlots != nil {
+		wrappedJobs := make([]ScheduledJob, len(jobs))
+		for i, j := range jobs {
+			wrappedJobs[i] = o.wrapScheduledJob(j)
+		}
+		if err := commitSlots(wrappedJobs); err != nil {
+			return nil, err
+		}
+	} else {
+		for _, j := range jobs {
+			wj := o.wrapScheduledJob(j)
+			go wj.Run(wj.Ctx)
+		}
+	}
+
+	return &GenerateTaskSubmitResponse{
+		GenTaskDetailVO: taskVOs[0],
+		CreatedCount:    len(taskVOs),
+		Tasks:           taskVOs,
+	}, nil
 }
 
 // IncrementalRefreshTaskInput 定义单篇文档章节级增量刷新任务入参（F-12 / SC-11）。
@@ -434,6 +681,7 @@ type IncrementalRefreshTaskInput struct {
 	DriftedLockedSlots map[string]bool // 受漂移影响但被锁定的槽位（保留原字节并标 needs_drift_review=true）
 	NeedSyncCode       bool
 	Priority           string
+	Engine             string
 }
 
 // SubmitIncrementalRefreshTask 发起单篇文档的章节级增量刷新任务（返回 202 视图）：
@@ -459,6 +707,15 @@ func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
 		priority = models.TaskPriorityInteractive
 	}
 
+	engineInput := in.Engine
+	if strings.TrimSpace(engineInput) == "" {
+		engineInput = o.ResolveLatestEngineForDocument(ctx, in.Document.ID)
+	}
+	engine, engErr := o.CheckEngineAvailable(ctx, engineInput)
+	if engErr != nil {
+		return nil, engErr
+	}
+
 	docTypesJSON, _ := json.Marshal([]string{in.Document.DocTypeSlug})
 	targetSlotsJSON, _ := json.Marshal(in.TargetSlots)
 	docID := in.Document.ID
@@ -467,6 +724,7 @@ func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
 		Subdirectory:     in.Document.Subdirectory,
 		RefName:          in.Document.RefName,
 		TaskKind:         models.TaskKindIncrementalRefresh,
+		Engine:           engine,
 		Priority:         priority,
 		DocTypesJSON:     datatypes.JSON(docTypesJSON),
 		TargetDocumentID: &docID,
@@ -498,7 +756,7 @@ func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
 		Ctx:      taskCtx,
 		Run: func(runCtx context.Context) {
 			defer o.unregisterCancel(task.ID)
-			o.executeIncrementalRefreshTask(runCtx, task.ID, repo, &docCopy, targetSlotsCopy, lockedDriftCopy, in.NeedSyncCode, operatorID)
+			o.executeIncrementalRefreshTask(runCtx, task.ID, repo, &docCopy, targetSlotsCopy, lockedDriftCopy, in.NeedSyncCode, task.Engine, operatorID)
 		},
 		OnDrop: func() {
 			o.unregisterCancel(task.ID)
@@ -895,22 +1153,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		"progress_percent": 20,
 	})
 
-	// 3. 加载全部选中 DocType 的目录资产、DB 最新修订 ID 及既有文档的锁定槽位
-	type docTypePlan struct {
-		slug             string
-		asset            *doctype.AssetBundle
-		revID            uint
-		existingDoc      *models.Document
-		priorCommitSHA   string
-		priorOrdered     []models.DocumentSectionSnapshot
-		priorSections    map[string]models.DocumentSectionSnapshot
-		priorEvAnchors   map[string][]models.EvidenceAnchor
-		moduleDigests    []codeir.ModuleDigestInput
-		crossModuleGraph []codeir.CrossModuleEdge
-		reviewGuidance   map[string][]string
-	}
-
-	plans := make([]*docTypePlan, 0, len(slugs))
+	plans := make([]*docTypeExecPlan, 0, len(slugs))
 	assetsForBudget := make([]*doctype.AssetBundle, 0, len(slugs))
 	lockedByDoc := make(map[string]map[string]bool)
 
@@ -926,7 +1169,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 			return
 		}
 
-		plan := &docTypePlan{
+		plan := &docTypeExecPlan{
 			slug:           slug,
 			asset:          asset,
 			revID:          dtRev.ID,
@@ -1001,7 +1244,9 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		return
 	}
 
-	// 7. 生成或复用快照级共享术语表 glossary.json.gz（SC-02，统一使用系统默认模型）
+	taskEngine := models.NormalizeEngine(task.Engine)
+
+	// 7. 生成或复用快照级共享术语表 glossary.json.gz（SC-02，统一使用系统默认模型；OpenCode Mode B 允许降级）
 	defaultEp := llmSet.endpointFor("")
 	glossary, err := o.snapSvc.EnsureGlossary(ctx, snapReady.Snapshot, snapReady.Loc, snapReady.IR, o.llmClient, defaultEp, func(u *llm.UsageMetrics, st, errCode string) {
 		o.recordUsage(dbCtx, &taskID, nil, repo.ID, "", nil, "", "glossary", u, st, errCode, operatorID)
@@ -1011,8 +1256,14 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 			o.markTaskCanceled(dbCtx, taskID, models.TaskStatusGenerating)
 			return
 		}
-		o.markTaskFailed(dbCtx, taskID, models.TaskStatusGenerating, "GLOSSARY_FAILED", err.Error(), nil, budgetRes.Advice.EstimatedTokens)
-		return
+		isModeBOpenCode := taskEngine == models.EngineOpenCode && llmSet.isAllModeBOpenCode(plans)
+		if isModeBOpenCode {
+			log.Printf("[%s] OpenCode Mode B Glossary 生成降级忽略（task=%d）: %v", config.ServiceName, taskID, err)
+			glossary = nil
+		} else {
+			o.markTaskFailed(dbCtx, taskID, models.TaskStatusGenerating, "GLOSSARY_FAILED", err.Error(), nil, budgetRes.Advice.EstimatedTokens)
+			return
+		}
 	}
 
 	if ctx.Err() != nil {
@@ -1051,7 +1302,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 				DocTypeRevisionID: p.revID,
 				SlotID:            sl.SlotID,
 				Status:            status,
-				ModelName:         llmSet.labelFor(p.asset.Meta.PreferredModel),
+				ModelName:         modelLabelForPlan(taskEngine, llmSet, p.asset.Meta.PreferredModel),
 				OutputMarkdown:    outMD,
 			})
 		}
@@ -1083,127 +1334,130 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		failedSlots    int
 	)
 
-	for _, p := range plans {
-		batchNonce := llm.GenerateNonce()
-		epCfg := llmSet.endpointFor(p.asset.Meta.PreferredModel)
-		for _, sl := range p.asset.Meta.Slots {
-			st := slotTaskMap[p.slug+"::"+sl.SlotID]
-			if st.Status == models.SlotTaskSkippedLocked {
-				continue
-			}
-
-			// 按全局信号量槽位受控并发（若上下文已取消则不再发出任何新的 LLM 请求）
-			releaseLLMSlot, semErr := o.acquireLLMSlot(ctx)
-			if semErr != nil {
-				cancelTime := time.Now()
-				st.Status = models.SlotTaskCanceled
-				st.FinishedAt = &cancelTime
-				_ = o.taskRepo.UpdateSlotTask(dbCtx, st)
-				continue
-			}
-
-			planCopy := p
-			slotSpec := sl
-			slotRow := st
-			slotWG.Add(1)
-			go func() {
-				defer slotWG.Done()
-				defer releaseLLMSlot()
-
-				if ctx.Err() != nil {
-					tNow := time.Now()
-					slotRow.Status = models.SlotTaskCanceled
-					slotRow.FinishedAt = &tNow
-					_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
-					return
+	if taskEngine == models.EngineOpenCode {
+		completedSlots, failedSlots = o.executeOpenCodeDocPlans(
+			ctx, dbCtx, taskID, repo, task, snapReady, glossary, plans, llmSet, slotTaskMap, activeSlots, operatorID,
+		)
+	} else {
+		for _, p := range plans {
+			batchNonce := llm.GenerateNonce()
+			epCfg := llmSet.endpointFor(p.asset.Meta.PreferredModel)
+			for _, sl := range p.asset.Meta.Slots {
+				st := slotTaskMap[p.slug+"::"+sl.SlotID]
+				if st.Status == models.SlotTaskSkippedLocked {
+					continue
 				}
 
-				startAt := time.Now()
-				slotRow.Status = models.SlotTaskRunning
-				slotRow.AttemptCount++
-				slotRow.StartedAt = &startAt
-				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
-
-				priorHybrid := ""
-				if slotSpec.Ownership == models.OwnershipHybrid {
-					if prev, ok := planCopy.priorSections[slotSpec.SlotID]; ok && prev.ManuallyEdited {
-						priorHybrid = prev.Markdown
-					}
+				// 按全局信号量槽位受控并发（若上下文已取消则不再发出任何新的 LLM 请求）
+				releaseLLMSlot, semErr := o.acquireLLMSlot(ctx)
+				if semErr != nil {
+					cancelTime := time.Now()
+					st.Status = models.SlotTaskCanceled
+					st.FinishedAt = &cancelTime
+					_ = o.taskRepo.UpdateSlotTask(dbCtx, st)
+					continue
 				}
 
-				maxOut := 0
-				if planCopy.asset.Meta.MaxOutputTokens > 0 {
-					perSlot := planCopy.asset.Meta.MaxOutputTokens / maxIntVal(len(planCopy.asset.Meta.Slots), 1)
-					if perSlot >= 300 {
-						maxOut = perSlot
-					}
-				}
+				planCopy := p
+				slotSpec := sl
+				slotRow := st
+				slotWG.Add(1)
+				go func() {
+					defer slotWG.Done()
+					defer releaseLLMSlot()
 
-				slotSpecForCall := filterSlotSpecForScope(slotSpec, task.Subdirectory, planCopy.asset.Meta, len(planCopy.moduleDigests) > 0)
-				var modCtxForCall *codeir.ModuleContextFacet
-				if task.Subdirectory != "" && hasContextInput(planCopy.asset.Meta.ContextInputs, "module_context") {
-					modCtxForCall = snapReady.ModuleContext
-				}
-
-				resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-					RepoID:           repo.ID,
-					Subdirectory:     task.Subdirectory,
-					DocType:          planCopy.asset,
-					Slot:             slotSpecForCall,
-					Glossary:         glossary,
-					IR:               snapReady.IR,
-					ModuleContext:    modCtxForCall,
-					ModuleDigests:    planCopy.moduleDigests,
-					CrossModuleGraph: planCopy.crossModuleGraph,
-					PriorHybridMD:    priorHybrid,
-					ReviewGuidance:   guidanceForSlot(planCopy.reviewGuidance, slotSpec.SlotID),
-					Nonce:            batchNonce,
-					Endpoint:         epCfg,
-					MaxTokens:        maxOut,
-				})
-				finAt := time.Now()
-				slotRow.FinishedAt = &finAt
-
-				if callErr != nil {
 					if ctx.Err() != nil {
+						tNow := time.Now()
 						slotRow.Status = models.SlotTaskCanceled
-						slotRow.ErrorMessage = "任务已取消"
-						o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
-					} else {
-						slotRow.Status = models.SlotTaskFailed
-						slotRow.ErrorMessage = callErr.Error()
-						mu.Lock()
-						failedSlots++
-						mu.Unlock()
-						o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+						slotRow.FinishedAt = &tNow
+						_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+						return
 					}
+
+					startAt := time.Now()
+					slotRow.Status = models.SlotTaskRunning
+					slotRow.AttemptCount++
+					slotRow.StartedAt = &startAt
 					_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
-					return
-				}
 
-				md, anchors := llm.ParseSlotLLMOutput(resp.Content)
-				anchorsJSON, _ := json.Marshal(anchors)
-				slotRow.Status = models.SlotTaskCompleted
-				slotRow.OutputMarkdown = md
-				slotRow.CitedAnchorsJSON = datatypes.JSON(anchorsJSON)
-				slotRow.ErrorMessage = ""
-				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+					priorHybrid := ""
+					if slotSpec.Ownership == models.OwnershipHybrid {
+						if prev, ok := planCopy.priorSections[slotSpec.SlotID]; ok && prev.ManuallyEdited {
+							priorHybrid = prev.Markdown
+						}
+					}
 
-				o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &resp.Usage, "success", "", operatorID)
+					maxOut := 0
+					if planCopy.asset.Meta.MaxOutputTokens > 0 {
+						maxOut = maxIntVal(planCopy.asset.Meta.MaxOutputTokens/maxIntVal(len(planCopy.asset.Meta.Slots), 1), 4096)
+					}
 
-				mu.Lock()
-				completedSlots++
-				done := completedSlots + failedSlots
-				pct := 25
-				if activeSlots > 0 {
-					pct = 25 + int(float64(done)/float64(activeSlots)*55)
-				}
-				mu.Unlock()
-				_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{"progress_percent": pct})
-			}()
+					slotSpecForCall := filterSlotSpecForScope(slotSpec, task.Subdirectory, planCopy.asset.Meta, len(planCopy.moduleDigests) > 0)
+					var modCtxForCall *codeir.ModuleContextFacet
+					if task.Subdirectory != "" && hasContextInput(planCopy.asset.Meta.ContextInputs, "module_context") {
+						modCtxForCall = snapReady.ModuleContext
+					}
+
+					resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
+						RepoID:           repo.ID,
+						Subdirectory:     task.Subdirectory,
+						DocType:          planCopy.asset,
+						Slot:             slotSpecForCall,
+						Glossary:         glossary,
+						IR:               snapReady.IR,
+						ModuleContext:    modCtxForCall,
+						ModuleDigests:    planCopy.moduleDigests,
+						CrossModuleGraph: planCopy.crossModuleGraph,
+						PriorHybridMD:    priorHybrid,
+						ReviewGuidance:   guidanceForSlot(planCopy.reviewGuidance, slotSpec.SlotID),
+						Nonce:            batchNonce,
+						Endpoint:         epCfg,
+						MaxTokens:        maxOut,
+					})
+					finAt := time.Now()
+					slotRow.FinishedAt = &finAt
+
+					if callErr != nil {
+						if ctx.Err() != nil {
+							slotRow.Status = models.SlotTaskCanceled
+							slotRow.ErrorMessage = "任务已取消"
+							o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
+						} else {
+							slotRow.Status = models.SlotTaskFailed
+							slotRow.ErrorMessage = callErr.Error()
+							mu.Lock()
+							failedSlots++
+							mu.Unlock()
+							o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+						}
+						_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+						return
+					}
+
+					md, anchors := llm.ParseSlotLLMOutput(resp.Content)
+					anchorsJSON, _ := json.Marshal(anchors)
+					slotRow.Status = models.SlotTaskCompleted
+					slotRow.OutputMarkdown = md
+					slotRow.CitedAnchorsJSON = datatypes.JSON(anchorsJSON)
+					slotRow.ErrorMessage = ""
+					_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+
+					o.recordUsage(dbCtx, &taskID, nil, repo.ID, planCopy.slug, &planCopy.revID, slotSpec.SlotID, "slot_gen", &resp.Usage, "success", "", operatorID)
+
+					mu.Lock()
+					completedSlots++
+					done := completedSlots + failedSlots
+					pct := 25
+					if activeSlots > 0 {
+						pct = 25 + int(float64(done)/float64(activeSlots)*55)
+					}
+					mu.Unlock()
+					_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{"progress_percent": pct})
+				}()
+			}
 		}
+		slotWG.Wait()
 	}
-	slotWG.Wait()
 
 	if ctx.Err() != nil {
 		o.markTaskCanceled(dbCtx, taskID, models.TaskStatusGenerating)
@@ -1259,6 +1513,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	targetSlots []string,
 	driftedLockedSlots map[string]bool,
 	needSyncCode bool,
+	engine string,
 	operatorID uint,
 ) {
 	dbCtx := context.Background()
@@ -1391,6 +1646,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	}
 
 	// 仅对目标非锁定槽位创建活跃子任务并调用 LLM
+	taskEngine := models.NormalizeEngine(engine)
 	reviewGuidanceMap := o.buildReviewGuidanceMap(dbCtx, latestDoc.ID)
 	var slotTasks []models.GenSlotTask
 	docIDVal := latestDoc.ID
@@ -1405,7 +1661,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 			SlotID:            sl.SlotID,
 			DocumentID:        &docIDVal,
 			Status:            models.SlotTaskPending,
-			ModelName:         llmSet.labelFor(asset.Meta.PreferredModel),
+			ModelName:         modelLabelForPlan(taskEngine, llmSet, asset.Meta.PreferredModel),
 		})
 	}
 	if len(slotTasks) == 0 {
@@ -1433,106 +1689,113 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	)
 	activeSlots := len(slotTasks)
 
-	for _, sl := range asset.Meta.Slots {
-		st, needRun := slotTaskByID[sl.SlotID]
-		if !needRun {
-			continue
-		}
-
-		releaseSlot, semErr := o.acquireLLMSlot(ctx)
-		if semErr != nil {
-			cancelTime := time.Now()
-			st.Status = models.SlotTaskCanceled
-			st.FinishedAt = &cancelTime
-			_ = o.taskRepo.UpdateSlotTask(dbCtx, st)
-			continue
-		}
-
-		slotSpec := sl
-		slotRow := st
-		slotWG.Add(1)
-		go func() {
-			defer slotWG.Done()
-			defer releaseSlot()
-
-			if ctx.Err() != nil {
-				tNow := time.Now()
-				slotRow.Status = models.SlotTaskCanceled
-				slotRow.FinishedAt = &tNow
-				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
-				return
+	if taskEngine == models.EngineOpenCode {
+		completedSlots, failedSlots = o.executeOpenCodeIncrementalRefresh(
+			ctx, dbCtx, taskID, repo, latestDoc, snapReady, asset, dtRev.ID, glossary,
+			moduleDigests, crossModuleGraph, priorBySlot, reviewGuidanceMap, llmSet, slotTaskByID, operatorID,
+		)
+	} else {
+		for _, sl := range asset.Meta.Slots {
+			st, needRun := slotTaskByID[sl.SlotID]
+			if !needRun {
+				continue
 			}
 
-			startAt := time.Now()
-			slotRow.Status = models.SlotTaskRunning
-			slotRow.AttemptCount++
-			slotRow.StartedAt = &startAt
-			_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
-
-			priorHybrid := ""
-			if prev, ok := priorBySlot[slotSpec.SlotID]; ok && (prev.Ownership == models.OwnershipHybrid || prev.ManuallyEdited) {
-				priorHybrid = prev.Markdown
+			releaseSlot, semErr := o.acquireLLMSlot(ctx)
+			if semErr != nil {
+				cancelTime := time.Now()
+				st.Status = models.SlotTaskCanceled
+				st.FinishedAt = &cancelTime
+				_ = o.taskRepo.UpdateSlotTask(dbCtx, st)
+				continue
 			}
 
-			slotSpecForCall := filterSlotSpecForScope(slotSpec, snapReady.Loc.Subdir, asset.Meta, len(moduleDigests) > 0)
-			var modCtxForCall *codeir.ModuleContextFacet
-			if snapReady.Loc.Subdir != "" && hasContextInput(asset.Meta.ContextInputs, "module_context") {
-				modCtxForCall = snapReady.ModuleContext
-			}
+			slotSpec := sl
+			slotRow := st
+			slotWG.Add(1)
+			go func() {
+				defer slotWG.Done()
+				defer releaseSlot()
 
-			resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-				RepoID:           repo.ID,
-				Subdirectory:     snapReady.Loc.Subdir,
-				DocType:          asset,
-				Slot:             slotSpecForCall,
-				Glossary:         glossary,
-				IR:               snapReady.IR,
-				ModuleContext:    modCtxForCall,
-				ModuleDigests:    moduleDigests,
-				CrossModuleGraph: crossModuleGraph,
-				PriorHybridMD:    priorHybrid,
-				ReviewGuidance:   guidanceForSlot(reviewGuidanceMap, slotSpec.SlotID),
-				Nonce:            batchNonce,
-				Endpoint:         epCfg,
-			})
-			finAt := time.Now()
-			slotRow.FinishedAt = &finAt
-			if callErr != nil {
 				if ctx.Err() != nil {
+					tNow := time.Now()
 					slotRow.Status = models.SlotTaskCanceled
-					slotRow.ErrorMessage = "任务已取消"
-					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
-				} else {
-					slotRow.Status = models.SlotTaskFailed
-					slotRow.ErrorMessage = callErr.Error()
-					mu.Lock()
-					failedSlots++
-					mu.Unlock()
-					o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+					slotRow.FinishedAt = &tNow
+					_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+					return
 				}
+
+				startAt := time.Now()
+				slotRow.Status = models.SlotTaskRunning
+				slotRow.AttemptCount++
+				slotRow.StartedAt = &startAt
 				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
-				return
-			}
 
-			md, anchors := llm.ParseSlotLLMOutput(resp.Content)
-			anchorsJSON, _ := json.Marshal(anchors)
-			slotRow.Status = models.SlotTaskCompleted
-			slotRow.OutputMarkdown = md
-			slotRow.CitedAnchorsJSON = datatypes.JSON(anchorsJSON)
-			slotRow.ErrorMessage = ""
-			_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+				priorHybrid := ""
+				if prev, ok := priorBySlot[slotSpec.SlotID]; ok && (prev.Ownership == models.OwnershipHybrid || prev.ManuallyEdited) {
+					priorHybrid = prev.Markdown
+				}
 
-			o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &resp.Usage, "success", "", operatorID)
+				slotSpecForCall := filterSlotSpecForScope(slotSpec, snapReady.Loc.Subdir, asset.Meta, len(moduleDigests) > 0)
+				var modCtxForCall *codeir.ModuleContextFacet
+				if snapReady.Loc.Subdir != "" && hasContextInput(asset.Meta.ContextInputs, "module_context") {
+					modCtxForCall = snapReady.ModuleContext
+				}
 
-			mu.Lock()
-			completedSlots++
-			done := completedSlots + failedSlots
-			pct := 30 + int(float64(done)/float64(maxIntVal(activeSlots, 1))*50)
-			mu.Unlock()
-			_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{"progress_percent": pct})
-		}()
+				resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
+					RepoID:           repo.ID,
+					Subdirectory:     snapReady.Loc.Subdir,
+					DocType:          asset,
+					Slot:             slotSpecForCall,
+					Glossary:         glossary,
+					IR:               snapReady.IR,
+					ModuleContext:    modCtxForCall,
+					ModuleDigests:    moduleDigests,
+					CrossModuleGraph: crossModuleGraph,
+					PriorHybridMD:    priorHybrid,
+					ReviewGuidance:   guidanceForSlot(reviewGuidanceMap, slotSpec.SlotID),
+					Nonce:            batchNonce,
+					Endpoint:         epCfg,
+				})
+				finAt := time.Now()
+				slotRow.FinishedAt = &finAt
+				if callErr != nil {
+					if ctx.Err() != nil {
+						slotRow.Status = models.SlotTaskCanceled
+						slotRow.ErrorMessage = "任务已取消"
+						o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "canceled", "TASK_CANCELED", operatorID)
+					} else {
+						slotRow.Status = models.SlotTaskFailed
+						slotRow.ErrorMessage = callErr.Error()
+						mu.Lock()
+						failedSlots++
+						mu.Unlock()
+						o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_CALL_FAILED", operatorID)
+					}
+					_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+					return
+				}
+
+				md, anchors := llm.ParseSlotLLMOutput(resp.Content)
+				anchorsJSON, _ := json.Marshal(anchors)
+				slotRow.Status = models.SlotTaskCompleted
+				slotRow.OutputMarkdown = md
+				slotRow.CitedAnchorsJSON = datatypes.JSON(anchorsJSON)
+				slotRow.ErrorMessage = ""
+				_ = o.taskRepo.UpdateSlotTask(dbCtx, slotRow)
+
+				o.recordUsage(dbCtx, &taskID, &docIDVal, repo.ID, asset.Slug, &dtRev.ID, slotSpec.SlotID, "slot_gen", &resp.Usage, "success", "", operatorID)
+
+				mu.Lock()
+				completedSlots++
+				done := completedSlots + failedSlots
+				pct := 30 + int(float64(done)/float64(maxIntVal(activeSlots, 1))*50)
+				mu.Unlock()
+				_ = o.taskRepo.UpdateTaskFields(dbCtx, taskID, map[string]any{"progress_percent": pct})
+			}()
+		}
+		slotWG.Wait()
 	}
-	slotWG.Wait()
 
 	if ctx.Err() != nil {
 		o.markTaskCanceled(dbCtx, taskID, models.TaskStatusGenerating)
@@ -1737,6 +2000,14 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	slotTaskID uint,
 	operatorID uint,
 ) {
+	if task.SnapshotID == nil {
+		return
+	}
+	releaseRepoLease := o.leaseMgr.AcquireRepo(task.RepoID)
+	defer releaseRepoLease()
+	releaseSnapLease := o.leaseMgr.AcquireSnapshot(*task.SnapshotID)
+	defer releaseSnapLease()
+
 	slotTask, err := o.taskRepo.GetSlotTask(ctx, task.ID, slotTaskID)
 	if err != nil {
 		return
@@ -1807,31 +2078,75 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		retryGuidanceMap = o.buildReviewGuidanceMap(ctx, *slotTask.DocumentID)
 	}
 
-	o.llmSem <- struct{}{}
-	resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-		RepoID:           task.RepoID,
-		Subdirectory:     task.Subdirectory,
-		DocType:          asset,
-		Slot:             slotSpecForCall,
-		Glossary:         glossary,
-		IR:               irBundle,
-		ModuleContext:    modCtxForCall,
-		ModuleDigests:    moduleDigests,
-		CrossModuleGraph: crossModuleGraph,
-		ReviewGuidance:   guidanceForSlot(retryGuidanceMap, targetSlot.SlotID),
-		Endpoint:         epCfg,
-	})
-	<-o.llmSem
-
-	finAt := time.Now()
-	slotTask.FinishedAt = &finAt
-	if callErr != nil {
-		o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_RETRY_FAILED", operatorID)
-		o.failRetrySlot(ctx, slotTask, callErr.Error())
-		return
+	maxOut := 0
+	if asset.Meta.MaxOutputTokens > 0 {
+		maxOut = maxIntVal(asset.Meta.MaxOutputTokens/maxIntVal(len(asset.Meta.Slots), 1), 4096)
 	}
 
-	md, cited := llm.ParseSlotLLMOutput(resp.Content)
+	var (
+		md    string
+		cited []verifier.CitedAnchorCandidate
+	)
+	if models.NormalizeEngine(task.Engine) == models.EngineOpenCode {
+		var priorHybrid string
+		if targetSlot.Ownership == models.OwnershipHybrid && slotTask.DocumentID != nil {
+			if prevDoc, dErr := o.docRepo.GetByID(ctx, *slotTask.DocumentID); dErr == nil && prevDoc != nil && prevDoc.CurrentRevisionNo > 0 {
+				if pRev, pEvs, rErr := o.docRepo.GetRevisionWithSections(ctx, prevDoc.ID, prevDoc.CurrentRevisionNo); rErr == nil && pRev != nil {
+					for _, sn := range overlaySectionMetadata(unmarshalSectionSnapshots(pRev.SectionsJSON), pEvs) {
+						if sn.SlotID == targetSlot.SlotID && sn.ManuallyEdited {
+							priorHybrid = sn.Markdown
+							break
+						}
+					}
+				}
+			}
+		}
+		var retryErr error
+		md, cited, retryErr = o.executeOpenCodeSlotRetry(
+			ctx, task, slotTask, &SnapshotReady{Snapshot: snap, Loc: loc, IR: irBundle, ModuleContext: modCtx},
+			asset, dtRev.ID, slotSpecForCall, glossary, moduleDigests, crossModuleGraph, priorHybrid,
+			guidanceForSlot(retryGuidanceMap, targetSlot.SlotID), epCfg, llmSet, operatorID,
+		)
+		if retryErr != nil {
+			o.failRetrySlot(ctx, slotTask, retryErr.Error())
+			return
+		}
+	} else {
+		releaseLLMSlot, semErr := o.acquireLLMSlot(ctx)
+		if semErr != nil {
+			o.failRetrySlot(ctx, slotTask, "等待 LLM 并发槽位被取消: "+semErr.Error())
+			return
+		}
+		resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
+			RepoID:           task.RepoID,
+			Subdirectory:     task.Subdirectory,
+			DocType:          asset,
+			Slot:             slotSpecForCall,
+			Glossary:         glossary,
+			IR:               irBundle,
+			ModuleContext:    modCtxForCall,
+			ModuleDigests:    moduleDigests,
+			CrossModuleGraph: crossModuleGraph,
+			ReviewGuidance:   guidanceForSlot(retryGuidanceMap, targetSlot.SlotID),
+			Endpoint:         epCfg,
+			MaxTokens:        maxOut,
+		})
+		releaseLLMSlot()
+
+		finAt := time.Now()
+		slotTask.FinishedAt = &finAt
+		if callErr != nil {
+			o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", &llm.UsageMetrics{ModelName: epCfg.ModelName}, "failed", "LLM_RETRY_FAILED", operatorID)
+			o.failRetrySlot(ctx, slotTask, callErr.Error())
+			return
+		}
+
+		md, cited = llm.ParseSlotLLMOutput(resp.Content)
+		o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", &resp.Usage, "success", "", operatorID)
+	}
+
+	finDone := time.Now()
+	slotTask.FinishedAt = &finDone
 	citedJSON, _ := json.Marshal(cited)
 	slotTask.Status = models.SlotTaskCompleted
 	slotTask.OutputMarkdown = md
@@ -1839,27 +2154,98 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	slotTask.ErrorMessage = ""
 	_ = o.taskRepo.UpdateSlotTask(ctx, slotTask)
 
-	o.recordUsage(ctx, &task.ID, slotTask.DocumentID, task.RepoID, asset.Slug, &dtRev.ID, targetSlot.SlotID, "slot_retry", &resp.Usage, "success", "", operatorID)
-
-	// 加载目标文档最新修订，仅替换目标槽位 Markdown，其余槽位内容与 content_sha256 严格字节级不变！
+	// 加载目标文档最新修订，仅替换目标槽位 Markdown，其余槽位内容、cited_anchors 与 content_sha256 严格保留
 	var doc *models.Document
 	if slotTask.DocumentID != nil {
 		doc, err = o.docRepo.GetByID(ctx, *slotTask.DocumentID)
 	} else {
 		doc, err = o.docRepo.GetByScope(ctx, task.RepoID, task.Subdirectory, snap.RefName, asset.Slug)
 	}
-	if err != nil || doc == nil {
-		log.Printf("[%s] 单槽位重试后未找到目标文档 (task=%d slot=%s): %v", config.ServiceName, task.ID, slotTask.SlotID, err)
+	if err != nil && !errors.Is(err, models.ErrNotFound) {
+		log.Printf("[%s] 单槽位重试查询目标文档失败 (task=%d slot=%s): %v", config.ServiceName, task.ID, slotTask.SlotID, err)
 		return
 	}
 
-	prevRev, _, err := o.docRepo.GetRevisionWithSections(ctx, doc.ID, doc.CurrentRevisionNo)
+	if doc == nil || doc.CurrentRevisionNo == 0 {
+		// 首次 ALL_SLOTS_FAILED 尚未建档：回查全任务槽位并创建文档与初始修订
+		_, allSlots, gErr := o.taskRepo.GetTaskWithSlots(ctx, task.ID)
+		if gErr != nil {
+			log.Printf("[%s] 全败任务单槽位重试回查槽位失败 (task=%d): %v", config.ServiceName, task.ID, gErr)
+			return
+		}
+		slotTaskMap := make(map[string]*models.GenSlotTask, len(allSlots))
+		for i := range allSlots {
+			slotTaskMap[allSlots[i].DocTypeSlug+"::"+allSlots[i].SlotID] = &allSlots[i]
+		}
+		var repo *commonModels.Repository
+		if o.masterRepo != nil {
+			repo, _ = o.masterRepo.GetRepository(ctx, task.RepoID)
+		}
+		if repo == nil {
+			repo = &commonModels.Repository{ID: task.RepoID, Name: fmt.Sprintf("repo-%d", task.RepoID)}
+		}
+		snapReady := &SnapshotReady{
+			Snapshot:      snap,
+			Loc:           loc,
+			IR:            irBundle,
+			ModuleContext: modCtx,
+		}
+		createdDoc, persistErr := o.persistGeneratedDocument(
+			ctx, repo, task, snapReady, asset, dtRev.ID, slotTaskMap,
+			nil, nil, "", moduleDigests, operatorID,
+		)
+		if persistErr != nil {
+			log.Printf("[%s] 全败任务单槽位重试建档落库失败 (task=%d slot=%s): %v", config.ServiceName, task.ID, slotTask.SlotID, persistErr)
+			return
+		}
+		docID := createdDoc.ID
+		for i := range allSlots {
+			if allSlots[i].DocTypeSlug == asset.Slug {
+				allSlots[i].DocumentID = &docID
+				_ = o.taskRepo.UpdateSlotTask(ctx, &allSlots[i])
+			}
+		}
+		if task.Status == models.TaskStatusFailed {
+			recoverAt := time.Now()
+			_ = o.taskRepo.RecoverFailedTaskToReady(ctx, task.ID, map[string]any{
+				"progress_percent": 100,
+				"error_code":       "",
+				"error_message":    "",
+				"finished_at":      recoverAt,
+			})
+		}
+		return
+	}
+
+	if slotTask.DocumentID == nil {
+		docID := doc.ID
+		slotTask.DocumentID = &docID
+		_ = o.taskRepo.UpdateSlotTask(ctx, slotTask)
+	}
+
+	prevRev, prevEvs, err := o.docRepo.GetRevisionWithSections(ctx, doc.ID, doc.CurrentRevisionNo)
 	if err != nil {
 		log.Printf("[%s] 单槽位重试加载上一修订失败: %v", config.ServiceName, err)
 		return
 	}
-	var sections []models.DocumentSectionSnapshot
-	_ = json.Unmarshal(prevRev.SectionsJSON, &sections)
+	sections := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
+	prevEvBySlot := make(map[string][]verifier.CitedAnchorCandidate, len(prevEvs))
+	for _, ev := range prevEvs {
+		var anchors []models.EvidenceAnchor
+		_ = json.Unmarshal(ev.EvidencesJSON, &anchors)
+		if len(anchors) > 0 {
+			cands := make([]verifier.CitedAnchorCandidate, 0, len(anchors))
+			for _, a := range anchors {
+				cands = append(cands, verifier.CitedAnchorCandidate{
+					Scope:      a.Scope,
+					FilePath:   a.FilePath,
+					SymbolKind: a.SymbolKind,
+					FQSymbol:   a.FQSymbol,
+				})
+			}
+			prevEvBySlot[ev.SlotID] = cands
+		}
+	}
 
 	sectionInputs := make([]verifier.SectionInput, 0, len(sections))
 	replaced := false
@@ -1875,11 +2261,12 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 				CitedAnchors: cited,
 			})
 		} else {
-			// 非目标槽位：原样保留 Markdown 与 ContentSHA256，字节级零变动
+			// 非目标槽位：原样保留 Markdown、ContentSHA256 与既往 CitedAnchors
 			sectionInputs = append(sectionInputs, verifier.SectionInput{
-				SlotID:   sections[i].SlotID,
-				Title:    sections[i].Title,
-				Markdown: sections[i].Markdown,
+				SlotID:       sections[i].SlotID,
+				Title:        sections[i].Title,
+				Markdown:     sections[i].Markdown,
+				CitedAnchors: prevEvBySlot[sections[i].SlotID],
 			})
 		}
 	}
@@ -1902,6 +2289,16 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 
 	if _, err := o.verifyAndAppendRevision(ctx, doc, snap.ID, snap.CommitSHA, dtRev.ID, asset, irBundle, modCtx, moduleDigests, sections, sectionInputs, models.RevSourceAIGenerate, &task.ID, fmt.Sprintf("单槽位独立重试补齐: %s", targetSlot.SlotID), operatorID); err != nil {
 		log.Printf("[%s] 单槽位重试落库新修订失败: %v", config.ServiceName, err)
+		return
+	}
+	if task.Status == models.TaskStatusFailed {
+		recoverAt := time.Now()
+		_ = o.taskRepo.RecoverFailedTaskToReady(ctx, task.ID, map[string]any{
+			"progress_percent": 100,
+			"error_code":       "",
+			"error_message":    "",
+			"finished_at":      recoverAt,
+		})
 	}
 }
 
@@ -1992,10 +2389,11 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 }
 
 type resolvedLLMEndpoints struct {
-	endpoints map[string]llm.EndpointConfig
-	labels    map[string]string
-	maxTokens int
-	maxFiles  int
+	endpoints      map[string]llm.EndpointConfig
+	labels         map[string]string
+	openCodeModels map[string]string
+	maxTokens      int
+	maxFiles       int
 }
 
 func (r *resolvedLLMEndpoints) endpointFor(preferredModel string) llm.EndpointConfig {
@@ -2012,6 +2410,26 @@ func (r *resolvedLLMEndpoints) labelFor(preferredModel string) string {
 		return lbl
 	}
 	return r.labels[""]
+}
+
+func (r *resolvedLLMEndpoints) openCodeModelFor(preferredModel string) string {
+	key := strings.TrimSpace(preferredModel)
+	if m, ok := r.openCodeModels[key]; ok && m != "" {
+		return m
+	}
+	return r.openCodeModels[""]
+}
+
+func (r *resolvedLLMEndpoints) isAllModeBOpenCode(plans []*docTypeExecPlan) bool {
+	if len(plans) == 0 {
+		return r.openCodeModelFor("") != ""
+	}
+	for _, p := range plans {
+		if r.openCodeModelFor(p.asset.Meta.PreferredModel) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (o *GenerationOrchestrator) loadLLMEndpointsAndLimits(
@@ -2032,8 +2450,9 @@ func (o *GenerationOrchestrator) loadLLMEndpointsAndLimits(
 	}
 
 	out := &resolvedLLMEndpoints{
-		endpoints: make(map[string]llm.EndpointConfig, len(needKeys)),
-		labels:    make(map[string]string, len(needKeys)),
+		endpoints:      make(map[string]llm.EndpointConfig, len(needKeys)),
+		labels:         make(map[string]string, len(needKeys)),
+		openCodeModels: make(map[string]string, len(needKeys)),
 	}
 
 	for _, key := range needKeys {
@@ -2043,6 +2462,9 @@ func (o *GenerationOrchestrator) loadLLMEndpointsAndLimits(
 		}
 		out.endpoints[key] = ep
 		out.labels[key] = DisplayModelLabel(cfg)
+		if cfg != nil {
+			out.openCodeModels[key] = strings.TrimSpace(cfg.OpenCodeModel)
+		}
 
 		if cfg.MaxTokensPerTask > 0 && (out.maxTokens == 0 || cfg.MaxTokensPerTask < out.maxTokens) {
 			out.maxTokens = cfg.MaxTokensPerTask
@@ -2118,6 +2540,24 @@ func (o *GenerationOrchestrator) recordUsage(
 	errCode string,
 	operatorID uint,
 ) {
+	o.recordUsageWithEngine(ctx, taskID, docID, repoID, docTypeSlug, docTypeRevID, slotID, models.EngineNative, stage, usage, status, errCode, operatorID)
+}
+
+func (o *GenerationOrchestrator) recordUsageWithEngine(
+	ctx context.Context,
+	taskID *uint,
+	docID *uint,
+	repoID uint,
+	docTypeSlug string,
+	docTypeRevID *uint,
+	slotID string,
+	engine string,
+	stage string,
+	usage *llm.UsageMetrics,
+	status string,
+	errCode string,
+	operatorID uint,
+) {
 	if usage == nil {
 		usage = &llm.UsageMetrics{}
 	}
@@ -2128,8 +2568,9 @@ func (o *GenerationOrchestrator) recordUsage(
 		DocTypeSlug:        docTypeSlug,
 		DocTypeRevisionID:  docTypeRevID,
 		SlotID:             slotID,
+		Engine:             models.NormalizeEngine(engine),
 		Stage:              stage,
-		ModelName:          usage.ModelName,
+		ModelName:          truncateRunes(usage.ModelName, 128),
 		PromptTokens:       usage.PromptTokens,
 		CachedPromptTokens: usage.CachedPromptTokens,
 		CompletionTokens:   usage.CompletionTokens,
@@ -2263,6 +2704,7 @@ func toGenTaskDetailVO(t *models.GenTask, repoName, commitSHA string, slots []mo
 		SnapshotID:       t.SnapshotID,
 		CommitSHA:        commitSHA,
 		TaskKind:         t.TaskKind,
+		Engine:           models.NormalizeEngine(t.Engine),
 		Priority:         t.Priority,
 		DocTypes:         docTypes,
 		TargetDocumentID: t.TargetDocumentID,
@@ -2360,7 +2802,12 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 	}
 
 	if !useTools || toolkit == nil {
-		return o.llmClient.ChatCompletion(ctx, in.Endpoint, chatReq)
+		resp, err := o.llmClient.ChatCompletionStream(ctx, in.Endpoint, chatReq, nil)
+		if err == nil && resp != nil && resp.FinishReason == "length" {
+			log.Printf("[%s] 槽位 %s/%s 输出触及 max_tokens 上限被截断 (finish_reason=length, completion_tokens=%d)",
+				config.ServiceName, in.DocType.Slug, in.Slot.SlotID, resp.Usage.CompletionTokens)
+		}
+		return resp, err
 	}
 
 	releaseLease := o.leaseMgr.AcquireRepo(in.RepoID)
@@ -2388,6 +2835,10 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 		log.Printf("[%s] 槽位 %s/%s Tool-Calling 完成: rounds=%d tool_calls=%d fallback_no_tools=%v prompt_tokens=%d completion_tokens=%d",
 			config.ServiceName, in.DocType.Slug, in.Slot.SlotID, loopRes.Rounds, loopRes.ToolCallsCount, loopRes.FallbackNoTools,
 			loopRes.Response.Usage.PromptTokens, loopRes.Response.Usage.CompletionTokens)
+	}
+	if loopRes.Response != nil && loopRes.Response.FinishReason == "length" {
+		log.Printf("[%s] 槽位 %s/%s ToolLoop 输出触及 max_tokens 上限被截断 (finish_reason=length, completion_tokens=%d)",
+			config.ServiceName, in.DocType.Slug, in.Slot.SlotID, loopRes.Response.Usage.CompletionTokens)
 	}
 	return loopRes.Response, nil
 }

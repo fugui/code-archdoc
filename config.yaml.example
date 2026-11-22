@@ -81,3 +81,16 @@ drift:
 # ── LLM HTTP 客户端配置 ──
 llm:
   user_agent: ""                        # 可选自定义访问 LLM 的 User-Agent；留空默认使用 "Code-Archdoc/<version>"（版本号取自构建版本规则）
+  first_byte_timeout_seconds: 90        # Native 流式首包等待超时（秒，默认 90）
+  idle_timeout_seconds: 60              # Native 流式帧间空闲超时（秒，默认 60）
+
+# ── OpenCode 深度 Agent 双引擎配置 (ADR-08) ──
+opencode:
+  enabled: true                         # 总开关，false 时禁止选择 opencode 引擎
+  binary_path: ""                       # 可选显式 CLI 路径；留空自动按 PATH -> ~/.opencode/bin/opencode -> /usr/local/bin/opencode 查找
+  default_engine: "native"              # 未显式传 engine 时的默认引擎 (native | opencode)
+  max_concurrency: 2                    # OpenCode CLI 子进程最大并发数（默认 2）
+  timeout_seconds: 600                  # 单次 OpenCode 文档生成超时（秒，默认 600）
+  idle_timeout_seconds: 120             # 无 stdout/stderr 活动空闲看门狗超时（秒，默认 120）
+  continuation_enabled: true            # 是否允许 --session 断点续跑（默认 true）
+  continuation_max_seconds: 180         # 续跑阶段预算上限（秒，默认 180）

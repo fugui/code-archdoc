@@ -3,6 +3,7 @@ package llm_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -347,5 +348,368 @@ func TestClientUserAgentPrecedence(t *testing.T) {
 	}
 	if got := <-uaCh; got != "MyOrg-CustomHeader/3.0" {
 		t.Fatalf("ExtraHeaders 期望 MyOrg-CustomHeader/3.0，实际 %q", got)
+	}
+}
+
+// T-ADR08-01：超时重试回归（修复 reqCtx 遮蔽 Bug）、0..10 上限、Retry-After 与父 ctx 取消即时退出
+func TestTimeoutRetryMax10RetryAfterAndParentCancel(t *testing.T) {
+	// 1. 首 4 次请求超时、第 5 次成功，验证 MaxRetries=4（突破旧上限 3）且 attempt == 5
+	var attempts atomic.Int32
+	unblock1 := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n <= 4 {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-unblock1:
+				return
+			case <-time.After(1500 * time.Millisecond):
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"content":"ok-after-4-timeouts"},"finish_reason":"stop"}]}`))
+	}))
+	defer func() {
+		close(unblock1)
+		srv.CloseClientConnections()
+		srv.Close()
+	}()
+
+	client := llm.NewClientWithOptions(srv.Client(), 5*time.Millisecond)
+	resp, err := client.ChatCompletion(context.Background(), llm.EndpointConfig{
+		BaseURL:        srv.URL,
+		ModelName:      "m",
+		TimeoutSeconds: 1,
+		MaxRetries:     4,
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "hello"}}})
+	if err != nil {
+		t.Fatalf("T-ADR08-01 超时重试应恢复成功，实际失败: %v", err)
+	}
+	if resp.Content != "ok-after-4-timeouts" || attempts.Load() != 5 {
+		t.Fatalf("T-ADR08-01 期望第 5 次成功，实际 content=%q attempts=%d", resp.Content, attempts.Load())
+	}
+
+	// 2. 验证 429 Retry-After 整数秒解析与重试
+	var raAttempts atomic.Int32
+	raSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if raAttempts.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"slow down"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"content":"after-retry-after"},"finish_reason":"stop"}]}`))
+	}))
+	defer raSrv.Close()
+
+	raStart := time.Now()
+	raResp, err := client.ChatCompletion(context.Background(), llm.EndpointConfig{
+		BaseURL:        raSrv.URL,
+		ModelName:      "m",
+		TimeoutSeconds: 5,
+		MaxRetries:     2,
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "ra"}}})
+	if err != nil {
+		t.Fatalf("Retry-After 重试失败: %v", err)
+	}
+	if raResp.Content != "after-retry-after" || time.Since(raStart) < 850*time.Millisecond {
+		t.Fatalf("Retry-After 未按预期等待 1s 或内容错误: elapsed=%v resp=%+v", time.Since(raStart), raResp)
+	}
+
+	// 3. 验证 parentCtx 取消时立即中止且零重试
+	var cancelAttempts atomic.Int32
+	unblockCancel := make(chan struct{})
+	cancelSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancelAttempts.Add(1)
+		select {
+		case <-r.Context().Done():
+		case <-unblockCancel:
+		}
+	}))
+	defer func() {
+		close(unblockCancel)
+		cancelSrv.CloseClientConnections()
+		cancelSrv.Close()
+	}()
+
+	parentCtx, cancelParent := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancelParent()
+	_, err = client.ChatCompletion(parentCtx, llm.EndpointConfig{
+		BaseURL:        cancelSrv.URL,
+		ModelName:      "m",
+		TimeoutSeconds: 10,
+		MaxRetries:     5,
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "cancel"}}})
+	if err == nil {
+		t.Fatal("parentCtx 取消后必须返回错误")
+	}
+	if cancelAttempts.Load() != 1 {
+		t.Fatalf("parentCtx 取消应零重试，实际请求次数 %d", cancelAttempts.Load())
+	}
+}
+
+// T-ADR08-02：流式三层超时（首包/空闲）、Content-Type 双模自适应、400 降级与已吐流防重复保护
+func TestStreamThreeTierWatchdogDualModeAndNoDuplicateRetry(t *testing.T) {
+	client := llm.NewClientWithOptions(&http.Client{}, 5*time.Millisecond)
+
+	// 1. 慢首包超时触发重试（第 1 次首包超时，第 2 次正常返回 SSE）
+	var fbAttempts atomic.Int32
+	unblockFB := make(chan struct{})
+	fbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fbAttempts.Add(1) == 1 {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-unblockFB:
+				return
+			case <-time.After(1500 * time.Millisecond):
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"sse-ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer func() {
+		close(unblockFB)
+		fbSrv.CloseClientConnections()
+		fbSrv.Close()
+	}()
+
+	fbResp, err := client.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:                 fbSrv.URL,
+		ModelName:               "m",
+		TimeoutSeconds:          5,
+		FirstByteTimeoutSeconds: 1,
+		IdleTimeoutSeconds:      2,
+		MaxRetries:              1,
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "fb"}}}, nil)
+	if err != nil || fbResp.Content != "sse-ok" || fbAttempts.Load() != 2 {
+		t.Fatalf("慢首包重试失败: err=%v resp=%+v attempts=%d", err, fbResp, fbAttempts.Load())
+	}
+
+	// 2. 流式空闲超时：onDelta == nil（槽位内部聚合）应安全重试恢复；onDelta != nil 且已吐出 delta 后断流严禁重试
+	var idleAggAttempts atomic.Int32
+	unblockIdle := make(chan struct{})
+	idleAggSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := idleAggAttempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"part1-\"}}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if n == 1 {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-unblockIdle:
+				return
+			case <-time.After(1500 * time.Millisecond):
+				return
+			}
+		}
+		_, _ = w.Write([]byte("data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"part2\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer func() {
+		close(unblockIdle)
+		idleAggSrv.CloseClientConnections()
+		idleAggSrv.Close()
+	}()
+
+	idleResp, err := client.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:                 idleAggSrv.URL,
+		ModelName:               "m",
+		TimeoutSeconds:          5,
+		FirstByteTimeoutSeconds: 2,
+		IdleTimeoutSeconds:      1,
+		MaxRetries:              1,
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "idle"}}}, nil)
+	if err != nil || idleResp.Content != "part1-part2" || idleAggAttempts.Load() != 2 {
+		t.Fatalf("内部聚合流空闲重试失败: err=%v resp=%+v attempts=%d", err, idleResp, idleAggAttempts.Load())
+	}
+
+	// 验证 onDelta != nil 已吐流后发生空闲超时不再重试（防止 UI 出现重复片段）
+	idleAggAttempts.Store(0)
+	var deltaBuf strings.Builder
+	_, err = client.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:                 idleAggSrv.URL,
+		ModelName:               "m",
+		TimeoutSeconds:          5,
+		FirstByteTimeoutSeconds: 2,
+		IdleTimeoutSeconds:      1,
+		MaxRetries:              3,
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "chat"}}}, func(d string) error {
+		deltaBuf.WriteString(d)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("已吐流断流后应直接报错，不应隐式重放")
+	}
+	if idleAggAttempts.Load() != 1 || deltaBuf.String() != "part1-" {
+		t.Fatalf("已吐流保护失效: attempts=%d delta=%q", idleAggAttempts.Load(), deltaBuf.String())
+	}
+
+	// 3. 对端忽略 stream:true 返回 application/json 与返回 400 unsupported stream 自动降级
+	jsonFallbackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		if stream, _ := payload["stream"].(bool); stream {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"unsupported parameter: stream is not supported"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"content":"downgraded-ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer jsonFallbackSrv.Close()
+
+	downResp, err := client.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:   jsonFallbackSrv.URL,
+		ModelName: "m",
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "down"}}}, nil)
+	if err != nil || downResp.Content != "downgraded-ok" {
+		t.Fatalf("stream 400 自动降级失败: err=%v resp=%+v", err, downResp)
+	}
+
+	// 4. 忽略 stream:true 但 200 OK 直接返回 application/json
+	syncJSONSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"content":"sync-json-under-stream"},"finish_reason":"stop"}]}`))
+	}))
+	defer syncJSONSrv.Close()
+
+	var streamedOnce string
+	syncResp, err := client.ChatCompletionStream(context.Background(), llm.EndpointConfig{
+		BaseURL:   syncJSONSrv.URL,
+		ModelName: "m",
+	}, llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "sync"}}}, func(d string) error {
+		streamedOnce += d
+		return nil
+	})
+	if err != nil || syncResp.Content != "sync-json-under-stream" || streamedOnce != "sync-json-under-stream" {
+		t.Fatalf("200 application/json 双模自适应失败: err=%v resp=%+v delta=%q", err, syncResp, streamedOnce)
+	}
+}
+
+// T-ADR08-03：三级结构化合法 JSON 裁剪与预算 scope_profile 口径统一
+func TestStructuredFacetTruncationAndBudgetScopeFiltering(t *testing.T) {
+	// 1. 构造超大 IR，验证各种预算（含极端小预算）下 serializeSlotFacets 输出 100% 合法 JSON 且含 _meta.truncated=true
+	var files []codeir.FileSummary
+	var imports []codeir.FileImportFact
+	var symbols []codeir.SymbolFact
+	var prims []codeir.RuntimePrimitiveFact
+	for i := 0; i < 200; i++ {
+		p := fmt.Sprintf("src/module_%d/service_%d.cpp", i%10, i)
+		files = append(files, codeir.FileSummary{RelPath: p, Language: "cpp", Size: 2048, LOC: 80})
+		imports = append(imports, codeir.FileImportFact{SourceFile: p, RawTarget: "common/types.h", Kind: "cpp_include"})
+		symbols = append(symbols, codeir.SymbolFact{
+			FQSymbol:  fmt.Sprintf("svc::Handler%d::Handle", i),
+			Kind:      "method",
+			Signature: "int Handle(const Request& req, Response* resp)",
+			Meta:      codeir.FactMeta{Confidence: codeir.ConfidenceExact, Span: codeir.SourceSpan{FilePath: p, LineStart: 10, LineEnd: 20}},
+		})
+		prims = append(prims, codeir.RuntimePrimitiveFact{
+			Category: "lock",
+			APIName:  fmt.Sprintf("std::mutex m_%d", i),
+			Meta:     codeir.FactMeta{Confidence: codeir.ConfidenceExact, Span: codeir.SourceSpan{FilePath: p, LineStart: 5, LineEnd: 5}},
+		})
+	}
+	files = append(files, codeir.FileSummary{RelPath: "test/huge_test.cpp", Language: "cpp", Size: 999999, LOC: 30000})
+
+	hugeIR := &codeir.CodeIRBundle{
+		SchemaVersion: codeir.SchemaVersion,
+		Tree: codeir.TreeFacet{
+			SchemaVersion: codeir.SchemaVersion,
+			TotalFiles:    len(files),
+			TotalLOC:      46000,
+			Files:         files,
+			Directories:   []codeir.DirectoryStat{{Path: "src", FileCount: 200, LOC: 16000}},
+		},
+		Deps: codeir.DepsFacet{
+			SchemaVersion: codeir.SchemaVersion,
+			FileImports:   imports,
+			ExternalDeps:  []codeir.ExternalDep{{Name: "fmt", Scope: "compile", SourceFile: "CMakeLists.txt"}},
+		},
+		Symbols:           codeir.SymbolsFacet{SchemaVersion: codeir.SchemaVersion, Symbols: symbols},
+		RuntimePrimitives: codeir.RuntimePrimitivesFacet{SchemaVersion: codeir.SchemaVersion, Primitives: prims},
+	}
+
+	dts := loadBuiltinDocTypesForTest(t)
+	var sysArch *doctype.AssetBundle
+	for _, dt := range dts {
+		if dt.Slug == "system-architecture" {
+			sysArch = dt
+			break
+		}
+	}
+	if sysArch == nil {
+		t.Fatal("未找到 system-architecture")
+	}
+
+	extractSlotFacetJSON := func(budget int) string {
+		slot := sysArch.Meta.Slots[0]
+		slot.IRFacets = []string{codeir.FacetTree, codeir.FacetDeps, codeir.FacetSymbols, codeir.FacetRuntimePrimitives}
+		slot.TokenBudget = budget
+		msgs, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
+			DocType:           sysArch,
+			Slot:              slot,
+			IR:                hugeIR,
+			EnableSourceTools: true,
+		})
+		userMsg := msgs[1].Content
+		marker := fmt.Sprintf(`label=%q>`, "slot_ir_facets:"+slot.SlotID)
+		idx := strings.Index(userMsg, marker)
+		if idx < 0 {
+			t.Fatalf("未找到 slot_ir_facets 块")
+		}
+		rest := userMsg[idx+len(marker):]
+		endIdx := strings.Index(rest, "</untrusted_repo_data>")
+		if endIdx < 0 {
+			t.Fatalf("未找到闭合标签")
+		}
+		return strings.TrimSpace(rest[:endIdx])
+	}
+
+	for _, budget := range []int{2000, 300, 15} {
+		facetJSON := extractSlotFacetJSON(budget)
+		if !json.Valid([]byte(facetJSON)) {
+			t.Fatalf("budget=%d 裁剪结果不是合法 JSON: %s", budget, facetJSON)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(facetJSON), &parsed); err != nil {
+			t.Fatalf("budget=%d JSON 解析失败: %v", budget, err)
+		}
+		meta, ok := parsed["_meta"].(map[string]any)
+		if !ok || meta["truncated"] != true {
+			t.Fatalf("budget=%d 期望包含 _meta.truncated=true，实际: %+v", budget, parsed["_meta"])
+		}
+		if budget == 2000 {
+			omitted, _ := meta["omitted_counts"].(map[string]any)
+			if len(omitted) == 0 {
+				t.Fatalf("budget=%d 期望包含 omitted_counts: %+v", budget, meta)
+			}
+		}
+	}
+
+	// 2. 验证 EstimateAndCheckBudget 应用 include_tests: false 后 TopDirectories 不包含 test/
+	sysArchNoTest := *sysArch
+	sysArchNoTest.Meta.ScopeProfile = &doctype.ScopeProfileConfig{IncludeTests: false}
+	bRes := llm.EstimateAndCheckBudget(llm.BudgetCheckInput{
+		IR:               hugeIR,
+		DocTypes:         []*doctype.AssetBundle{&sysArchNoTest},
+		GlossaryCached:   true,
+		MaxTokensPerTask: 500000,
+		MaxFilesPerTask:  2000,
+	})
+	if bRes.Advice.EffectiveFiles != 200 {
+		t.Fatalf("期望过滤 test/ 后 effective_files=200，实际 %d", bRes.Advice.EffectiveFiles)
+	}
+	for _, dir := range bRes.Advice.TopDirectories {
+		if strings.HasPrefix(dir.Path, "test") {
+			t.Fatalf("include_tests=false 时 TopDirectories 不应包含 test 目录，实际 %+v", bRes.Advice.TopDirectories)
+		}
 	}
 }

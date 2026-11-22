@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"code-archdoc/config"
@@ -35,6 +36,7 @@ type LLMConfigVO struct {
 	Name               string     `json:"name"`
 	BaseURL            string     `json:"base_url"`
 	ModelName          string     `json:"model_name"`
+	OpenCodeModel      string     `json:"opencode_model"`
 	APIKeyMasked       string     `json:"api_key_masked"`
 	HasAPIKey          bool       `json:"has_api_key"`
 	TimeoutSeconds     int        `json:"timeout_seconds"`
@@ -54,6 +56,7 @@ type LLMConfigAuditSnapshot struct {
 	Name             string `json:"name"`
 	BaseURL          string `json:"base_url"`
 	ModelName        string `json:"model_name"`
+	OpenCodeModel    string `json:"opencode_model"`
 	APIKeyMasked     string `json:"api_key_masked"`
 	HasAPIKey        bool   `json:"has_api_key"`
 	APIKeyChanged    bool   `json:"api_key_changed"`
@@ -70,6 +73,7 @@ type LLMConfigUpsertRequest struct {
 	Name             string `json:"name"`
 	BaseURL          string `json:"base_url"`
 	ModelName        string `json:"model_name"`
+	OpenCodeModel    string `json:"opencode_model"`
 	APIKey           string `json:"api_key"`
 	ClearAPIKey      bool   `json:"clear_api_key"`
 	TimeoutSeconds   int    `json:"timeout_seconds"`
@@ -142,6 +146,7 @@ type normalizedLLMParams struct {
 	name             string
 	baseURL          string
 	modelName        string
+	openCodeModel    string
 	timeoutSeconds   int
 	maxRetries       int
 	maxTokensPerTask int
@@ -162,6 +167,16 @@ func normalizeAndValidateLLMParams(req LLMConfigUpsertRequest) (normalizedLLMPar
 	modelName := strings.TrimSpace(req.ModelName)
 	if modelName == "" || utf8.RuneCountInString(modelName) > 128 {
 		return normalizedLLMParams{}, fmt.Errorf("%w: Model Name 不能为空且不超过 128 个字符", ErrInvalidLLMParam)
+	}
+
+	openCodeModel := strings.TrimSpace(req.OpenCodeModel)
+	if utf8.RuneCountInString(openCodeModel) > 128 {
+		return normalizedLLMParams{}, fmt.Errorf("%w: opencode_model 不能超过 128 个字符", ErrInvalidLLMParam)
+	}
+	for _, r := range openCodeModel {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return normalizedLLMParams{}, fmt.Errorf("%w: opencode_model 不能包含空白或控制字符", ErrInvalidLLMParam)
+		}
 	}
 
 	timeoutSec := req.TimeoutSeconds
@@ -196,6 +211,7 @@ func normalizeAndValidateLLMParams(req LLMConfigUpsertRequest) (normalizedLLMPar
 		name:             name,
 		baseURL:          baseURL,
 		modelName:        modelName,
+		openCodeModel:    openCodeModel,
 		timeoutSeconds:   timeoutSec,
 		maxRetries:       req.MaxRetries,
 		maxTokensPerTask: maxTokens,
@@ -259,6 +275,7 @@ func (s *LLMConfigService) CreateConfig(
 		Name:             p.name,
 		BaseURL:          p.baseURL,
 		ModelName:        p.modelName,
+		OpenCodeModel:    p.openCodeModel,
 		APIKey:           trimmedKey,
 		APIKeyMasked:     security.MaskAPIKey(trimmedKey),
 		TimeoutSeconds:   p.timeoutSeconds,
@@ -347,6 +364,7 @@ func (s *LLMConfigService) UpdateConfig(
 	cfg.Name = p.name
 	cfg.BaseURL = p.baseURL
 	cfg.ModelName = p.modelName
+	cfg.OpenCodeModel = p.openCodeModel
 	cfg.TimeoutSeconds = p.timeoutSeconds
 	cfg.MaxRetries = p.maxRetries
 	cfg.MaxTokensPerTask = p.maxTokensPerTask
@@ -655,12 +673,14 @@ func ResolveLLMEndpoint(ctx context.Context, govRepo GovernanceRepo, preferredMo
 	}
 
 	return llm.EndpointConfig{
-		BaseURL:        cfg.BaseURL,
-		ModelName:      cfg.ModelName,
-		APIKey:         cfg.APIKey,
-		TimeoutSeconds: cfg.TimeoutSeconds,
-		MaxRetries:     cfg.MaxRetries,
-		UserAgent:      config.AppConfig.LLM.EffectiveUserAgent(),
+		BaseURL:                 cfg.BaseURL,
+		ModelName:               cfg.ModelName,
+		APIKey:                  cfg.APIKey,
+		TimeoutSeconds:          cfg.TimeoutSeconds,
+		FirstByteTimeoutSeconds: config.AppConfig.LLM.EffectiveFirstByteTimeoutSeconds(),
+		IdleTimeoutSeconds:      config.AppConfig.LLM.EffectiveIdleTimeoutSeconds(),
+		MaxRetries:              cfg.MaxRetries,
+		UserAgent:               config.AppConfig.LLM.EffectiveUserAgent(),
 	}, cfg, nil
 }
 
@@ -681,6 +701,7 @@ func toLLMConfigVO(cfg *models.LLMConfig) LLMConfigVO {
 		Name:               cfg.Name,
 		BaseURL:            cfg.BaseURL,
 		ModelName:          cfg.ModelName,
+		OpenCodeModel:      cfg.OpenCodeModel,
 		APIKeyMasked:       cfg.APIKeyMasked,
 		HasAPIKey:          cfg.APIKey != "",
 		TimeoutSeconds:     cfg.TimeoutSeconds,
@@ -701,6 +722,7 @@ func toLLMAuditSnapshot(cfg *models.LLMConfig, apiKeyChanged bool) LLMConfigAudi
 		Name:             cfg.Name,
 		BaseURL:          cfg.BaseURL,
 		ModelName:        cfg.ModelName,
+		OpenCodeModel:    cfg.OpenCodeModel,
 		APIKeyMasked:     cfg.APIKeyMasked,
 		HasAPIKey:        cfg.APIKey != "",
 		APIKeyChanged:    apiKeyChanged,

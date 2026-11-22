@@ -1107,3 +1107,157 @@ body {
   gap: 0.5rem;
   flex-wrap: wrap;
 }
+
+/* M14 双引擎选择与多文档拆单进度监控 */
+.code-archdoc-engine-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.code-archdoc-engine-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-inline-icon {
+  vertical-align: -2px;
+  margin-right: 0.25rem;
+}
+
+.code-archdoc-engine-selector {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  gap: 0.25rem;
+}
+
+.code-archdoc-engine-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-engine-option:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-engine-option--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  font-weight: 600;
+}
+
+.code-archdoc-engine-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.code-archdoc-engine-ver {
+  font-size: 0.72rem;
+  opacity: 0.8;
+}
+
+.code-archdoc-engine-hint {
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-info-border, var(--color-border-subtle));
+  background: var(--color-info-subtle, var(--color-bg-subtle));
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.code-archdoc-engine-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-engine-badge--native {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-engine-badge--opencode {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.code-archdoc-split-monitor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.code-archdoc-split-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.code-archdoc-split-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  flex-wrap: wrap;
+}
+
+.code-archdoc-split-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.code-archdoc-split-row-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.code-archdoc-split-row-err {
+  font-size: 0.75rem;
+  color: var(--color-danger);
+}
+
+.code-archdoc-split-row-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-child-doctype-badge {
+  margin-left: 0.45rem;
+}

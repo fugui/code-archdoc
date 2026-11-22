@@ -148,8 +148,9 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.GET("/doc-types/:slug/revisions", h.ListDocTypeRevisions)
 		}
 
-		// 域 3：反推生成任务编排与监控 (F-05 / F-31)
+		// 域 3：反推生成任务编排与监控 (F-05 / F-31 / ADR-08)
 		if h.genSvc != nil {
+			protected.GET("/engines", h.ListEngines)
 			protected.POST("/tasks/generate", h.TriggerGenerateTask)
 			protected.POST("/tasks/generate-batch", h.TriggerBatchGenerateTask)
 			protected.GET("/tasks", h.ListTasks)

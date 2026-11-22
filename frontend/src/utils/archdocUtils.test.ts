@@ -165,6 +165,7 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
       repoId: '',
       status: '',
       taskKind: '',
+      engine: '',
       mine: false,
       includeChildren: false,
     });
@@ -175,6 +176,7 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
       repoId: '18',
       status: 'active',
       taskKind: 'batch',
+      engine: 'opencode',
       mine: true,
       includeChildren: true,
     });
@@ -184,18 +186,20 @@ describe('URL Search Params 分页与筛选序列化/反序列化 (Verification 
       repoId: '18',
       status: 'active',
       taskKind: 'batch',
+      engine: 'opencode',
       mine: true,
       includeChildren: true,
     });
 
     const invalid = parseTaskFilterParams(
-      new URLSearchParams('page=0&pageSize=12&repo_id=xyz&status=bad&task_kind=bad'),
+      new URLSearchParams('page=0&pageSize=12&repo_id=xyz&status=bad&task_kind=bad&engine=invalid'),
     );
     assert.equal(invalid.page, 1);
     assert.equal(invalid.pageSize, 25);
     assert.equal(invalid.repoId, '');
     assert.equal(invalid.status, '');
     assert.equal(invalid.taskKind, '');
+    assert.equal(invalid.engine, '');
   });
 });
 

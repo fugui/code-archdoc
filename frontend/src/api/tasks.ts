@@ -1,16 +1,24 @@
 import type {
   BatchGenerateTaskPayload,
   CancelTaskResponse,
+  EnginesResponse,
   GenSlotTaskVO,
   GenTaskDetailVO,
   GenerateTaskPayload,
+  GenerateTaskSubmitResponse,
   TaskListQuery,
   TaskListResponse,
 } from '../types';
 import { apiRequest } from './client';
 
-export async function triggerGenerateTask(payload: GenerateTaskPayload): Promise<GenTaskDetailVO> {
-  return apiRequest<GenTaskDetailVO>('/tasks/generate', {
+export async function listEngines(): Promise<EnginesResponse> {
+  return apiRequest<EnginesResponse>('/engines');
+}
+
+export async function triggerGenerateTask(
+  payload: GenerateTaskPayload,
+): Promise<GenerateTaskSubmitResponse> {
+  return apiRequest<GenerateTaskSubmitResponse>('/tasks/generate', {
     method: 'POST',
     bodyData: payload,
   });
@@ -33,6 +41,7 @@ export async function listTasks(query: TaskListQuery = {}): Promise<TaskListResp
   if (query.subdirectory !== undefined) qs.set('subdirectory', query.subdirectory);
   if (query.status && query.status !== 'all') qs.set('status', query.status);
   if (query.taskKind && query.taskKind !== 'all') qs.set('task_kind', query.taskKind);
+  if (query.engine && query.engine !== 'all') qs.set('engine', query.engine);
   if (query.mine) qs.set('mine', 'true');
   if (query.topLevelOnly) qs.set('top_level_only', 'true');
 

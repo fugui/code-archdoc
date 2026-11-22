@@ -66,6 +66,7 @@ type DriftDocumentListResponse struct {
 // IncrementalRefreshRequest 对应 POST /api/documents/:id/incremental-refresh 入参。
 type IncrementalRefreshRequest struct {
 	SlotIDs []string `json:"slot_ids"`
+	Engine  string   `json:"engine"`
 }
 
 // DriftOrchestrator 衔接 F-25 远端巡检、DocType 变更事件、章节级双维漂移定位与单篇增量刷新（F-12）。
@@ -870,6 +871,7 @@ func (s *DriftOrchestrator) TriggerIncrementalRefresh(
 		DriftedLockedSlots: driftedLocked,
 		NeedSyncCode:       hasCodeDrift,
 		Priority:           models.TaskPriorityInteractive,
+		Engine:             req.Engine,
 	}, operatorID)
 }
 

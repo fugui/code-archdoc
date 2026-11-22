@@ -34,6 +34,18 @@ func TestLoadConfigDefaultsAndOverrides(t *testing.T) {
 	if !AppConfig.Drift.PollEnabled || AppConfig.Drift.PollIntervalMinutes != 15 || AppConfig.Drift.PollConcurrency != 4 {
 		t.Fatalf("Drift 默认值异常: %+v", AppConfig.Drift)
 	}
+	if AppConfig.LLM.EffectiveFirstByteTimeoutSeconds() != 90 || AppConfig.LLM.EffectiveIdleTimeoutSeconds() != 60 {
+		t.Fatalf("LLM 流式超时默认值异常: fb=%d idle=%d",
+			AppConfig.LLM.EffectiveFirstByteTimeoutSeconds(), AppConfig.LLM.EffectiveIdleTimeoutSeconds())
+	}
+	if !AppConfig.OpenCode.IsEnabled() || !AppConfig.OpenCode.IsContinuationEnabled() ||
+		AppConfig.OpenCode.EffectiveDefaultEngine() != "native" ||
+		AppConfig.OpenCode.EffectiveMaxConcurrency() != 2 ||
+		AppConfig.OpenCode.EffectiveTimeoutSeconds() != 600 ||
+		AppConfig.OpenCode.EffectiveIdleTimeoutSeconds() != 120 ||
+		AppConfig.OpenCode.EffectiveContinuationMaxSeconds() != 180 {
+		t.Fatalf("OpenCode 缺省配置默认值异常: %+v", AppConfig.OpenCode)
+	}
 
 	// 2. 验证显式关闭 poll_enabled 及自定义 Storage/Drift 参数覆盖
 	customCfgPath := filepath.Join(tmpDir, "custom.yaml")
@@ -46,6 +58,15 @@ drift:
   poll_enabled: false
   poll_interval_minutes: 30
   poll_concurrency: 2
+opencode:
+  enabled: false
+  continuation_enabled: false
+  default_engine: "opencode"
+  max_concurrency: 4
+  timeout_seconds: 450
+  idle_timeout_seconds: 90
+  continuation_max_seconds: 120
+  binary_path: "/opt/bin/opencode"
 `
 	if err := os.WriteFile(customCfgPath, []byte(customYAML), 0644); err != nil {
 		t.Fatal(err)
@@ -55,6 +76,17 @@ drift:
 	}
 	if AppConfig.Drift.PollEnabled {
 		t.Fatal("显式设置 poll_enabled: false 时应保持 false")
+	}
+	if AppConfig.OpenCode.IsEnabled() || AppConfig.OpenCode.IsContinuationEnabled() {
+		t.Fatal("显式设置 opencode.enabled/continuation_enabled 为 false 时应保持 false")
+	}
+	if AppConfig.OpenCode.EffectiveDefaultEngine() != "opencode" ||
+		AppConfig.OpenCode.EffectiveMaxConcurrency() != 4 ||
+		AppConfig.OpenCode.EffectiveTimeoutSeconds() != 450 ||
+		AppConfig.OpenCode.EffectiveIdleTimeoutSeconds() != 90 ||
+		AppConfig.OpenCode.EffectiveContinuationMaxSeconds() != 120 ||
+		AppConfig.OpenCode.EffectiveBinaryPath() != "/opt/bin/opencode" {
+		t.Fatalf("OpenCode 自定义配置未生效: %+v", AppConfig.OpenCode)
 	}
 	if AppConfig.Storage.EffectivePublishDir() != "/tmp/archdoc-pub" {
 		t.Fatalf("自定义 PublishDir 未生效: %q", AppConfig.Storage.EffectivePublishDir())

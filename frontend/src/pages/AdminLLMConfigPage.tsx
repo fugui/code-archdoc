@@ -35,6 +35,7 @@ interface LLMFormState {
   name: string;
   baseUrl: string;
   modelName: string;
+  openCodeModel: string;
   apiKey: string;
   clearApiKey: boolean;
   timeoutSeconds: string;
@@ -49,6 +50,7 @@ const EMPTY_FORM: LLMFormState = {
   name: '',
   baseUrl: '',
   modelName: '',
+  openCodeModel: '',
   apiKey: '',
   clearApiKey: false,
   timeoutSeconds: '180',
@@ -135,6 +137,7 @@ export const AdminLLMConfigPage: React.FC = () => {
       name: cfg.name,
       baseUrl: cfg.base_url,
       modelName: cfg.model_name,
+      openCodeModel: cfg.opencode_model || '',
       apiKey: '',
       clearApiKey: false,
       timeoutSeconds: String(cfg.timeout_seconds),
@@ -257,6 +260,12 @@ export const AdminLLMConfigPage: React.FC = () => {
     const trimmedName = form.name.trim();
     const trimmedURL = form.baseUrl.trim();
     const trimmedModel = form.modelName.trim();
+    const trimmedOpenCodeModel = form.openCodeModel.trim();
+
+    if (trimmedOpenCodeModel && (/\s/.test(trimmedOpenCodeModel) || trimmedOpenCodeModel.length > 128)) {
+      showToast('OpenCode 模型覆盖标识不能包含空白字符且长度不超过 128 个字符', 'error');
+      return;
+    }
 
     if (!trimmedName) {
       showToast('模型名称标识不能为空', 'error');
@@ -319,6 +328,7 @@ export const AdminLLMConfigPage: React.FC = () => {
         name: trimmedName,
         base_url: trimmedURL,
         model_name: trimmedModel,
+        opencode_model: trimmedOpenCodeModel,
         api_key: form.clearApiKey ? '' : form.apiKey.trim(),
         clear_api_key: editingConfig ? form.clearApiKey : false,
         timeout_seconds: timeoutRes.value,
@@ -464,6 +474,13 @@ export const AdminLLMConfigPage: React.FC = () => {
                     <span className="code-archdoc-llm-kv-label">Model Name</span>
                     <span className="code-archdoc-llm-kv-val code-archdoc-mono">
                       {cfg.model_name}
+                    </span>
+                  </div>
+
+                  <div className="code-archdoc-llm-kv-item">
+                    <span className="code-archdoc-llm-kv-label">OpenCode 模型</span>
+                    <span className="code-archdoc-llm-kv-val code-archdoc-mono">
+                      {cfg.opencode_model ? cfg.opencode_model : '自动桥接 (Mode A)'}
                     </span>
                   </div>
 
@@ -651,6 +668,21 @@ export const AdminLLMConfigPage: React.FC = () => {
                 onChange={(e) => setForm((p) => ({ ...p, modelName: e.target.value }))}
               />
             </div>
+          </div>
+
+          <div className="code-archdoc-form-field">
+            <label className="code-archdoc-field-label" htmlFor="llm-form-opencode-model">
+              OpenCode 模型映射（可选）
+            </label>
+            <input
+              id="llm-form-opencode-model"
+              type="text"
+              className="code-archdoc-input code-archdoc-mono"
+              maxLength={128}
+              placeholder="留空则自动桥接当前端点（Mode A）；可填 provider/model 覆盖，如 deepseek/deepseek-chat（Mode B）"
+              value={form.openCodeModel}
+              onChange={(e) => setForm((p) => ({ ...p, openCodeModel: e.target.value }))}
+            />
           </div>
 
           <div className="code-archdoc-form-field">

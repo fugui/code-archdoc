@@ -407,3 +407,92 @@ func TestSchedulerQueueFullAndGracefulShutdown(t *testing.T) {
 		t.Fatalf("检测到潜在 goroutine 泄漏: before=%d after=%d", baseGoroutines, afterGoroutines)
 	}
 }
+
+// TestSchedulerReserveSlotsAtomicAndStopOnDrop 验证两阶段预留的容量校验、回滚释放、并发提交与停机二次保护（T-ADR08-05）。
+func TestSchedulerReserveSlotsAtomicAndStopOnDrop(t *testing.T) {
+	sched := services.NewTaskScheduler(services.SchedulerConfig{
+		MaxConcurrency:      1,
+		MaxUserConcurrency:  1,
+		InteractiveQueueCap: 3,
+		BatchQueueCap:       2,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	sched.Start(ctx)
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	if err := sched.Enqueue(services.ScheduledJob{
+		ID:       "hold",
+		UserID:   1,
+		Priority: models.TaskPriorityInteractive,
+		Run: func(_ context.Context) {
+			close(started)
+			<-block
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	// 1. 预留 2 个交互槽位，此时剩余仅 1 个；尝试再预留 2 个应直接返 ErrQueueFull
+	_, rollback1, err := sched.ReserveSlots(models.TaskPriorityInteractive, 2)
+	if err != nil {
+		t.Fatalf("首次预留 2 槽位失败: %v", err)
+	}
+	if _, _, err := sched.ReserveSlots(models.TaskPriorityInteractive, 2); !errors.Is(err, services.ErrQueueFull) {
+		t.Fatalf("期望容量不足返 ErrQueueFull，实际: %v", err)
+	}
+
+	// 2. 回滚首次预留后应释放 2 个槽位，重新可预留 3 个
+	rollback1()
+	rollback1() // 幂等
+	commit2, rollback2, err := sched.ReserveSlots(models.TaskPriorityInteractive, 3)
+	if err != nil {
+		t.Fatalf("回滚后应可重新预留 3 槽位，实际: %v", err)
+	}
+	defer rollback2()
+
+	var ran atomic.Int32
+	var done sync.WaitGroup
+	done.Add(3)
+	jobs := make([]services.ScheduledJob, 3)
+	for i := 0; i < 3; i++ {
+		jobs[i] = services.ScheduledJob{
+			ID:       "r-" + string(rune('a'+i)),
+			UserID:   uint(10 + i),
+			Priority: models.TaskPriorityInteractive,
+			Run: func(_ context.Context) {
+				defer done.Done()
+				ran.Add(1)
+			},
+		}
+	}
+	if err := commit2(jobs); err != nil {
+		t.Fatalf("commit2 失败: %v", err)
+	}
+	close(block)
+	done.Wait()
+	if ran.Load() != 3 {
+		t.Fatalf("期望 3 个预留任务全部执行，实际 %d", ran.Load())
+	}
+
+	// 3. 停机前已预留但停机后 commit 应返回 ErrSchedulerStopped 并触发全部 OnDrop
+	commit3, _, err := sched.ReserveSlots(models.TaskPriorityInteractive, 2)
+	if err != nil {
+		t.Fatalf("预留 2 槽位失败: %v", err)
+	}
+	cancel()
+	sched.Stop()
+
+	var dropped atomic.Int32
+	stopJobs := []services.ScheduledJob{
+		{ID: "d1", OnDrop: func() { dropped.Add(1) }, Run: func(_ context.Context) {}},
+		{ID: "d2", OnDrop: func() { dropped.Add(1) }, Run: func(_ context.Context) {}},
+	}
+	if err := commit3(stopJobs); !errors.Is(err, services.ErrSchedulerStopped) {
+		t.Fatalf("停机后 commit 期望返 ErrSchedulerStopped，实际: %v", err)
+	}
+	if dropped.Load() != 2 {
+		t.Fatalf("停机后 commit 期望全部执行 OnDrop (2)，实际: %d", dropped.Load())
+	}
+}

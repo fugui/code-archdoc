@@ -37,6 +37,11 @@ func (o *GenerationOrchestrator) SubmitBatchGenerateTask(
 		return nil, fmt.Errorf("%w: mode 仅支持 generate 或 regenerate", ErrInvalidTaskParam)
 	}
 
+	engine, engErr := o.CheckEngineAvailable(ctx, req.Engine)
+	if engErr != nil {
+		return nil, engErr
+	}
+
 	repo, err := o.masterRepo.GetRepository(ctx, req.RepoID)
 	if err != nil {
 		return nil, err
@@ -162,6 +167,7 @@ func (o *GenerationOrchestrator) SubmitBatchGenerateTask(
 		Subdirectory:    "",
 		RefName:         refName,
 		TaskKind:        models.TaskKindBatch,
+		Engine:          engine,
 		Priority:        models.TaskPriorityBatch,
 		DocTypesJSON:    datatypes.JSON(docTypesJSON),
 		Status:          models.TaskStatusPending,
@@ -180,7 +186,7 @@ func (o *GenerationOrchestrator) SubmitBatchGenerateTask(
 	go func() {
 		defer o.wg.Done()
 		defer o.unregisterCancel(parentTask.ID)
-		o.executeBatchGenerateTask(parentCtx, parentTask.ID, repo, targetSubdirs, req.IncludeRepoScope, dedupSlugs, childMode, refName, operatorID)
+		o.executeBatchGenerateTask(parentCtx, parentTask.ID, repo, targetSubdirs, req.IncludeRepoScope, dedupSlugs, childMode, engine, refName, operatorID)
 	}()
 
 	vo := toGenTaskDetailVO(parentTask, repo.Name, "", nil)
@@ -195,6 +201,7 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 	includeRepoScope bool,
 	slugs []string,
 	childMode string,
+	engine string,
 	refName string,
 	operatorID uint,
 ) {
@@ -293,9 +300,9 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 		return
 	}
 
-	totalExpected := len(moduleSubdirs)
+	totalExpected := len(moduleSubdirs) * len(slugs)
 	if includeRepoScope {
-		totalExpected++
+		totalExpected += len(slugs)
 	}
 	if totalExpected == 0 {
 		finNow := time.Now()
@@ -306,22 +313,24 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 		return
 	}
 
-	// 3. 阶段一：批量提交所有模块子任务（Priority=batch），全部通过 TaskScheduler 受控并发
+	// 3. 阶段一：按 (subdir, doc_type) 单文档粒度提交全部模块子任务（Priority=batch），全部通过 TaskScheduler 受控并发
 	var stage1IDs []uint
 	for _, sub := range moduleSubdirs {
-		if ctx.Err() != nil {
-			o.cancelChildTasksByIDs(dbCtx, stage1IDs)
-			o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
-			return
+		for _, slug := range slugs {
+			if ctx.Err() != nil {
+				o.cancelChildTasksByIDs(dbCtx, stage1IDs)
+				o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
+				return
+			}
+			childID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, sub, baseSnap.Snapshot.RefName, []string{slug}, childMode, engine, operatorID)
+			if subErr != nil {
+				// 队列满等错误记录在父任务并跳过后续创建
+				o.cancelChildTasksByIDs(dbCtx, stage1IDs)
+				o.markBatchTaskFailed(dbCtx, parentTaskID, models.TaskStatusGenerating, "BATCH_CHILD_DISPATCH_FAILED", subErr.Error(), nil, totalEstimated)
+				return
+			}
+			stage1IDs = append(stage1IDs, childID)
 		}
-		childID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, sub, baseSnap.Snapshot.RefName, slugs, childMode, operatorID)
-		if subErr != nil {
-			// 队列满等错误记录在父任务并跳过后续创建
-			o.cancelChildTasksByIDs(dbCtx, stage1IDs)
-			o.markBatchTaskFailed(dbCtx, parentTaskID, models.TaskStatusGenerating, "BATCH_CHILD_DISPATCH_FAILED", subErr.Error(), nil, totalEstimated)
-			return
-		}
-		stage1IDs = append(stage1IDs, childID)
 	}
 
 	// 等待阶段一全部模块子任务进入终态
@@ -333,21 +342,29 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 		}
 	}
 
-	// 4. 阶段二：若勾选 include_repo_scope 且父任务未取消，在所有模块子任务完成后再提交整仓汇总子任务
+	// 4. 阶段二：若勾选 include_repo_scope 且父任务未取消，在所有模块子任务完成后再按单文档粒度提交整仓汇总子任务
 	if includeRepoScope {
-		if ctx.Err() != nil {
-			o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
-			return
+		var stage2IDs []uint
+		for _, slug := range slugs {
+			if ctx.Err() != nil {
+				o.cancelChildTasksByIDs(dbCtx, stage2IDs)
+				o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
+				return
+			}
+			repoChildID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, "", baseSnap.Snapshot.RefName, []string{slug}, childMode, engine, operatorID)
+			if subErr != nil {
+				o.cancelChildTasksByIDs(dbCtx, stage2IDs)
+				o.markBatchTaskFailed(dbCtx, parentTaskID, models.TaskStatusGenerating, "BATCH_CHILD_DISPATCH_FAILED", subErr.Error(), nil, totalEstimated)
+				return
+			}
+			stage2IDs = append(stage2IDs, repoChildID)
 		}
-		repoChildID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, "", baseSnap.Snapshot.RefName, slugs, childMode, operatorID)
-		if subErr != nil {
-			o.markBatchTaskFailed(dbCtx, parentTaskID, models.TaskStatusGenerating, "BATCH_CHILD_DISPATCH_FAILED", subErr.Error(), nil, totalEstimated)
-			return
-		}
-		if canceled := o.waitBatchChildren(ctx, dbCtx, parentTaskID, []uint{repoChildID}, len(stage1IDs), totalExpected); canceled {
-			o.cancelChildTasksByIDs(dbCtx, []uint{repoChildID})
-			o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
-			return
+		if len(stage2IDs) > 0 {
+			if canceled := o.waitBatchChildren(ctx, dbCtx, parentTaskID, stage2IDs, len(stage1IDs), totalExpected); canceled {
+				o.cancelChildTasksByIDs(dbCtx, stage2IDs)
+				o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
+				return
+			}
 		}
 	}
 
@@ -392,6 +409,7 @@ func (o *GenerationOrchestrator) submitBatchChildTask(
 	refName string,
 	slugs []string,
 	childMode string,
+	engine string,
 	operatorID uint,
 ) (uint, error) {
 	docTypesJSON, _ := json.Marshal(slugs)
@@ -402,6 +420,7 @@ func (o *GenerationOrchestrator) submitBatchChildTask(
 		Subdirectory:    subdir,
 		RefName:         refName,
 		TaskKind:        childMode,
+		Engine:          models.NormalizeEngine(engine),
 		Priority:        models.TaskPriorityBatch,
 		DocTypesJSON:    datatypes.JSON(docTypesJSON),
 		Status:          models.TaskStatusPending,
@@ -499,14 +518,18 @@ func (o *GenerationOrchestrator) estimateBatchTokens(
 	moduleSubdirs []string,
 	includeRepoScope bool,
 ) (int, []models.BudgetModuleItem) {
-	baseBudget := llm.EstimateAndCheckBudget(llm.BudgetCheckInput{
-		IR:               baseSnap.IR,
-		DocTypes:         assets,
-		GlossaryCached:   o.snapSvc.HasCachedGlossary(context.Background(), baseSnap.Loc),
-		MaxTokensPerTask: 0,
-		MaxFilesPerTask:  0,
-	})
-	baseTotal := maxIntVal(baseBudget.Advice.EstimatedTokens, 1000)
+	glossaryCached := o.snapSvc.HasCachedGlossary(context.Background(), baseSnap.Loc)
+	perAssetBase := make([]int, len(assets))
+	for i, asset := range assets {
+		b := llm.EstimateAndCheckBudget(llm.BudgetCheckInput{
+			IR:               baseSnap.IR,
+			DocTypes:         []*doctype.AssetBundle{asset},
+			GlossaryCached:   glossaryCached || i > 0,
+			MaxTokensPerTask: 0,
+			MaxFilesPerTask:  0,
+		})
+		perAssetBase[i] = maxIntVal(b.Advice.EstimatedTokens, 1000)
+	}
 	totalFiles := maxIntVal(baseSnap.IR.Tree.TotalFiles, 1)
 
 	breakdown := make([]models.BudgetModuleItem, 0, len(moduleSubdirs)+1)
@@ -524,31 +547,39 @@ func (o *GenerationOrchestrator) estimateBatchTokens(
 		if ratio > 1 {
 			ratio = 1
 		}
-		est := int(float64(baseTotal) * ratio)
-		if est < 500 {
-			est = 500
+		modSum := 0
+		for _, baseTok := range perAssetBase {
+			est := int(float64(baseTok) * ratio)
+			if est < 500 {
+				est = 500
+			}
+			modSum += est
 		}
-		sumTokens += est
+		sumTokens += modSum
 		breakdown = append(breakdown, models.BudgetModuleItem{
 			Subdirectory:    sub,
-			EstimatedTokens: est,
+			EstimatedTokens: modSum,
 			EffectiveFiles:  modFiles,
 		})
 	}
 
 	if includeRepoScope {
-		// 整仓汇总基于模块摘要（轻量预算，约为全仓基线的 25% 或至少 2000）
-		repoEst := baseTotal / 4
-		if len(moduleSubdirs) == 0 {
-			repoEst = baseTotal
+		repoSum := 0
+		for _, baseTok := range perAssetBase {
+			// 整仓汇总基于模块摘要（轻量预算，约为全仓基线的 25% 或至少 2000）
+			repoEst := baseTok / 4
+			if len(moduleSubdirs) == 0 {
+				repoEst = baseTok
+			}
+			if repoEst < 2000 {
+				repoEst = 2000
+			}
+			repoSum += repoEst
 		}
-		if repoEst < 2000 {
-			repoEst = 2000
-		}
-		sumTokens += repoEst
+		sumTokens += repoSum
 		breakdown = append(breakdown, models.BudgetModuleItem{
 			Subdirectory:    "",
-			EstimatedTokens: repoEst,
+			EstimatedTokens: repoSum,
 			EffectiveFiles:  baseSnap.IR.Tree.TotalFiles,
 		})
 	}

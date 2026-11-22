@@ -93,8 +93,13 @@ func EstimateAndCheckBudget(in BudgetCheckInput) BudgetCheckResult {
 	effectiveFiles := 0
 	var topDirs []BudgetDirectoryItem
 	if in.IR != nil {
-		effectiveFiles = countEffectiveFilesForDocTypes(in.IR, in.DocTypes)
-		topDirs = computeTopDirectories(in.IR, 5)
+		if len(in.IR.Tree.Files) == 0 {
+			effectiveFiles = in.IR.Tree.TotalFiles
+		} else {
+			filteredFiles := filterEffectiveFilesForDocTypes(in.IR, in.DocTypes)
+			effectiveFiles = len(filteredFiles)
+			topDirs = computeTopDirectories(filteredFiles, 5)
+		}
 	}
 
 	// 2. 预估每个分片的序列化 Token 规模
@@ -205,12 +210,12 @@ func EstimateAndCheckBudget(in BudgetCheckInput) BudgetCheckResult {
 	}
 }
 
-func countEffectiveFilesForDocTypes(ir *codeir.CodeIRBundle, docTypes []*doctype.AssetBundle) int {
-	if ir == nil {
-		return 0
+func filterEffectiveFilesForDocTypes(ir *codeir.CodeIRBundle, docTypes []*doctype.AssetBundle) []codeir.FileSummary {
+	if ir == nil || len(ir.Tree.Files) == 0 {
+		return nil
 	}
 	if len(docTypes) == 0 {
-		return ir.Tree.TotalFiles
+		return ir.Tree.Files
 	}
 	walked := make([]sandbox.WalkedFile, 0, len(ir.Tree.Files))
 	for _, f := range ir.Tree.Files {
@@ -221,28 +226,36 @@ func countEffectiveFilesForDocTypes(ir *codeir.CodeIRBundle, docTypes []*doctype
 		})
 	}
 	union := make(map[string]bool, len(walked))
+	hasValidDocType := false
 	for _, dt := range docTypes {
 		if dt == nil {
 			continue
 		}
+		hasValidDocType = true
 		filtered := sandbox.FilterByScopeProfile(walked, dt.Meta.ScopeProfile.ToSandboxProfile())
 		for _, f := range filtered {
 			union[f.RelPath] = true
 		}
 	}
-	if len(union) == 0 {
-		return ir.Tree.TotalFiles
+	if !hasValidDocType {
+		return ir.Tree.Files
 	}
-	return len(union)
+	res := make([]codeir.FileSummary, 0, len(union))
+	for _, f := range ir.Tree.Files {
+		if union[f.RelPath] {
+			res = append(res, f)
+		}
+	}
+	return res
 }
 
-func computeTopDirectories(ir *codeir.CodeIRBundle, topN int) []BudgetDirectoryItem {
+func computeTopDirectories(files []codeir.FileSummary, topN int) []BudgetDirectoryItem {
 	type dirAgg struct {
 		bytes int64
 		files int
 	}
 	byDir := make(map[string]*dirAgg)
-	for _, f := range ir.Tree.Files {
+	for _, f := range files {
 		dir := path.Dir(f.RelPath)
 		if dir == "." {
 			dir = "(root)"

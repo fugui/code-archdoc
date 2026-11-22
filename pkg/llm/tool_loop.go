@@ -60,7 +60,7 @@ type ToolLoopResult struct {
 
 const toolLoopFinalizeNotice = "只读源码工具探索配额已用尽。严禁继续调用任何工具，请立即基于已获取的 L1 Code IR 与上述源码事实，严格按系统指令规定的输出格式输出最终结果。"
 
-// RunToolLoop 执行非流式受限只读 Tool-Calling 循环（供核心流程章节槽位生成使用）。
+// RunToolLoop 执行受限只读 Tool-Calling 循环（供核心流程章节槽位生成使用，内部走流式聚合与双模解析）。
 func RunToolLoop(
 	ctx context.Context,
 	client *Client,
@@ -69,7 +69,7 @@ func RunToolLoop(
 	executor ToolExecutor,
 	opts ToolLoopOptions,
 ) (*ToolLoopResult, error) {
-	return runToolLoopInternal(ctx, client, cfg, req, executor, opts, false, ToolLoopCallbacks{})
+	return runToolLoopInternal(ctx, client, cfg, req, executor, opts, true, ToolLoopCallbacks{})
 }
 
 // RunToolLoopStream 执行 SSE 流式受限只读 Tool-Calling 循环（供 Canvas Studio Chat 局部精修使用）。

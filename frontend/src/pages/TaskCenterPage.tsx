@@ -28,6 +28,7 @@ import type {
   DocTypeSummaryVO,
   GenTaskDetailVO,
   RepoScopeCoverageVO,
+  TaskEngineFilter,
   TaskKind,
   TaskKindFilter,
   TaskStatus,
@@ -36,6 +37,7 @@ import type {
 } from '../types';
 import { getDocTypeShortName } from '../utils/docTypeUtils';
 import { formatApiError } from '../utils/errorMessages';
+import { formatEngineLabel } from '../utils/taskSubmitUtils';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildStudioPath,
@@ -180,6 +182,7 @@ export const TaskCenterPage: React.FC = () => {
           repoId: repoIdNum && repoIdNum > 0 ? repoIdNum : undefined,
           status: filterState.status || undefined,
           taskKind: filterState.taskKind || undefined,
+          engine: filterState.engine || undefined,
           mine: filterState.mine,
           topLevelOnly: !filterState.includeChildren,
         });
@@ -204,6 +207,7 @@ export const TaskCenterPage: React.FC = () => {
       filterState.repoId,
       filterState.status,
       filterState.taskKind,
+      filterState.engine,
       filterState.mine,
       filterState.includeChildren,
       showToast,
@@ -277,6 +281,7 @@ export const TaskCenterPage: React.FC = () => {
     repoId?: string;
     status?: TaskStatusFilter;
     taskKind?: TaskKindFilter;
+    engine?: TaskEngineFilter;
     mine?: boolean;
     includeChildren?: boolean;
   }) => {
@@ -291,6 +296,7 @@ export const TaskCenterPage: React.FC = () => {
           repoId: '',
           status: '',
           taskKind: '',
+          engine: '',
           mine: false,
           includeChildren: false,
         },
@@ -377,6 +383,7 @@ export const TaskCenterPage: React.FC = () => {
     filterState.repoId ||
       filterState.status ||
       filterState.taskKind ||
+      filterState.engine ||
       filterState.mine ||
       filterState.includeChildren,
   );
@@ -513,6 +520,17 @@ export const TaskCenterPage: React.FC = () => {
             <option value="batch">批量分层编排</option>
           </select>
 
+          <select
+            className="code-select code-archdoc-task-select"
+            value={filterState.engine}
+            onChange={(e) => updateFilter({ engine: e.target.value as TaskEngineFilter })}
+            aria-label="按生成引擎筛选"
+          >
+            <option value="">全部引擎</option>
+            <option value="native">Native 内置引擎</option>
+            <option value="opencode">OpenCode 深度探索</option>
+          </select>
+
           <label className="code-archdoc-task-toggle">
             <input
               type="checkbox"
@@ -606,6 +624,13 @@ export const TaskCenterPage: React.FC = () => {
                               <code className="code-archdoc-mono">#{task.id}</code>
                               <span className="code-badge code-badge--muted">
                                 {taskKindLabel(task.task_kind)}
+                              </span>
+                              <span
+                                className={`code-archdoc-engine-badge code-archdoc-engine-badge--${
+                                  task.engine === 'opencode' ? 'opencode' : 'native'
+                                }`}
+                              >
+                                {formatEngineLabel(task.engine)}
                               </span>
                             </div>
                             {task.parent_task_id && (

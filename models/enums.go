@@ -1,6 +1,9 @@
 package models
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // 领域通用哨兵错误
 var (
@@ -294,3 +297,23 @@ const (
 	AnchorScopeModule = "module"
 	AnchorScopeRepo   = "repo"
 )
+
+// GenEngine 枚举（ADR-08 双引擎文档生成）
+const (
+	EngineNative   = "native"
+	EngineOpenCode = "opencode"
+)
+
+// IsValidEngine 校验生成引擎标识是否合法。
+func IsValidEngine(v string) bool {
+	return v == EngineNative || v == EngineOpenCode
+}
+
+// NormalizeEngine 归一化生成引擎标识（空串与非法值统一回退至 native）。
+func NormalizeEngine(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if IsValidEngine(v) {
+		return v
+	}
+	return EngineNative
+}

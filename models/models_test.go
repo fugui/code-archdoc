@@ -127,6 +127,12 @@ func TestEnumsAndTaskStateMachine(t *testing.T) {
 	if !IsValidReviewCommentStatus(ReviewStatusOpen) || !IsValidReviewCommentStatus(ReviewStatusProposed) || IsValidReviewCommentStatus("closed") {
 		t.Fatal("ReviewCommentStatus 校验失败")
 	}
+	if !IsValidEngine(EngineNative) || !IsValidEngine(EngineOpenCode) || IsValidEngine("copilot") {
+		t.Fatal("GenEngine 校验失败")
+	}
+	if NormalizeEngine(" OpenCode ") != EngineOpenCode || NormalizeEngine("") != EngineNative || NormalizeEngine("bogus") != EngineNative {
+		t.Fatal("NormalizeEngine 归一化校验失败")
+	}
 
 	// 2. 任务状态机转移校验
 	validTransitions := [][2]string{

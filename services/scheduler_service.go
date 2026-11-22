@@ -49,6 +49,8 @@ type TaskScheduler struct {
 	mu              sync.Mutex
 	highQ           []ScheduledJob
 	lowQ            []ScheduledJob
+	reservedHigh    int
+	reservedLow     int
 	runningTotal    int
 	runningByUser   map[uint]int
 	consecutiveHigh int
@@ -169,13 +171,13 @@ func (s *TaskScheduler) Enqueue(job ScheduledJob) error {
 	}
 
 	if job.Priority == models.TaskPriorityInteractive {
-		if len(s.highQ) >= s.cfg.InteractiveQueueCap {
+		if len(s.highQ)+s.reservedHigh >= s.cfg.InteractiveQueueCap {
 			s.mu.Unlock()
 			return ErrQueueFull
 		}
 		s.highQ = append(s.highQ, job)
 	} else {
-		if len(s.lowQ) >= s.cfg.BatchQueueCap {
+		if len(s.lowQ)+s.reservedLow >= s.cfg.BatchQueueCap {
 			s.mu.Unlock()
 			return ErrQueueFull
 		}
@@ -185,6 +187,118 @@ func (s *TaskScheduler) Enqueue(job ScheduledJob) error {
 
 	s.signal()
 	return nil
+}
+
+// ReserveSlots 两阶段队列容量预留：在 DB 批量事务之前原子占位，防止半数入库或停机泄漏；
+// 返回的 commit 与 rollback 闭包互斥且严格幂等，commit 内部二次检查 stopped 并在停机时执行 OnDrop。
+func (s *TaskScheduler) ReserveSlots(priority string, count int) (commit func([]ScheduledJob) error, rollback func(), err error) {
+	if priority != models.TaskPriorityBatch {
+		priority = models.TaskPriorityInteractive
+	}
+	if count <= 0 {
+		return func(jobs []ScheduledJob) error {
+			for _, j := range jobs {
+				if err := s.Enqueue(j); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, func() {}, nil
+	}
+
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil, nil, ErrSchedulerStopped
+	}
+	if !s.started {
+		s.started = true
+		s.stopCtx, s.stopFunc = context.WithCancel(context.Background())
+		s.loopWG.Add(1)
+		go s.dispatchLoop()
+	}
+
+	if priority == models.TaskPriorityInteractive {
+		if len(s.highQ)+s.reservedHigh+count > s.cfg.InteractiveQueueCap {
+			s.mu.Unlock()
+			return nil, nil, ErrQueueFull
+		}
+		s.reservedHigh += count
+	} else {
+		if len(s.lowQ)+s.reservedLow+count > s.cfg.BatchQueueCap {
+			s.mu.Unlock()
+			return nil, nil, ErrQueueFull
+		}
+		s.reservedLow += count
+	}
+	s.mu.Unlock()
+
+	var settleOnce sync.Once
+	releaseReservedLocked := func() {
+		if priority == models.TaskPriorityInteractive {
+			s.reservedHigh -= count
+			if s.reservedHigh < 0 {
+				s.reservedHigh = 0
+			}
+		} else {
+			s.reservedLow -= count
+			if s.reservedLow < 0 {
+				s.reservedLow = 0
+			}
+		}
+	}
+
+	rollbackFn := func() {
+		settleOnce.Do(func() {
+			s.mu.Lock()
+			releaseReservedLocked()
+			s.mu.Unlock()
+		})
+	}
+
+	commitFn := func(jobs []ScheduledJob) error {
+		var commitErr error
+		var droppedJobs []ScheduledJob
+		committed := false
+
+		settleOnce.Do(func() {
+			s.mu.Lock()
+			releaseReservedLocked()
+			if s.stopped {
+				droppedJobs = append(droppedJobs, jobs...)
+				commitErr = ErrSchedulerStopped
+				s.mu.Unlock()
+				return
+			}
+			for _, job := range jobs {
+				if job.Run == nil {
+					continue
+				}
+				if job.Priority != models.TaskPriorityBatch {
+					job.Priority = models.TaskPriorityInteractive
+				}
+				if job.Priority == models.TaskPriorityInteractive {
+					s.highQ = append(s.highQ, job)
+				} else {
+					s.lowQ = append(s.lowQ, job)
+				}
+			}
+			committed = true
+			s.mu.Unlock()
+		})
+
+		for _, j := range droppedJobs {
+			if j.OnDrop != nil {
+				j.OnDrop()
+			}
+		}
+		if committed {
+			s.signal()
+		}
+		return commitErr
+	}
+
+	return commitFn, rollbackFn, nil
 }
 
 // AcquireLLMSlot 获取全局 LLM 并发信号量槽位，支持 ctx 取消与实时运行数统计。

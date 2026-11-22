@@ -378,7 +378,7 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 		promptMu.Unlock()
 
 		// SSE Chat 精修流式响应（SC-05）
-		if req.Stream {
+		if req.Stream && strings.Contains(userPrompt, "负责人精修指令") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
 			refinedJSON := `{"reply":"已按要求补充超时重试与分片锁并发说明。","markdown":"### 运行时并发与锁模型（Chat 精修版）\n\n订单服务在 ` + "`src/order/order_service.cpp`" + ` 使用 ` + "`order::OrderService::CreateOrder`" + ` 配合 ` + "`std::mutex`" + ` 保护状态机，并补充超时重试时序图。\n\n` + "```mermaid\nsequenceDiagram\n  Client->>OrderService: CreateOrder\n  OrderService-->>Client: OK\n```" + `","cited_anchors":[{"file_path":"src/order/order_service.cpp","symbol_kind":"cpp_func","fq_symbol":"order::OrderService::CreateOrder"}]}`
@@ -530,11 +530,21 @@ func TestE2EAllP0Scenarios(t *testing.T) {
 	if gen1Resp.Code != http.StatusAccepted {
 		t.Fatalf("SC-02 触发联合生成失败: %d %s", gen1Resp.Code, gen1Resp.Body.String())
 	}
-	var task1 services.GenTaskDetailVO
-	mustUnmarshal(t, gen1Resp.Body.Bytes(), &task1)
-	task1Done := waitForTaskTerminal(t, router, ownerTok, task1.ID)
-	if task1Done.Status != models.TaskStatusReady {
-		t.Fatalf("SC-02 联合生成未就绪: status=%s code=%s msg=%s", task1Done.Status, task1Done.ErrorCode, task1Done.ErrorMessage)
+	var task1Submit services.GenerateTaskSubmitResponse
+	mustUnmarshal(t, gen1Resp.Body.Bytes(), &task1Submit)
+	if task1Submit.CreatedCount != 2 || len(task1Submit.Tasks) != 2 {
+		t.Fatalf("SC-02 拆单期望 created_count=2 且 len(tasks)=2，实际 created_count=%d tasks=%d",
+			task1Submit.CreatedCount, len(task1Submit.Tasks))
+	}
+	for _, subTask := range task1Submit.Tasks {
+		if len(subTask.DocTypes) != 1 {
+			t.Fatalf("SC-02 拆单后每个任务仅允许绑定 1 个 doc_type，实际 #%d -> %v", subTask.ID, subTask.DocTypes)
+		}
+		done := waitForTaskTerminal(t, router, ownerTok, subTask.ID)
+		if done.Status != models.TaskStatusReady {
+			t.Fatalf("SC-02 拆单子任务 #%d (%v) 未就绪: status=%s code=%s msg=%s",
+				subTask.ID, subTask.DocTypes, done.Status, done.ErrorCode, done.ErrorMessage)
+		}
 	}
 
 	// SC-02 断言：双 DocType 仅触发 1 次 Code IR 抽取与 1 次术语表生成；再次生成另一 DocType 时 C++ 解析零新增调用

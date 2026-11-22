@@ -4,6 +4,7 @@ import type {
   DriftFilterType,
   RepoScopeFilter,
   RepoStatusFilter,
+  TaskEngineFilter,
   TaskKindFilter,
   TaskStatusFilter,
 } from '../types';
@@ -37,6 +38,7 @@ export interface TaskCenterFilterState {
   repoId: string;
   status: TaskStatusFilter;
   taskKind: TaskKindFilter;
+  engine: TaskEngineFilter;
   mine: boolean;
   includeChildren: boolean;
 }
@@ -81,6 +83,7 @@ const VALID_TASK_KIND_SET = new Set<string>([
   'incremental_refresh',
   'batch',
 ]);
+const VALID_TASK_ENGINE_SET = new Set<string>(['all', 'native', 'opencode']);
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 /**
@@ -331,6 +334,11 @@ export function parseTaskFilterParams(params: URLSearchParams): TaskCenterFilter
     ? (rawKind as TaskKindFilter)
     : '';
 
+  const rawEngine = (params.get('engine') ?? '').trim().toLowerCase();
+  const engine: TaskEngineFilter = VALID_TASK_ENGINE_SET.has(rawEngine)
+    ? (rawEngine as TaskEngineFilter)
+    : '';
+
   const rawMine = (params.get('mine') ?? '').trim().toLowerCase();
   const mine = rawMine === 'true' || rawMine === '1';
 
@@ -343,6 +351,7 @@ export function parseTaskFilterParams(params: URLSearchParams): TaskCenterFilter
     repoId,
     status,
     taskKind,
+    engine,
     mine,
     includeChildren,
   };
@@ -374,6 +383,9 @@ export function serializeTaskFilterParams(
   }
   if (nextState.taskKind && nextState.taskKind !== 'all') {
     out.set('task_kind', nextState.taskKind);
+  }
+  if (nextState.engine && nextState.engine !== 'all') {
+    out.set('engine', nextState.engine);
   }
   if (nextState.mine) {
     out.set('mine', 'true');

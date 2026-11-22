@@ -7,7 +7,7 @@
     "dev": "vite --port 5182",
     "build": "tsc && vite build",
     "lint": "tsc --noEmit && eslint . --ext ts,tsx --report-unused-disable-directives",
-    "test": "node --test src/utils/archdocUtils.test.ts src/utils/docTypeBlueprint.test.ts src/utils/reviewAnchor.test.ts src/utils/numberInput.test.ts src/utils/branchUtils.test.ts",
+    "test": "node --test src/utils/archdocUtils.test.ts src/utils/docTypeBlueprint.test.ts src/utils/reviewAnchor.test.ts src/utils/numberInput.test.ts src/utils/branchUtils.test.ts src/utils/taskSubmitUtils.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

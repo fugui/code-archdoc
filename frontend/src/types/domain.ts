@@ -384,12 +384,31 @@ export interface RepoCoverageListResponse extends PaginatedResponse<RepoScopeCov
   subsystems?: ArchSubsystemOptionVO[];
 }
 
+export type GenEngine = 'native' | 'opencode';
+
+export type TaskEngineFilter = 'all' | '' | GenEngine;
+
+export interface EngineInfoVO {
+  name: GenEngine;
+  display_name: string;
+  available: boolean;
+  default: boolean;
+  version?: string;
+  reason?: string;
+}
+
+export interface EnginesResponse {
+  engines: EngineInfoVO[];
+  default_engine: GenEngine;
+}
+
 export interface GenTaskSummaryVO {
   id: number;
   repo_id: number;
   subdirectory: string;
   ref_name: string;
   task_kind: TaskKind;
+  engine?: GenEngine;
   priority: TaskPriority;
   status: TaskStatus;
   progress_percent: number;
@@ -697,6 +716,7 @@ export interface GenTaskDetailVO {
   snapshot_id?: number | null;
   commit_sha?: string;
   task_kind: TaskKind;
+  engine?: GenEngine;
   priority: TaskPriority;
   doc_types: string[];
   target_document_id?: number | null;
@@ -716,6 +736,11 @@ export interface GenTaskDetailVO {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+}
+
+export interface GenerateTaskSubmitResponse extends GenTaskDetailVO {
+  created_count?: number;
+  tasks?: GenTaskDetailVO[];
 }
 
 export interface TaskSummaryVO {
@@ -862,6 +887,7 @@ export interface LLMConfigVO {
   name: string;
   base_url: string;
   model_name: string;
+  opencode_model?: string;
   api_key_masked: string;
   has_api_key: boolean;
   timeout_seconds: number;

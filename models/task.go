@@ -17,6 +17,7 @@ type GenTask struct {
 	SnapshotID       *uint          `gorm:"index" json:"snapshot_id"`
 	ParentTaskID     *uint          `gorm:"index" json:"parent_task_id"`
 	TaskKind         string         `gorm:"size:32;not null;default:'generate'" json:"task_kind"`
+	Engine           string         `gorm:"size:20;not null;default:'native';index" json:"engine"`
 	Priority         string         `gorm:"size:20;not null;default:'interactive';index" json:"priority"`
 	DocTypesJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`
 	TargetDocumentID *uint          `gorm:"index" json:"target_document_id"`

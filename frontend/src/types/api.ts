@@ -6,6 +6,7 @@ import type {
   ContextInputName,
   DriftFilterType,
   FacetName,
+  GenEngine,
   ModuleDigestSourceConfig,
   ModuleDiscoveryStrategy,
   RepoScopeFilter,
@@ -17,6 +18,7 @@ import type {
   ScopeProfileConfig,
   SectionOwnership,
   SlotDefinition,
+  TaskEngineFilter,
   TaskKindFilter,
   TaskStatusFilter,
   VerifyPolicyConfig,
@@ -27,6 +29,7 @@ export type ArchdocErrorCode =
   | 'INVALID_SUBDIR'
   | 'INVALID_SLUG'
   | 'DOC_TYPE_INACTIVE'
+  | 'ENGINE_UNAVAILABLE'
   | 'UNAUTHORIZED'
   | 'FORBIDDEN'
   | 'DRAFT_ACCESS_DENIED'
@@ -74,8 +77,10 @@ export interface GenerateTaskPayload {
   repo_id: number;
   subdirectory: string;
   ref_name?: string;
+  doc_type?: string;
   doc_types: string[];
   mode?: 'generate' | 'regenerate';
+  engine?: GenEngine;
 }
 
 export interface BatchGenerateTaskPayload {
@@ -86,6 +91,7 @@ export interface BatchGenerateTaskPayload {
   include_repo_scope?: boolean;
   doc_types: string[];
   mode?: 'generate' | 'regenerate';
+  engine?: GenEngine;
 }
 
 export interface UpdateRepoModulePolicyPayload {
@@ -110,6 +116,7 @@ export interface TaskListQuery {
   subdirectory?: string;
   status?: TaskStatusFilter;
   taskKind?: TaskKindFilter;
+  engine?: TaskEngineFilter;
   mine?: boolean;
   topLevelOnly?: boolean;
 }
@@ -163,6 +170,7 @@ export interface UpsertLLMConfigPayload {
   name: string;
   base_url: string;
   model_name: string;
+  opencode_model?: string;
   api_key: string;
   clear_api_key?: boolean;
   timeout_seconds: number;
@@ -288,6 +296,7 @@ export interface DriftListQuery {
 
 export interface IncrementalRefreshPayload {
   slot_ids?: string[];
+  engine?: GenEngine;
 }
 
 export interface MetricsOverviewQuery {

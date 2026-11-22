@@ -718,3 +718,85 @@ func TestRepoCoverageActiveModuleCountAndScanned(t *testing.T) {
 		t.Fatalf("未刷新的 plainRepo 不应受影响，实际=%+v", after[plainRepo.ID])
 	}
 }
+
+// T-ADR08-05：批量拆单验证（2 模块 × 2 DocType + 整仓 = 6 个单文档子任务，ModuleBreakdown 保持 3 个范围条目）
+func TestBatchGenerateSplitsPerModuleAndDocType(t *testing.T) {
+	env := setupM8TestEnv(t)
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		userMsg := ""
+		if len(payload.Messages) >= 2 {
+			userMsg = payload.Messages[1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(userMsg, "repo_structure_for_glossary") {
+			_, _ = w.Write([]byte(`{"model":"mock-fast","choices":[{"message":{"content":"{\"module_summaries\":[{\"path\":\"order\",\"summary\":\"订单\"},{\"path\":\"common\",\"summary\":\"公共\"}],\"terms\":[]}"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"mock-fast","choices":[{"message":{"content":"{\"markdown\":\"模块章节内容\",\"cited_anchors\":[]}"}}]}`))
+	}))
+	defer mockLLM.Close()
+	configureM8MockLLM(t, env, mockLLM.URL)
+
+	// 1. 预算熔断下验证 ModuleBreakdown 保持 3 个范围条目（2 模块 + 整仓）
+	env.genSvc.WithBatchBudgetLimit(100)
+	bodyBytes, _ := json.Marshal(map[string]any{
+		"repo_id":            env.repo.ID,
+		"subdirectories":     []string{"common", "order"},
+		"include_repo_scope": true,
+		"doc_types":          []string{"code-walkthrough", "ops-and-config"},
+	})
+	reqBreak := httptest.NewRequest(http.MethodPost, "/api/tasks/generate-batch", bytes.NewReader(bodyBytes))
+	reqBreak.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	reqBreak.Header.Set("Content-Type", "application/json")
+	recBreak := httptest.NewRecorder()
+	env.router.ServeHTTP(recBreak, reqBreak)
+	if recBreak.Code != http.StatusAccepted {
+		t.Fatalf("提交批量任务失败: %d %s", recBreak.Code, recBreak.Body.String())
+	}
+	var breakParent services.GenTaskDetailVO
+	_ = json.Unmarshal(recBreak.Body.Bytes(), &breakParent)
+	env.genSvc.WaitAll()
+
+	breakDetail, err := env.genSvc.GetTaskDetail(context.Background(), breakParent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if breakDetail.BudgetAdvice == nil || len(breakDetail.BudgetAdvice.ModuleBreakdown) != 3 {
+		t.Fatalf("2 模块 × 2 DocType + 整仓熔断时 ModuleBreakdown 应保持 3 个范围条目，实际=%+v", breakDetail.BudgetAdvice)
+	}
+
+	// 2. 放开预算，验证准确创建 2×2 + 2 = 6 个单文档子任务（每条 len(doc_types)==1）且全部就绪
+	env.genSvc.WithBatchBudgetLimit(1000000)
+	reqOK := httptest.NewRequest(http.MethodPost, "/api/tasks/generate-batch", bytes.NewReader(bodyBytes))
+	reqOK.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	reqOK.Header.Set("Content-Type", "application/json")
+	recOK := httptest.NewRecorder()
+	env.router.ServeHTTP(recOK, reqOK)
+	if recOK.Code != http.StatusAccepted {
+		t.Fatalf("提交批量任务失败: %d %s", recOK.Code, recOK.Body.String())
+	}
+	var okParent services.GenTaskDetailVO
+	_ = json.Unmarshal(recOK.Body.Bytes(), &okParent)
+	env.genSvc.WaitAll()
+
+	okDetail, err := env.genSvc.GetTaskDetail(context.Background(), okParent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if okDetail.Status != models.TaskStatusReady {
+		t.Fatalf("批量父任务期望 ready，实际=%+v", okDetail)
+	}
+	if len(okDetail.ChildTasks) != 6 || okDetail.BatchSummary == nil || okDetail.BatchSummary.TotalChildren != 6 || okDetail.BatchSummary.CompletedChildren != 6 {
+		t.Fatalf("期望创建并完成 6 个单文档子任务，实际 children=%d summary=%+v", len(okDetail.ChildTasks), okDetail.BatchSummary)
+	}
+	for _, ch := range okDetail.ChildTasks {
+		if len(ch.DocTypes) != 1 {
+			t.Fatalf("批量子任务 #%d 必须为单文档粒度，实际 doc_types=%v", ch.ID, ch.DocTypes)
+		}
+	}
+}

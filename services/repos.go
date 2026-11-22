@@ -52,12 +52,14 @@ type SnapshotRepo interface {
 // TaskRepo 管理 archdoc_gen_tasks 与 archdoc_gen_slot_tasks
 type TaskRepo interface {
 	CreateTask(ctx context.Context, task *models.GenTask) error
+	CreateTasksBatch(ctx context.Context, tasks []*models.GenTask) error
 	GetTaskWithSlots(ctx context.Context, taskID uint) (*models.GenTask, []models.GenSlotTask, error)
 	ListTasks(ctx context.Context, filter models.TaskListFilter) ([]models.GenTask, int64, error)
 	CountTaskSummary(ctx context.Context, filter models.TaskListFilter) (*models.TaskSummaryRecord, error)
 	ListActiveTasksByRepos(ctx context.Context, repoIDs []uint) ([]models.GenTask, error)
 	TransitionTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error
 	TransitionBatchTaskStatus(ctx context.Context, taskID uint, from, to string, updates map[string]any) error
+	RecoverFailedTaskToReady(ctx context.Context, taskID uint, updates map[string]any) error
 	UpdateTaskFields(ctx context.Context, taskID uint, updates map[string]any) error
 	CreateSlotTasks(ctx context.Context, slots []models.GenSlotTask) error
 	UpdateSlotTask(ctx context.Context, slotTask *models.GenSlotTask) error
@@ -65,6 +67,7 @@ type TaskRepo interface {
 	ListChildTasks(ctx context.Context, parentTaskID uint) ([]models.GenTask, error)
 	HasActiveTasksInSubdirs(ctx context.Context, repoID uint, subdirs []string) (bool, error)
 	HasActiveTasksInRepo(ctx context.Context, repoID uint) (bool, error)
+	GetLatestEngineByDocumentID(ctx context.Context, docID uint) (string, error)
 }
 
 // DocumentRepo 管理 archdoc_documents / archdoc_document_revisions / archdoc_section_evidences

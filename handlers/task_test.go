@@ -70,6 +70,7 @@ type m2TestEnv struct {
 	db          *gorm.DB
 	router      *gin.Engine
 	docTypeSvc  *services.DocTypeService
+	snapSvc     *services.SnapshotService
 	genSvc      *services.GenerationOrchestrator
 	gitSyncer   *countingGitSyncer
 	cppCounter  *countingExtractor
@@ -182,6 +183,7 @@ func setupM2TestEnv(t *testing.T, maxLLMConcurrency int) *m2TestEnv {
 		db:          db,
 		router:      r,
 		docTypeSvc:  docTypeSvc,
+		snapSvc:     snapSvc,
 		genSvc:      genSvc,
 		gitSyncer:   gitSyncer,
 		cppCounter:  cppCounter,
@@ -1017,5 +1019,205 @@ func TestModelRoutingPreferredModelAndStrictNoFallback(t *testing.T) {
 	}
 	if preferredCalls.Load() != prevPreferredCalls {
 		t.Fatalf("严禁默认模型停用后静默回退到 GLM-4！新增调用=%d", preferredCalls.Load()-prevPreferredCalls)
+	}
+}
+
+// T-ADR08-04：单文档无竞态拆单、队列满原子保护、兄弟非内联锚点保留与全败任务单槽位恢复
+func TestSplitTasksQueueFullAndAllFailedSlotRetryRecovery(t *testing.T) {
+	env := setupM2TestEnv(t, 4)
+
+	var glossaryCalls atomic.Int32
+	var failAllSlots atomic.Bool
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		userMsg := ""
+		if len(payload.Messages) >= 2 {
+			userMsg = payload.Messages[1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(userMsg, "repo_structure_for_glossary") {
+			glossaryCalls.Add(1)
+			_, _ = w.Write([]byte(`{"model":"mock-fast","choices":[{"message":{"content":"{\"module_summaries\":[],\"terms\":[]}"}}]}`))
+			return
+		}
+		if failAllSlots.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"upstream down"}`))
+			return
+		}
+		// 仅通过 cited_anchors 传非内联证据，测试兄弟槽位证据保留
+		contentObj := map[string]any{
+			"markdown": "基于源码静态分析生成章节正文（不含内联路径文本）。",
+			"cited_anchors": []map[string]string{
+				{"file_path": "src/order/order_service.cpp", "fq_symbol": "order::OrderService::Pay"},
+			},
+		}
+		contentBytes, _ := json.Marshal(contentObj)
+		respBytes, _ := json.Marshal(map[string]any{
+			"model":   "mock-fast",
+			"choices": []map[string]any{{"message": map[string]string{"role": "assistant", "content": string(contentBytes)}}},
+			"usage":   map[string]any{"prompt_tokens": 120, "completion_tokens": 40},
+		})
+		_, _ = w.Write(respBytes)
+	}))
+	defer mockLLM.Close()
+	configureMockLLMInDB(t, env, mockLLM.URL, 500000, 2000)
+
+	// 1. 一次传入 3 个 doc_types -> 拆为 3 个单文档任务，共享 1 次 gitSync 与 1 次 glossary
+	splitBody, _ := json.Marshal(map[string]any{
+		"repo_id":   env.repo.ID,
+		"doc_types": []string{"system-architecture", "data-and-contract", "ops-and-config"},
+	})
+	reqSplit := httptest.NewRequest(http.MethodPost, "/api/tasks/generate", bytes.NewReader(splitBody))
+	reqSplit.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	reqSplit.Header.Set("Content-Type", "application/json")
+	recSplit := httptest.NewRecorder()
+	env.router.ServeHTTP(recSplit, reqSplit)
+	if recSplit.Code != http.StatusAccepted {
+		t.Fatalf("3 DocType 拆单期望 202，实际 %d (%s)", recSplit.Code, recSplit.Body.String())
+	}
+	var splitResp services.GenerateTaskSubmitResponse
+	if err := json.Unmarshal(recSplit.Body.Bytes(), &splitResp); err != nil {
+		t.Fatal(err)
+	}
+	if splitResp.CreatedCount != 3 || len(splitResp.Tasks) != 3 || splitResp.ID != splitResp.Tasks[0].ID {
+		t.Fatalf("拆单响应结构异常: created=%d tasks=%d id=%d", splitResp.CreatedCount, len(splitResp.Tasks), splitResp.ID)
+	}
+	for _, tk := range splitResp.Tasks {
+		if len(tk.DocTypes) != 1 {
+			t.Fatalf("拆单任务 #%d 必须仅包含 1 个 doc_type，实际 %v", tk.ID, tk.DocTypes)
+		}
+	}
+	env.genSvc.WaitAll()
+
+	if env.gitSyncer.calls.Load() != 1 || glossaryCalls.Load() != 1 {
+		t.Fatalf("SC-02 共享缓存失效: gitSync=%d glossary=%d", env.gitSyncer.calls.Load(), glossaryCalls.Load())
+	}
+	for _, tk := range splitResp.Tasks {
+		detail, err := env.genSvc.GetTaskDetail(context.Background(), tk.ID)
+		if err != nil || detail.Status != models.TaskStatusReady {
+			t.Fatalf("拆单任务 #%d 未就绪: detail=%+v err=%v", tk.ID, detail, err)
+		}
+	}
+
+	// 2. 队列满原子保护：InteractiveQueueCap=2 时提交 3 个 doc_types -> 429 QUEUE_FULL 且 DB 零新增
+	sched := services.NewTaskScheduler(services.SchedulerConfig{
+		MaxConcurrency:      1,
+		MaxUserConcurrency:  1,
+		InteractiveQueueCap: 2,
+		BatchQueueCap:       2,
+	})
+	sched.Start(context.Background())
+	defer sched.Stop()
+	env.genSvc.WithGovernance(services.NewActiveLeaseManager(), sched)
+
+	var beforeCount int64
+	_ = env.db.Model(&models.GenTask{}).Count(&beforeCount).Error
+	reqFull := httptest.NewRequest(http.MethodPost, "/api/tasks/generate", bytes.NewReader(splitBody))
+	reqFull.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	reqFull.Header.Set("Content-Type", "application/json")
+	recFull := httptest.NewRecorder()
+	env.router.ServeHTTP(recFull, reqFull)
+	if recFull.Code != http.StatusTooManyRequests || !strings.Contains(recFull.Body.String(), handlers.ErrCodeQueueFull) {
+		t.Fatalf("队列剩余 < N 时期望 429 QUEUE_FULL，实际 %d (%s)", recFull.Code, recFull.Body.String())
+	}
+	var afterCount int64
+	_ = env.db.Model(&models.GenTask{}).Count(&afterCount).Error
+	if afterCount != beforeCount {
+		t.Fatalf("队列满拒绝时数据库必须零写入，before=%d after=%d", beforeCount, afterCount)
+	}
+
+	// 恢复充足调度器，测试全败任务恢复 + 兄弟非内联 cited_anchors 保留
+	schedBig := services.NewTaskScheduler(services.SchedulerConfig{
+		MaxConcurrency:      4,
+		MaxUserConcurrency:  4,
+		InteractiveQueueCap: 32,
+		BatchQueueCap:       32,
+	})
+	schedBig.Start(context.Background())
+	defer schedBig.Stop()
+	env.genSvc.WithGovernance(services.NewActiveLeaseManager(), schedBig)
+
+	// 3. 模拟全部槽位失败（ALL_SLOTS_FAILED，尚未创建 Document）
+	failAllSlots.Store(true)
+	cwBody, _ := json.Marshal(map[string]any{
+		"repo_id":  env.repo.ID,
+		"doc_type": "code-walkthrough",
+		"mode":     "regenerate",
+	})
+	reqFail := httptest.NewRequest(http.MethodPost, "/api/tasks/generate", bytes.NewReader(cwBody))
+	reqFail.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	reqFail.Header.Set("Content-Type", "application/json")
+	recFail := httptest.NewRecorder()
+	env.router.ServeHTTP(recFail, reqFail)
+	if recFail.Code != http.StatusAccepted {
+		t.Fatalf("提交全败测试任务失败: %d %s", recFail.Code, recFail.Body.String())
+	}
+	var failSubmit services.GenerateTaskSubmitResponse
+	_ = json.Unmarshal(recFail.Body.Bytes(), &failSubmit)
+	env.genSvc.WaitAll()
+
+	failDetail, err := env.genSvc.GetTaskDetail(context.Background(), failSubmit.ID)
+	if err != nil || failDetail.Status != models.TaskStatusFailed || failDetail.ErrorCode != "ALL_SLOTS_FAILED" {
+		t.Fatalf("期望 ALL_SLOTS_FAILED，实际 detail=%+v err=%v", failDetail, err)
+	}
+	if len(failDetail.SlotTasks) < 2 {
+		t.Fatalf("期望至少 2 个槽位，实际 %d", len(failDetail.SlotTasks))
+	}
+
+	// 解除故障，先重试第 1 个失败槽位 -> 自动建档并把 failed 主任务收敛为 ready
+	failAllSlots.Store(false)
+	slot1 := failDetail.SlotTasks[0]
+	reqRetry1 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/tasks/%d/slots/%d/retry", failSubmit.ID, slot1.ID), nil)
+	reqRetry1.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	recRetry1 := httptest.NewRecorder()
+	env.router.ServeHTTP(recRetry1, reqRetry1)
+	if recRetry1.Code != http.StatusAccepted {
+		t.Fatalf("全败任务单槽位重试期望 202，实际 %d (%s)", recRetry1.Code, recRetry1.Body.String())
+	}
+	env.genSvc.WaitAll()
+
+	recoveredDetail, err := env.genSvc.GetTaskDetail(context.Background(), failSubmit.ID)
+	if err != nil || recoveredDetail.Status != models.TaskStatusReady || recoveredDetail.ProgressPercent != 100 {
+		t.Fatalf("全败任务单槽位重试成功后主任务应收敛为 ready(100%%)，实际 detail=%+v err=%v", recoveredDetail, err)
+	}
+	var recoveredDocID uint
+	for _, st := range recoveredDetail.SlotTasks {
+		if st.ID == slot1.ID && st.DocumentID != nil {
+			recoveredDocID = *st.DocumentID
+		}
+	}
+	if recoveredDocID == 0 {
+		t.Fatalf("全败任务重试建档后应回填 slotTask.DocumentID，实际 slots=%+v", recoveredDetail.SlotTasks)
+	}
+
+	// 再重试第 2 个槽位，验证第 1 个槽位在上一修订中的非内联 cited_anchors 仍被完整保留（rev 2）
+	slot2 := recoveredDetail.SlotTasks[1]
+	reqRetry2 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/tasks/%d/slots/%d/retry", failSubmit.ID, slot2.ID), nil)
+	reqRetry2.Header.Set("Authorization", "Bearer "+env.ownerTok)
+	recRetry2 := httptest.NewRecorder()
+	env.router.ServeHTTP(recRetry2, reqRetry2)
+	if recRetry2.Code != http.StatusAccepted {
+		t.Fatalf("第 2 槽位重试期望 202，实际 %d (%s)", recRetry2.Code, recRetry2.Body.String())
+	}
+	env.genSvc.WaitAll()
+
+	docStore := models.NewDocumentStore(env.db)
+	_, rev2Evs, err := docStore.GetRevisionWithSections(context.Background(), recoveredDocID, 2)
+	if err != nil {
+		t.Fatalf("读取 rev 2 证据失败: %v", err)
+	}
+	foundSiblingAnchor := false
+	for _, ev := range rev2Evs {
+		if ev.SlotID == slot1.SlotID && strings.Contains(string(ev.EvidencesJSON), "order::OrderService::Pay") {
+			foundSiblingAnchor = true
+		}
+	}
+	if !foundSiblingAnchor {
+		t.Fatalf("第 2 槽位重试后应无损保留兄弟槽位 %s 的非内联 cited_anchors，实际 evs=%+v", slot1.SlotID, rev2Evs)
 	}
 }

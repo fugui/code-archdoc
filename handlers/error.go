@@ -8,6 +8,7 @@ const (
 	ErrCodeInvalidSubdir           = "INVALID_SUBDIR"
 	ErrCodeInvalidSlug             = "INVALID_SLUG"
 	ErrCodeDocTypeInactive         = "DOC_TYPE_INACTIVE"
+	ErrCodeEngineUnavailable       = "ENGINE_UNAVAILABLE"
 	ErrCodeUnauthorized            = "UNAUTHORIZED"
 	ErrCodeForbidden               = "FORBIDDEN"
 	ErrCodeDraftAccessDenied       = "DRAFT_ACCESS_DENIED"

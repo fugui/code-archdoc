@@ -126,6 +126,7 @@ type GenTaskSummaryVO struct {
 	Subdirectory    string     `json:"subdirectory"`
 	RefName         string     `json:"ref_name"`
 	TaskKind        string     `json:"task_kind"`
+	Engine          string     `json:"engine"`
 	Priority        string     `json:"priority"`
 	Status          string     `json:"status"`
 	ProgressPercent int        `json:"progress_percent"`
@@ -412,6 +413,7 @@ func (s *RepoService) GetRepoScopes(ctx context.Context, user *commonModels.User
 			Subdirectory:    t.Subdirectory,
 			RefName:         t.RefName,
 			TaskKind:        t.TaskKind,
+			Engine:          models.NormalizeEngine(t.Engine),
 			Priority:        t.Priority,
 			Status:          t.Status,
 			ProgressPercent: t.ProgressPercent,

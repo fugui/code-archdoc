@@ -28,6 +28,7 @@ type TaskListFilter struct {
 	Subdirectory *string
 	Status       string
 	TaskKind     string
+	Engine       string
 	TopLevelOnly bool
 	TriggeredBy  *uint
 	Offset       int
@@ -634,6 +635,21 @@ func (s *TaskStore) CreateTask(ctx context.Context, task *GenTask) error {
 	return s.db.WithContext(ctx).Create(task).Error
 }
 
+// CreateTasksBatch 在单 DB 事务内批量创建拆单任务并回填自增 ID。
+func (s *TaskStore) CreateTasksBatch(ctx context.Context, tasks []*GenTask) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, task := range tasks {
+			if err := tx.Create(task).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *TaskStore) GetTaskWithSlots(ctx context.Context, taskID uint) (*GenTask, []GenSlotTask, error) {
 	var task GenTask
 	err := s.db.WithContext(ctx).First(&task, taskID).Error
@@ -660,6 +676,9 @@ func (s *TaskStore) applyTaskFilter(ctx context.Context, filter TaskListFilter, 
 	}
 	if filter.TaskKind != "" {
 		q = q.Where("task_kind = ?", filter.TaskKind)
+	}
+	if filter.Engine != "" {
+		q = q.Where("engine = ?", filter.Engine)
 	}
 	if filter.TopLevelOnly {
 		q = q.Where("parent_task_id IS NULL")
@@ -769,6 +788,26 @@ func (s *TaskStore) TransitionTaskStatus(ctx context.Context, taskID uint, from,
 	return nil
 }
 
+// RecoverFailedTaskToReady 仅用于全败任务单槽位重试落库成功后将 failed 主任务原子收敛为 ready。
+func (s *TaskStore) RecoverFailedTaskToReady(ctx context.Context, taskID uint, updates map[string]any) error {
+	payload := make(map[string]any, len(updates)+1)
+	for k, v := range updates {
+		payload[k] = v
+	}
+	payload["status"] = TaskStatusReady
+
+	res := s.db.WithContext(ctx).Model(&GenTask{}).
+		Where("id = ? AND status = ?", taskID, TaskStatusFailed).
+		Updates(payload)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrInvalidStateTransition
+	}
+	return nil
+}
+
 func (s *TaskStore) UpdateTaskFields(ctx context.Context, taskID uint, updates map[string]any) error {
 	if len(updates) == 0 {
 		return nil
@@ -857,6 +896,31 @@ func (s *TaskStore) HasActiveTasksInRepo(ctx context.Context, repoID uint) (bool
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// GetLatestEngineByDocumentID 通过 archdoc_gen_slot_tasks.document_id 索引关联主任务，查询目标文档最近一次有效生成引擎。
+func (s *TaskStore) GetLatestEngineByDocumentID(ctx context.Context, docID uint) (string, error) {
+	if docID == 0 {
+		return "", nil
+	}
+	var row struct {
+		Engine string
+	}
+	err := s.db.WithContext(ctx).
+		Table(GenSlotTask{}.TableName()+" AS st").
+		Select("t.engine").
+		Joins("JOIN "+GenTask{}.TableName()+" AS t ON t.id = st.task_id").
+		Where("st.document_id = ? AND t.engine <> ''", docID).
+		Order("st.task_id DESC").
+		Limit(1).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return NormalizeEngine(row.Engine), nil
 }
 
 // ─── 5. DocumentStore ───

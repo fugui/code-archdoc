@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
+  Cpu,
   ExternalLink,
   FolderTree,
   Loader2,
@@ -13,12 +15,15 @@ import { listRepoModules, refreshRepoModules } from '../api/repos';
 import {
   cancelTask,
   getTaskDetail,
+  listEngines,
   retrySlotTask,
   triggerBatchGenerateTask,
   triggerGenerateTask,
 } from '../api/tasks';
 import type {
   DocTypeSummaryVO,
+  EngineInfoVO,
+  GenEngine,
   GenSlotTaskVO,
   GenTaskDetailVO,
   RepoModuleVO,
@@ -28,6 +33,15 @@ import type {
 } from '../types';
 import { formatApiError, formatTaskErrorCode } from '../utils/errorMessages';
 import { isBatchTaskKind } from '../utils/moduleUtils';
+import {
+  PREFERRED_ENGINE_STORAGE_KEY,
+  formatEngineLabel,
+  getNonTerminalTaskIds,
+  getSubmitButtonLabel,
+  normalizeSubmittedTasks,
+  resolvePreferredEngine,
+  summarizeSplitTasks,
+} from '../utils/taskSubmitUtils';
 import { shortSha } from '../utils/urlQuery';
 import RepoBranchSelector from './RepoBranchSelector';
 
@@ -110,6 +124,29 @@ function stageIndex(status: TaskStatus): number {
   return idx >= 0 ? idx : 0;
 }
 
+const DEFAULT_NATIVE_ENGINE: EngineInfoVO = {
+  name: 'native',
+  display_name: 'Native 内置引擎',
+  available: true,
+  default: true,
+};
+
+function safeReadSavedEngine(): string | null {
+  try {
+    return window.localStorage.getItem(PREFERRED_ENGINE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function safeWriteSavedEngine(engine: GenEngine): void {
+  try {
+    window.localStorage.setItem(PREFERRED_ENGINE_STORAGE_KEY, engine);
+  } catch {
+    // 忽略受限环境下的 localStorage 写入异常
+  }
+}
+
 export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   open,
   scope,
@@ -130,13 +167,21 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   const confirm = useConfirm();
 
   const activeDocTypes = useMemo(() => docTypes.filter((d) => d.is_active), [docTypes]);
+  const docTypeDisplayMap = useMemo(
+    () => new Map(docTypes.map((dt) => [dt.slug, dt.display_name])),
+    [docTypes],
+  );
 
   const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
   const [mode, setMode] = useState<'generate' | 'regenerate'>(initialMode);
+  const [engines, setEngines] = useState<EngineInfoVO[]>([DEFAULT_NATIVE_ENGINE]);
+  const [selectedEngine, setSelectedEngine] = useState<GenEngine>('native');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [canceling, setCanceling] = useState<boolean>(false);
   const [retryingSlotId, setRetryingSlotId] = useState<number | null>(null);
   const [taskDetail, setTaskDetail] = useState<GenTaskDetailVO | null>(null);
+  const [splitTasks, setSplitTasks] = useState<GenTaskDetailVO[]>([]);
+  const [drilldownTaskId, setDrilldownTaskId] = useState<number | null>(null);
   const [pollError, setPollError] = useState<string>('');
 
   // 单仓活动分支状态（允许在配置态内直接切换，切换后立即更新后续提交入参）
@@ -154,6 +199,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   const [includeRepoScope, setIncludeRepoScope] = useState<boolean>(true);
 
   const notifiedReadyRef = useRef<number | null>(null);
+  const notifiedReadyIdsRef = useRef<Set<number>>(new Set());
 
   const scopeRepoId = scope?.repoId ?? 0;
   const scopeBranch = scope?.branch || 'master';
@@ -208,11 +254,16 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     };
   }, [open, batchMode, scopeRepoId, initialTaskId, initialSelectedModules]);
 
-  // 打开弹窗时初始化选中状态或加载既有任务
+  // 打开弹窗时初始化选中状态、双引擎探测或加载既有任务
   useEffect(() => {
     if (!open) return;
     setPollError('');
     setMode(initialMode);
+    setSplitTasks([]);
+    setDrilldownTaskId(null);
+    notifiedReadyIdsRef.current.clear();
+    notifiedReadyRef.current = null;
+
     if (initialTaskId && initialTaskId > 0) {
       setTaskDetail(null);
       void getTaskDetail(initialTaskId)
@@ -231,10 +282,29 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     } else {
       setSelectedSlugs([]);
     }
+
+    let active = true;
+    void listEngines()
+      .then((res) => {
+        if (!active) return;
+        const list = Array.isArray(res.engines) && res.engines.length > 0 ? res.engines : [DEFAULT_NATIVE_ENGINE];
+        setEngines(list);
+        setSelectedEngine(resolvePreferredEngine(list, res.default_engine || 'native', safeReadSavedEngine()));
+      })
+      .catch(() => {
+        if (!active) return;
+        setEngines([DEFAULT_NATIVE_ENGINE]);
+        setSelectedEngine('native');
+      });
+    return () => {
+      active = false;
+    };
   }, [open, initialTaskId, initialDocTypeSlugs, initialMode, activeDocTypes]);
 
-  // 轮询任务详情直至终态
-  const activeTaskId = taskDetail?.id ?? initialTaskId ?? null;
+  // 轮询任务详情（支持单任务与多文档拆单增量局部轮询）
+  const isSplitMonitor = splitTasks.length > 1 && drilldownTaskId === null;
+  const splitSummary = useMemo(() => summarizeSplitTasks(splitTasks), [splitTasks]);
+  const activeTaskId = taskDetail?.id ?? drilldownTaskId ?? initialTaskId ?? null;
   const isTerminal = taskDetail ? TERMINAL_STATUSES.has(taskDetail.status) : false;
 
   const refreshTask = useCallback(
@@ -242,9 +312,13 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       try {
         const latest = await getTaskDetail(taskId);
         setTaskDetail(latest);
+        setSplitTasks((prev) =>
+          prev.length > 0 ? prev.map((t) => (t.id === latest.id ? latest : t)) : prev,
+        );
         setPollError('');
         if (latest.status === 'ready' && notifiedReadyRef.current !== latest.id) {
           notifiedReadyRef.current = latest.id;
+          notifiedReadyIdsRef.current.add(latest.id);
           onTaskCompleted?.();
         }
       } catch (err: unknown) {
@@ -255,12 +329,37 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   );
 
   useEffect(() => {
-    if (!open || !activeTaskId || isTerminal) return;
+    if (!open || isSplitMonitor || !activeTaskId || isTerminal) return;
     const timer = window.setInterval(() => {
       void refreshTask(activeTaskId);
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [open, activeTaskId, isTerminal, refreshTask]);
+  }, [open, isSplitMonitor, activeTaskId, isTerminal, refreshTask]);
+
+  useEffect(() => {
+    if (!open || !isSplitMonitor || splitSummary.activeCount === 0) return;
+    const timer = window.setInterval(() => {
+      const pendingIds = getNonTerminalTaskIds(splitTasks);
+      if (pendingIds.length === 0) return;
+      void Promise.allSettled(pendingIds.map((id) => getTaskDetail(id))).then((results) => {
+        const updatedMap = new Map<number, GenTaskDetailVO>();
+        results.forEach((result) => {
+          if (result.status === 'fulfilled' && result.value) {
+            updatedMap.set(result.value.id, result.value);
+            if (result.value.status === 'ready' && !notifiedReadyIdsRef.current.has(result.value.id)) {
+              notifiedReadyIdsRef.current.add(result.value.id);
+              onTaskCompleted?.();
+            }
+          }
+        });
+        if (updatedMap.size > 0) {
+          setSplitTasks((prev) => prev.map((item) => updatedMap.get(item.id) ?? item));
+          setPollError('');
+        }
+      });
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [open, isSplitMonitor, splitSummary.activeCount, splitTasks, onTaskCompleted]);
 
   const toggleSlug = (slug: string) => {
     setSelectedSlugs((prev) =>
@@ -303,6 +402,11 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     }
   };
 
+  const handleSelectEngine = (engine: GenEngine) => {
+    setSelectedEngine(engine);
+    safeWriteSavedEngine(engine);
+  };
+
   const handleSubmitGenerate = async () => {
     if (!scope) return;
     if (selectedSlugs.length === 0) {
@@ -318,36 +422,78 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     setSubmitting(true);
     setPollError('');
     try {
-      const created = batchMode
-        ? await triggerBatchGenerateTask({
-            repo_id: scope.repoId,
-            ref_name: activeBranch,
-            all_modules: allModules,
-            subdirectories: allModules ? undefined : selectedModules,
-            include_repo_scope: includeRepoScope,
-            doc_types: selectedSlugs,
-            mode,
-          })
-        : await triggerGenerateTask({
-            repo_id: scope.repoId,
-            subdirectory: scope.subdirectory,
-            ref_name: activeBranch,
-            doc_types: selectedSlugs,
-            mode,
-          });
-      notifiedReadyRef.current = null;
-      setTaskDetail(created);
-      showToast(
-        batchMode
-          ? `已提交批量文档生成编排任务 #${created.id}`
-          : `已提交文档反推任务 #${created.id}`,
-        'success',
-      );
+      if (batchMode) {
+        const created = await triggerBatchGenerateTask({
+          repo_id: scope.repoId,
+          ref_name: activeBranch,
+          all_modules: allModules,
+          subdirectories: allModules ? undefined : selectedModules,
+          include_repo_scope: includeRepoScope,
+          doc_types: selectedSlugs,
+          mode,
+          engine: selectedEngine,
+        });
+        notifiedReadyRef.current = null;
+        setSplitTasks([]);
+        setDrilldownTaskId(null);
+        setTaskDetail(created);
+        showToast(`已提交批量文档生成编排任务 #${created.id}`, 'success');
+      } else {
+        const submitResp = await triggerGenerateTask({
+          repo_id: scope.repoId,
+          subdirectory: scope.subdirectory,
+          ref_name: activeBranch,
+          doc_types: selectedSlugs,
+          mode,
+          engine: selectedEngine,
+        });
+        const tasks = normalizeSubmittedTasks(submitResp);
+        notifiedReadyRef.current = null;
+        notifiedReadyIdsRef.current.clear();
+        if (tasks.length > 1) {
+          setSplitTasks(tasks);
+          setDrilldownTaskId(null);
+          setTaskDetail(null);
+          showToast(`已创建 ${tasks.length} 个独立文档生成任务`, 'success');
+        } else {
+          setSplitTasks([]);
+          setDrilldownTaskId(null);
+          setTaskDetail(tasks[0]);
+          showToast(`已提交文档反推任务 #${tasks[0].id}`, 'success');
+        }
+      }
     } catch (err: unknown) {
       const formatted = formatApiError(err, '提交生成任务失败');
       showToast(`${formatted.title}：${formatted.message}`, 'error');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDrilldownSplitTask = (taskId: number) => {
+    const cached = splitTasks.find((item) => item.id === taskId) ?? null;
+    setDrilldownTaskId(taskId);
+    setTaskDetail(cached);
+    void refreshTask(taskId);
+  };
+
+  const handleCancelSplitRow = async (taskId: number) => {
+    const ok = await confirm({
+      title: '确认取消生成任务',
+      content: `即将取消子文档任务 #${taskId}，系统将立即中断当前模型调用，是否继续？`,
+      confirmText: '确认取消',
+      cancelText: '继续运行',
+      type: 'warning',
+    });
+    if (!ok) return;
+    try {
+      await cancelTask(taskId);
+      showToast(`任务 #${taskId} 已取消`, 'info');
+      const latest = await getTaskDetail(taskId);
+      setSplitTasks((prev) => prev.map((item) => (item.id === taskId ? latest : item)));
+      onTaskCompleted?.();
+    } catch (err: unknown) {
+      showToast(formatApiError(err, '取消任务失败').message, 'error');
     }
   };
 
@@ -407,11 +553,13 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       open={open}
       onClose={onClose}
       title={
-        taskDetail
-          ? `${isBatchTaskKind(taskDetail.task_kind) ? '批量任务监控' : '生成任务监控'} · #${taskDetail.id}`
-          : batchMode
-            ? '批量生成多模块 + 整仓分层文档'
-            : '触发代码设计文档反推'
+        isSplitMonitor
+          ? `多文档独立反推监控 · ${splitTasks.length} 篇`
+          : taskDetail
+            ? `${isBatchTaskKind(taskDetail.task_kind) ? '批量任务监控' : '生成任务监控'} · #${taskDetail.id}`
+            : batchMode
+              ? '批量生成多模块 + 整仓分层文档'
+              : '触发代码设计文档反推'
       }
       subtitle={
         scope
@@ -422,7 +570,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       destroyOnClose
       footer={
         <div className="code-archdoc-modal-footer">
-          {taskDetail && !isTerminal && scope?.canWrite && (
+          {!isSplitMonitor && taskDetail && !isTerminal && scope?.canWrite && (
             <button
               type="button"
               className="btn btn-danger btn-small"
@@ -435,7 +583,21 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           )}
 
           <div className="code-archdoc-modal-footer-right">
-            {taskDetail && onOpenTaskCenter && (
+            {splitTasks.length > 1 && drilldownTaskId !== null && (
+              <button
+                type="button"
+                className="btn btn-text btn-small"
+                onClick={() => {
+                  setDrilldownTaskId(null);
+                  setTaskDetail(null);
+                }}
+              >
+                <ArrowLeft size={14} />
+                <span>返回多文档进度列表</span>
+              </button>
+            )}
+
+            {(taskDetail || isSplitMonitor) && onOpenTaskCenter && (
               <button
                 type="button"
                 className="btn btn-text btn-small"
@@ -448,7 +610,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
               </button>
             )}
 
-            {taskDetail?.parent_task_id && (
+            {!isSplitMonitor && taskDetail?.parent_task_id && (
               <button
                 type="button"
                 className="btn btn-text btn-small"
@@ -459,10 +621,12 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
             )}
 
             <button type="button" className="btn btn-secondary" onClick={onClose}>
-              {taskDetail && !isTerminal ? '后台运行并关闭' : '关闭'}
+              {(isSplitMonitor && !splitSummary.allTerminal) || (taskDetail && !isTerminal)
+                ? '后台运行并关闭'
+                : '关闭'}
             </button>
 
-            {!taskDetail && (
+            {!isSplitMonitor && !taskDetail && !initialTaskId && (
               <button
                 type="button"
                 className="btn btn-primary"
@@ -470,11 +634,13 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                 disabled={submitting || selectedSlugs.length === 0 || !scope?.canWrite}
               >
                 {submitting ? <Loader2 size={15} className="code-archdoc-spin" /> : <Play size={15} />}
-                <span>{submitting ? '提交中...' : `开始生成 (${selectedSlugs.length})`}</span>
+                <span>
+                  {submitting ? '提交中...' : getSubmitButtonLabel(batchMode, selectedSlugs.length)}
+                </span>
               </button>
             )}
 
-            {taskDetail && taskDetail.status === 'ready' && scope && onOpenStudio && (
+            {!isSplitMonitor && taskDetail && taskDetail.status === 'ready' && scope && onOpenStudio && (
               <button
                 type="button"
                 className="btn btn-primary"
@@ -539,8 +705,8 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           </div>
         )}
 
-        {/* 配置态：批量范围选择 + 选择 1~N DocType */}
-        {!taskDetail && !initialTaskId && (
+        {/* 配置态：批量范围选择 + 双引擎选择 + 策略 + 1~N DocType */}
+        {!isSplitMonitor && !taskDetail && !initialTaskId && (
           <>
             {batchMode && branchRescanHint && (
               <div className="code-archdoc-branch-hint-banner">
@@ -676,6 +842,47 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
               </div>
             )}
 
+            <div className="code-archdoc-engine-panel">
+              <div className="code-archdoc-engine-selector-row">
+                <span className="text-secondary">
+                  <Cpu size={14} className="code-archdoc-inline-icon" /> 生成引擎：
+                </span>
+                <div className="code-archdoc-engine-selector" role="radiogroup" aria-label="文档生成引擎">
+                  {engines.map((eng) => {
+                    const active = selectedEngine === eng.name;
+                    const disabledReason = !eng.available ? eng.reason || '当前不可用' : undefined;
+                    return (
+                      <button
+                        key={eng.name}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        disabled={!eng.available || submitting}
+                        title={disabledReason || eng.display_name}
+                        className={`code-archdoc-engine-option ${
+                          active ? 'code-archdoc-engine-option--active' : ''
+                        }`}
+                        onClick={() => handleSelectEngine(eng.name)}
+                      >
+                        <span>{eng.display_name}</span>
+                        {eng.version && (
+                          <span className="code-archdoc-engine-ver code-archdoc-mono">
+                            v{eng.version}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {selectedEngine === 'opencode' && (
+                <div className="code-archdoc-engine-hint">
+                  OpenCode 引擎将在严格只读沙箱中自主查阅源码上下文，适合复杂业务梳理；单篇耗时通常长于 Native 引擎，并保留 Verifier 四重门禁与锁定章节保护。
+                </div>
+              )}
+            </div>
+
             <div className="code-archdoc-task-mode-row">
               <span className="text-secondary">生成策略：</span>
               <label className="code-archdoc-radio-label">
@@ -736,8 +943,100 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           </>
         )}
 
-        {/* 监控态：实时进度、阶段、预算熔断与槽位子任务 */}
-        {taskDetail && (
+        {/* 多文档拆单聚合监控视图 */}
+        {isSplitMonitor && (
+          <div className="code-archdoc-split-monitor">
+            <div className="code-archdoc-progress-block">
+              <div className="code-archdoc-progress-header">
+                <div className="flex-center gap-sm">
+                  <span
+                    className={`code-archdoc-engine-badge code-archdoc-engine-badge--${
+                      splitTasks[0]?.engine === 'opencode' ? 'opencode' : 'native'
+                    }`}
+                  >
+                    {formatEngineLabel(splitTasks[0]?.engine)}
+                  </span>
+                  <span className="text-secondary">
+                    已完成 {splitSummary.readyCount}/{splitSummary.total} 篇
+                    {splitSummary.failedCount > 0 ? ` · ${splitSummary.failedCount} 篇失败` : ''}
+                  </span>
+                </div>
+                <span className="code-archdoc-mono">{splitSummary.overallPercent}%</span>
+              </div>
+              <div className="code-archdoc-progress-track">
+                <div
+                  className={`code-archdoc-progress-fill ${
+                    splitSummary.failedCount > 0 && splitSummary.allTerminal
+                      ? 'code-archdoc-progress-fill--failed'
+                      : splitSummary.allTerminal
+                        ? 'code-archdoc-progress-fill--ready'
+                        : ''
+                  }`}
+                  style={{ width: `${splitSummary.overallPercent}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="code-archdoc-split-list">
+              {splitTasks.map((item) => {
+                const sm = taskStatusMeta(item.status);
+                const slug = item.doc_types?.[0] || '';
+                const docDisplayName = docTypeDisplayMap.get(slug) || slug || `任务 #${item.id}`;
+                const itemTerminal = TERMINAL_STATUSES.has(item.status);
+                const itemDocId = item.slot_tasks?.find((s) => s.document_id)?.document_id ?? undefined;
+                return (
+                  <div key={item.id} className="code-archdoc-split-row">
+                    <div className="code-archdoc-split-row-main">
+                      <div className="code-archdoc-split-row-title">
+                        <code className="code-archdoc-mono">#{item.id}</code>
+                        <span>{docDisplayName}</span>
+                        <span className="code-badge code-badge--muted">{slug}</span>
+                      </div>
+                      {item.error_message && (
+                        <div className="code-archdoc-split-row-err">{item.error_message}</div>
+                      )}
+                    </div>
+                    <div className="code-archdoc-split-row-meta">
+                      <StatusTag status={sm.tag} text={sm.label} size="sm" />
+                      <span className="code-archdoc-mono">{item.progress_percent}%</span>
+                      <button
+                        type="button"
+                        className="btn btn-text btn-small"
+                        onClick={() => handleDrilldownSplitTask(item.id)}
+                      >
+                        查看槽位
+                      </button>
+                      {item.status === 'ready' && scope && onOpenStudio && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-small"
+                          onClick={() => {
+                            onClose();
+                            onOpenStudio(scope.repoId, itemDocId, scope.subdirectory);
+                          }}
+                        >
+                          进入 Studio
+                        </button>
+                      )}
+                      {!itemTerminal && scope?.canWrite && (
+                        <button
+                          type="button"
+                          className="btn btn-text btn-small"
+                          onClick={() => void handleCancelSplitRow(item.id)}
+                        >
+                          取消
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* 单任务 / 下钻详情监控态：实时进度、阶段、预算熔断与槽位子任务 */}
+        {!isSplitMonitor && taskDetail && (
           <>
             <div className="code-archdoc-progress-block">
               <div className="code-archdoc-progress-header">
@@ -747,6 +1046,13 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                     text={taskStatusMeta(taskDetail.status).label}
                     size="sm"
                   />
+                  <span
+                    className={`code-archdoc-engine-badge code-archdoc-engine-badge--${
+                      taskDetail.engine === 'opencode' ? 'opencode' : 'native'
+                    }`}
+                  >
+                    {formatEngineLabel(taskDetail.engine)}
+                  </span>
                   {taskDetail.estimated_tokens > 0 && (
                     <span className="text-secondary">
                       预估消耗 {taskDetail.estimated_tokens.toLocaleString()} Tokens
@@ -904,12 +1210,26 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                       return (
                         <tr key={child.id}>
                           <td>
-                            <code className="code-archdoc-mono">#{child.id}</code>
+                            <div className="code-archdoc-split-row-title">
+                              <code className="code-archdoc-mono">#{child.id}</code>
+                              <span
+                                className={`code-archdoc-engine-badge code-archdoc-engine-badge--${
+                                  child.engine === 'opencode' ? 'opencode' : 'native'
+                                }`}
+                              >
+                                {formatEngineLabel(child.engine)}
+                              </span>
+                            </div>
                           </td>
                           <td>
                             <code className="code-archdoc-mono">
                               {child.subdirectory || '整仓 (Root)'}
                             </code>
+                            {child.doc_types?.[0] && (
+                              <span className="code-badge code-badge--primary code-archdoc-child-doctype-badge">
+                                {docTypeDisplayMap.get(child.doc_types[0]) || child.doc_types[0]}
+                              </span>
+                            )}
                             {child.error_message && (
                               <div className="text-muted">{child.error_message}</div>
                             )}

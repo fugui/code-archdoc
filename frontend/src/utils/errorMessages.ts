@@ -143,6 +143,15 @@ export function formatApiError(err: unknown, fallback = '操作失败，请稍�
           code: err.code,
           status: err.status,
         };
+      case 'ENGINE_UNAVAILABLE':
+        return {
+          title: '所选生成引擎不可用',
+          message:
+            err.rawMessage ||
+            '所选文档生成引擎当前不可用，请切换至 Native 内置引擎或联系管理员检查 OpenCode 环境。',
+          code: err.code,
+          status: err.status,
+        };
       case 'TOKEN_BUDGET_EXCEEDED':
         return {
           title: '超出单任务 Token 预算上限（已熔断）',

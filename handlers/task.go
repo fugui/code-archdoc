@@ -38,7 +38,13 @@ func (h *AppHandlers) TriggerGenerateTask(c *gin.Context) {
 
 	vo, err := h.genSvc.SubmitGenerateTask(c.Request.Context(), req, user.ID)
 	if err != nil {
+		var engErr *services.EngineUnavailableError
 		switch {
+		case errors.As(err, &engErr):
+			WriteError(c, http.StatusBadRequest, ErrCodeEngineUnavailable, engErr.Error(), gin.H{
+				"engine": engErr.Engine,
+				"reason": engErr.Reason,
+			})
 		case errors.Is(err, sandbox.ErrInvalidSubdir):
 			WriteError(c, http.StatusBadRequest, ErrCodeInvalidSubdir, err.Error(), nil)
 		case errors.Is(err, services.ErrDocTypeInactive):
@@ -56,12 +62,17 @@ func (h *AppHandlers) TriggerGenerateTask(c *gin.Context) {
 		return
 	}
 
+	taskIDs := make([]uint, 0, len(vo.Tasks))
+	for i := range vo.Tasks {
+		taskIDs = append(taskIDs, vo.Tasks[i].ID)
+	}
 	commonAudit.SetAuditContext(
 		c,
 		config.ModuleKey,
 		"trigger",
 		commonModels.AuditLevelP1,
-		fmt.Sprintf("触发仓库 #%d (subdir=%q) 文档反推生成任务 #%d (%v)", req.RepoID, req.Subdirectory, vo.ID, vo.DocTypes),
+		fmt.Sprintf("触发仓库 #%d (subdir=%q) 文档反推生成任务（拆单数=%d, ids=%v, 首任务 #%d %v）",
+			req.RepoID, req.Subdirectory, vo.CreatedCount, taskIDs, vo.ID, vo.DocTypes),
 		"gen_task",
 		strconv.FormatUint(uint64(vo.ID), 10),
 		fmt.Sprintf("task#%d", vo.ID),
@@ -93,10 +104,16 @@ func (h *AppHandlers) TriggerBatchGenerateTask(c *gin.Context) {
 	vo, err := h.genSvc.SubmitBatchGenerateTask(c.Request.Context(), req, user)
 	if err != nil {
 		var forbErr *services.BatchForbiddenError
+		var engErr *services.EngineUnavailableError
 		switch {
 		case errors.As(err, &forbErr):
 			WriteError(c, http.StatusForbidden, ErrCodeForbidden, forbErr.Error(), gin.H{
 				"forbidden_scopes": forbErr.ForbiddenScopes,
+			})
+		case errors.As(err, &engErr):
+			WriteError(c, http.StatusBadRequest, ErrCodeEngineUnavailable, engErr.Error(), gin.H{
+				"engine": engErr.Engine,
+				"reason": engErr.Reason,
 			})
 		case errors.Is(err, sandbox.ErrInvalidSubdir):
 			WriteError(c, http.StatusBadRequest, ErrCodeInvalidSubdir, err.Error(), nil)
@@ -192,6 +209,17 @@ func (h *AppHandlers) ListTasks(c *gin.Context) {
 		filter.TaskKind = rawTaskKind
 	default:
 		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "task_kind 参数仅支持 all | generate | regenerate | incremental_refresh | batch", nil)
+		return
+	}
+
+	rawEngine := strings.ToLower(strings.TrimSpace(c.Query("engine")))
+	switch rawEngine {
+	case "", "all":
+		filter.Engine = ""
+	case models.EngineNative, models.EngineOpenCode:
+		filter.Engine = rawEngine
+	default:
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "engine 参数仅支持 all | native | opencode", nil)
 		return
 	}
 
