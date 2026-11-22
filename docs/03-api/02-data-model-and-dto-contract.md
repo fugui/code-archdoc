@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.3.0 (ADR-04, ADR-05, ADR-06 & ADR-07 Frozen Contract)
+- **文档版本**：v1.4.0 (ADR-04 ~ ADR-08 Frozen Contract)
 - **编制日期**：2026-11-22
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.3.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.4.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)、[`ADR-07`](../05-adr/07-single-repo-branch-switch.md)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.5.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)、[`ADR-07`](../05-adr/07-single-repo-branch-switch.md)、[`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -841,4 +841,114 @@ export interface SwitchRepoBranchVO {
 export interface SwitchRepoBranchPayload {
   branch: string;
 }
+```
+
+---
+
+## 11. ADR-08 契约增量（`M14`：单文档不变量、双引擎配置与前后端 DTO）
+
+### 11.1 数据库增量列演进与核心不变量（坚守 20 表零新增表）
+
+| 表名 / 模型 | 变更列 | 列定义 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `archdoc_gen_tasks` (`models.GenTask`) | `Engine` *(新增)* | `gorm:"size:20;not null;default:'native';index" json:"engine"` | 生成引擎标识（`native` \| `opencode`） |
+| `archdoc_llm_configs` (`models.LLMConfig`) | `OpenCodeModel` *(新增)* | `gorm:"size:128;not null;default:''" json:"opencode_model"` | 可选模式 B 原生 `provider/model` 映射 |
+| `archdoc_llm_usage_logs` (`models.LLMUsageLog`) | `Engine` *(新增)*<br>`Stage` *(扩容)* | `Engine`: `gorm:"size:20;not null;default:'native';index" json:"engine"`<br>`Stage`: `size:24` 扩为 `size:32` | 区分引擎用量并容纳 `doc_gen_opencode`、`doc_gen_oc_continue`、`slot_retry_opencode`、`inc_refresh_opencode` |
+
+**新增硬不变量**：
+1. **单文档任务不变量**：非批量任务（`generate`、`regenerate`、`incremental_refresh`）的 `DocTypesJSON` 长度恒为 `1`，严格绑定唯一 `(Scope, DocType)`。
+2. **Usage 归一化不变量**：无论 OpenCode Provider 是否将 `cache.read` 计入 `input`，落库前保证 `CachedPromptTokens <= PromptTokens`，确保 `QualityMetricsService` 计算的 `avg_cache_hit_ratio` 恒处于 `[0.0, 1.0]`。
+3. **展示名列宽安全不变量**：写入 `GenSlotTask.ModelName` 与 `LLMUsageLog.ModelName`（列宽 `varchar(128)`）的 `[opencode] <label>` 字符串在写入前按 128 runes 安全截断。
+
+### 11.2 领域枚举、过滤结构与 `TaskRepo` / `TaskScheduler` 契约
+
+1. **`models/enums.go` 新增引擎常量与校验**：
+   ```go
+   const (
+       EngineNative   = "native"
+       EngineOpenCode = "opencode"
+   )
+   func IsValidEngine(v string) bool
+   func NormalizeEngine(raw string) string
+   ```
+2. **`models.TaskListFilter` (`models/stores.go`)**：新增 `Engine string`（支持 `native` / `opencode` 筛选）。
+3. **`TaskRepo` (`services/repos.go`) 新增方法**：
+   - `CreateTasksBatch(ctx context.Context, tasks []*models.GenTask) error`（单 DB 事务批量插入拆单任务并回填自增 ID）；
+   - `GetLatestEngineByDocumentID(ctx context.Context, docID uint) (string, error)`（通过 `archdoc_gen_slot_tasks.document_id` 索引关联主任务，返回该文档最近一次有效生成任务的 `engine`）；
+   - `RecoverFailedTaskToReady(ctx context.Context, taskID uint, updates map[string]any) error`（仅用于单槽位独立重试成功将全败任务恢复为 `ready` 终态，`WHERE id = ? AND status = 'failed'` 原子条件更新）。
+4. **`TaskScheduler` (`services/scheduler_service.go`) 两阶段预留契约**：
+   - `ReserveSlots(priority string, count int) (commit func([]ScheduledJob) error, rollback func(), err error)`（检查 `!stopped` 与 `len(q) + reserved + count <= cap`，返回幂等 `commit` / `rollback` 闭包；`commit` 内部二次检查 `stopped` 防止并发停机泄漏）。
+5. **`GenerateTaskSubmitResponse` (`services/generation_service.go`)**：
+   ```go
+   type GenerateTaskSubmitResponse struct {
+       GenTaskDetailVO
+       CreatedCount int               `json:"created_count"`
+       Tasks        []GenTaskDetailVO `json:"tasks"`
+   }
+   ```
+
+### 11.3 `config/config.go` 配置模型增量
+
+- **`LLMSection` 增量**：
+  - `FirstByteTimeoutSeconds int` (`yaml:"first_byte_timeout_seconds"`, 默认 `90`)
+  - `IdleTimeoutSeconds int` (`yaml:"idle_timeout_seconds"`, 默认 `60`)
+  - 提供 `EffectiveFirstByteTimeoutSeconds()` 与 `EffectiveIdleTimeoutSeconds()`（均校验并回退安全默认值）。
+- **`OpenCodeSection` 新增（使用 `*bool` 避免 YAML 缺省 `opencode:` 段时 Go `bool` 零值 `false` 误关默认开关）**：
+  ```go
+  type OpenCodeSection struct {
+      Enabled                *bool  `yaml:"enabled"`                  // 默认 true（nil 视为 true）
+      BinaryPath             string `yaml:"binary_path"`              // 留空按 PATH -> ~/.opencode/bin/opencode -> /usr/local/bin/opencode 探测
+      DefaultEngine          string `yaml:"default_engine"`           // native | opencode，默认 "native"
+      MaxConcurrency         int    `yaml:"max_concurrency"`          // 默认 2
+      TimeoutSeconds         int    `yaml:"timeout_seconds"`          // 默认 600
+      IdleTimeoutSeconds     int    `yaml:"idle_timeout_seconds"`     // 默认 120
+      ContinuationEnabled    *bool  `yaml:"continuation_enabled"`     // 默认 true（nil 视为 true）
+      ContinuationMaxSeconds int    `yaml:"continuation_max_seconds"` // 默认 180
+  }
+  ```
+  配套提供 `IsEnabled()`、`IsContinuationEnabled()`、`EffectiveDefaultEngine()`、`EffectiveMaxConcurrency()`、`EffectiveTimeoutSeconds()`、`EffectiveIdleTimeoutSeconds()`、`EffectiveContinuationMaxSeconds()`。
+
+### 11.4 前端 TypeScript 强类型契约增量 (`frontend/src/types/` & `utils/`)
+
+```typescript
+// frontend/src/types/domain.ts 增量
+export type GenEngine = 'native' | 'opencode';
+export type TaskEngineFilter = '' | 'all' | GenEngine;
+
+export interface EngineInfoVO {
+  id: GenEngine;
+  label: string;
+  available: boolean;
+  version?: string;
+  reason?: string;
+  default_model?: string;
+}
+
+export interface EnginesResponse {
+  default_engine: GenEngine;
+  engines: EngineInfoVO[];
+}
+
+export interface GenerateTaskSubmitResponse extends GenTaskDetailVO {
+  created_count: number;
+  tasks: GenTaskDetailVO[];
+}
+
+// GenTaskDetailVO & GenTaskSummaryVO 新增可选兼容字段：engine?: GenEngine;
+// LLMConfigVO 新增可选字段：opencode_model?: string;
+
+// frontend/src/types/api.ts 增量
+// ArchdocErrorCode 新增：| 'ENGINE_UNAVAILABLE'
+// GenerateTaskPayload 新增：doc_type?: string; engine?: GenEngine;
+// BatchGenerateTaskPayload 新增：engine?: GenEngine;
+// TaskListQuery 新增：engine?: TaskEngineFilter;
+// IncrementalRefreshPayload 新增：engine?: GenEngine;
+// UpsertLLMConfigPayload 新增：opencode_model?: string;
+
+// frontend/src/utils/taskSubmitUtils.ts 纯函数契约
+export function resolveInitialEngine(enginesResp: EnginesResponse | null, storedEngine: string | null): GenEngine;
+export function normalizeGenerateSubmitResponse(resp: GenerateTaskSubmitResponse | GenTaskDetailVO): GenTaskDetailVO[];
+export function summarizeSplitTasksProgress(tasks: GenTaskDetailVO[]): {
+  total: number; ready: number; failed: number; canceled: number; running: number; allTerminal: boolean; overallPercent: number;
+};
 ```

@@ -1,10 +1,10 @@
 # PostgreSQL 物理模型与 `archdoc_*` GORM 建模字典
 
 - **文档编号**：`05-database-schema.md`
-- **文档版本**：v1.3.0 (ADR-07 扩展：`archdoc_repo_module_policies` 新增 `target_branch` 列以支撑单仓目标分支切换，零共享表 DDL)
+- **文档版本**：v1.4.0 (ADR-08 增量演进：零新增表坚守 20 表基线，3 表增补 3 列 + 1 列扩容)
 - **编制日期**：2026-11-22
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-34`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-07`](../05-adr/07-single-repo-branch-switch.md)
+- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-35`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-07`](../05-adr/07-single-repo-branch-switch.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
 
 ---
 
@@ -214,8 +214,9 @@ type GenTask struct {
 	SnapshotID      *uint          `gorm:"index" json:"snapshot_id"`
 	ParentTaskID    *uint          `gorm:"index" json:"parent_task_id"`                          // ADR-04：批量子任务指向批次父任务 ID
 	TaskKind         string         `gorm:"size:32;not null;default:'generate'" json:"task_kind"` // generate | regenerate | incremental_refresh | batch
+	Engine           string         `gorm:"size:20;not null;default:'native';index" json:"engine"` // native | opencode (ADR-08)
 	Priority         string         `gorm:"size:20;not null;default:'interactive';index" json:"priority"` // interactive | batch (F-27)
-	DocTypesJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`    // 本次请求生成的 doc_type slug 列表
+	DocTypesJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`    // ADR-08：非批量任务固定长度为 1；批量父任务存所选 DocType 清单
 	TargetDocumentID *uint          `gorm:"index" json:"target_document_id"`                      // 仅 incremental_refresh 时非空：指向被增量刷新的目标文档 ID
 	TargetSlotsJSON  datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"target_slots"` // 仅 incremental_refresh 时非空：待刷新的受影响 slot_id 列表
 	Status           string         `gorm:"size:24;not null;default:'pending';index" json:"status"` // pending|extracting|generating|verifying|ready|failed|canceled
@@ -464,6 +465,7 @@ type LLMConfig struct {
 	Name               string     `gorm:"size:80;uniqueIndex;not null" json:"name"`               // 管理员定义模型标识（如 DeepSeek-V3 / GLM-4 / Kimi）
 	BaseURL            string     `gorm:"size:512;not null;default:''" json:"base_url"`           // 内网 OpenAI Compatible 接口基址
 	ModelName          string     `gorm:"size:128;not null;default:''" json:"model_name"`         // 模型请求名
+	OpenCodeModel      string     `gorm:"size:128;not null;default:''" json:"opencode_model"`     // ADR-08 可选原生 OpenCode provider/model（留空走模式 A 自动桥接）
 	APIKey             string     `gorm:"type:text;not null;default:''" json:"-"`                 // 内网 API Key（json:"-" 永不序列化返回）
 	APIKeyMasked       string     `gorm:"size:64;not null;default:''" json:"api_key_masked"`      // 仅保存脱敏预览 sk-****1234
 	TimeoutSeconds     int        `gorm:"default:180;not null" json:"timeout_seconds"`
@@ -491,7 +493,8 @@ type LLMUsageLog struct {
 	DocTypeSlug        string    `gorm:"size:64;default:'';index" json:"doc_type_slug"`
 	DocTypeRevisionID  *uint     `gorm:"index" json:"doc_type_revision_id"`
 	SlotID             string    `gorm:"size:64;default:''" json:"slot_id"`
-	Stage              string    `gorm:"size:24;not null;index" json:"stage"`       // glossary | slot_gen | slot_retry | chat_refine | probe
+	Engine             string    `gorm:"size:20;not null;default:'native';index" json:"engine"` // native | opencode (ADR-08)
+	Stage              string    `gorm:"size:32;not null;index" json:"stage"`       // glossary | slot_gen | slot_retry | chat_refine | probe | doc_gen_opencode | doc_gen_oc_continue | slot_retry_opencode | inc_refresh_opencode
 	ModelName          string    `gorm:"size:128;not null" json:"model_name"`
 	PromptTokens       int       `gorm:"default:0;not null" json:"prompt_tokens"`
 	CachedPromptTokens int       `gorm:"default:0;not null" json:"cached_prompt_tokens"` // 推理服务 KV Cache 命中 Token 数
@@ -569,6 +572,7 @@ func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules
 ### 4.1 `AutoMigrate` 初始化顺序与幂等 Seed 规则
 
 1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 20 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ReviewComment` → `ChatSession` → `ChatMessage` → `ChatProposalItem` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
+   - **ADR-08 零增表平滑升级**：ADR-08 坚守 20 张 `archdoc_*` 表基线，仅向 `archdoc_gen_tasks.engine`、`archdoc_llm_usage_logs.engine`、`archdoc_llm_configs.opencode_model` 增补带 `default` 值的列，并将 `archdoc_llm_usage_logs.stage` 扩至 `size:32`，支持 GORM `AutoMigrate` 无损升级；写入 `GenSlotTask.ModelName` / `LLMUsageLog.ModelName` 的 `[opencode] <label>` 字符串在写入前按 128 runes 安全截断。
 2. **幂等初始化**：
    - `LLMConfig`：初始保持为空表，由管理员在门户「LLM 模型配置」中按需新增内网模型；启动前置 `migrateLegacyGovernanceSchema()` 幂等将历史 `tier`/`api_key_cipher` 行清理或迁移（注意旧密文不可再复用，需管理员按需重填）；
    - `DocType`：启动时将内嵌 5 类默认 `DocType` 释放至 `doc_types/`（仅补缺失目录），再调用 `DocTypeRegistry.SyncAll()` 计算聚合哈希同步入库，重复启动零重复记录、零多余修订。

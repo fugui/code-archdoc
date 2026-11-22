@@ -1,10 +1,10 @@
 # Git 沙箱、Code IR 静态抽取与 L2 生成/校验引擎设计
 
 - **文档编号**：`02-extraction-and-generation-engine.md`
-- **文档版本**：v1.1.0 (ADR-04 基线切片、工作区可降级读写锁与模块外部上下文扩展)
-- **编制日期**：2026-11-20
+- **文档版本**：v1.2.0 (ADR-08 单文档拆单、Native 底座加固与 OpenCode 双引擎架构)
+- **编制日期**：2026-11-22
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-02`, `F-04`, `F-05`, `F-07`, `F-14`, `F-27`, `F-29`~`F-31`, `SC-02`, `SC-04`, `SC-06`, `SC-09`, `SC-13`, `SC-15`~`SC-18`, `NFR-3`~`NFR-6`, [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)
+- **关联基线**：`F-02`, `F-04`, `F-05`, `F-07`, `F-14`, `F-27`, `F-29`~`F-31`, `F-35`, `SC-02`, `SC-04`, `SC-06`, `SC-09`, `SC-13`, `SC-15`~`SC-18`, `SC-22`, `NFR-3`~`NFR-6`, [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
 
 ---
 
@@ -370,3 +370,84 @@ flowchart LR
   - `scope = "repo"` 候选锚点必须在 `module_context` 白名单内命中，未命中一律判 `error`（`can_approve = false`）；
   - `symbol_kind = "module_doc"` 锚点与 `module_digests` 对齐（记录 `content_fingerprint = content_sha256`）。
 - **批次生成与防死锁**：`POST /api/tasks/generate-batch` 创建 `task_kind="batch"` 父任务 + `priority="batch"` 子任务；父任务协调协程不占 `TaskScheduler` 并发槽位；执行前按 `scheduler.max_tokens_per_batch`（默认 `1000000`）做批次预算前置熔断，0 次 LLM 调用。
+
+---
+
+## 7. 单文档粒度编排、Native 底座加固与 OpenCode 双引擎架构 ([`ADR-08`](../05-adr/08-dual-engine-doc-generation.md) / `M14`)
+
+### 7.1 单文档任务不变量与无竞态自动拆单（`D-1`）
+
+1. **硬不变量（`1 GenTask = 1 Scope × 1 DocType`）**：
+   - 所有非批量任务（`task_kind` 为 `generate`、`regenerate`、`incremental_refresh`）严格绑定唯一目标范围 `(repo_id, subdirectory, ref_name)` 与唯一 `doc_type_slug`，其 `doc_types_json` 数组长度恒为 `1`。
+   - `EstimateAndCheckBudget` 仅对单篇文档计算文件数与 Token 预算，彻底消除多篇文档叠加触发 `TOKEN_BUDGET_EXCEEDED` 的预算误熔断与故障域耦合。
+2. **两阶段队列容量预留与原子批量创单**：
+   - `TaskScheduler.ReserveSlots(priority string, count int) (commit func([]ScheduledJob) error, rollback func(), err error)`：
+     - 在 `s.mu` 锁内校验 `!s.stopped` 且 `len(queue) + reserved + count <= cap`，容量不足直接返回 `ErrQueueFull`（HTTP `429 QUEUE_FULL`），此时 DB 未写入任何记录（**0 脏数据**）；
+     - 容量充足时原子递增 `reserved += count` 并返回幂等 `commit` 与 `rollback` 闭包；`commit` 内部二次检查 `s.stopped`，若期间调度器停机则归还预留并对 `jobs` 执行 `OnDrop` 后返回 `ErrSchedulerStopped`。
+     - 若单测未注入 `TaskScheduler`（`o.scheduler == nil`），编排器退化为平滑直发。
+   - **提交流程**：前置校验（仓库、全部 `dedupSlugs` 启用态、分支、引擎可用性） → `ReserveSlots(Interactive, len(dedupSlugs))` → 单 DB 事务 `TaskRepo.CreateTasksBatch(ctx, tasks)`（失败即 `rollback()`） → 为各 `task.ID` 注册 `taskCtx, cancel` 并 `commit(jobs)`；响应体 `GenerateTaskSubmitResponse` 顶层内嵌首任务 `tasks[0]`（向后兼容 `resp.id`）并扩展 `created_count` 与 `tasks[]`。
+3. **批量编排单文档子任务与零重复抽取**：
+   - `executeBatchGenerateTask` 阶段 1 为每个 `(subdir, slug)` 创建 1 个单文档子任务，阶段 2（若勾选 `include_repo_scope`）为每个 `("", slug)` 创建 1 个整仓单文档子任务；`BudgetAdvice.ModuleBreakdown` 仍按 `subdirectory` 聚合展示。
+   - 同一批拆出的多个任务并发命中 `SnapshotService.EnsureSnapshot` 的进程内 `singleflight` 与 `EnsureGlossary` 的 `glossarySF` 缓存，保证 Git 同步、L1 Code IR 与术语表仍严格只执行 1 次（`SC-02`）。
+
+### 7.2 Native 引擎底座加固（`D-2`，`pkg/llm`）
+
+1. **修复超时零重试 Bug 与升级退避机制 (`pkg/llm/client.go`)**：
+   - `executeWithRetry` 显式区分呼叫方传入的 `parentCtx` 与单次尝试 `attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout)`；
+   - 仅当 **`parentCtx.Err() != nil`** 时判定为主动取消或父级总超时而中止重试；若 `parentCtx.Err() == nil` 且命中 `attemptCtx` 超时、`isTimeoutErr(err)`、首包/空闲看门狗超时、`io.EOF` / `io.ErrUnexpectedEOF`、`connection reset` / `broken pipe` 或 HTTP `429`/`500`/`502`/`503`/`504`，一律标记 `retryable = true`；
+   - `MaxRetries` 硬钳位上限从 `3` 对齐至 **`0..10`（默认 `3`）**；退避间隔采用可注入基准 `c.baseBackoff`（默认 `1s`，单测可通过 `NewClientWithOptions` 注入 `10ms`）× `2^attempt` × `±20%` 随机 Jitter（封顶 `30s`），并优先尊重 `429`/`503` 的整数秒或 HTTP-date `Retry-After`（封顶 `30s` 且响应 `parentCtx.Done()`）。
+2. **内部流式聚合、`Content-Type` 双模自适应与三层超时看门狗**：
+   - 槽位生成（`executeSlotLLM` 与 `RunToolLoop`）默认以 `stream: true` + `stream_options: {"include_usage": true}` 发起请求并在 `doOnce` 内聚合完整 `ChatResponse`；若网关返回 HTTP `400`/`422`/`501` 且报错提及不支持 `stream` 或 `stream_options`，自动降级为 `stream: false`（或剥离 `stream_options`）重发；
+   - **双模自适应解析**：`200 OK` 时检查 `Content-Type` 与首非空字节——SSE 流（`text/event-stream` 或以 `data:`/`:`/`event:` 开头）走 `parseSSEResponse`；`application/json` 或 `{` 开头走同步 JSON 解析（兼容所有非流式内网网关与存量 `httptest` 测试桩）；
+   - **三层超时护栏**：**首包超时**（`FirstByteTimeoutSeconds` 默认 `90s`）、**流式空闲超时**（`IdleTimeoutSeconds` 默认 `60s`）与**单次总超时**（`TimeoutSeconds` 默认 `180s`），前两者自动取 `min(..., TimeoutSeconds)`；
+   - **已吐流防重复重试护栏**：当 `onDelta != nil`（如 Canvas Studio SSE Chat）且已向调用方推送过至少 1 段非空增量（`emittedAny == true`）后发生流中断或空闲超时，强制置 `retryable = false`，杜绝前端出现重复文本；当 `onDelta == nil`（槽位内部聚合）或尚未推送过增量时，允许全量重试；
+   - 单槽位输出配额下限由 `300` 提升至 `max(MaxOutputTokens / len(slots), 4096)`，且 `FinishReason == "length"` 时记录结构化告警日志。
+3. **单文档预算校准 (`pkg/llm/budget.go`) 与三级结构化合法 JSON 裁剪 (`pkg/llm/prompt.go`)**：
+   - 将 `countEffectiveFilesForDocTypes` 重构为 `filterEffectiveFilesForDocTypes`，使 `effectiveFiles` 与 `computeTopDirectories` 共享同一份按 `DocType.Meta.ScopeProfile` 过滤的有效文件集，消除 `include_tests: false` 下 `test/` 目录误报；
+   - 重构 `serializeSlotFacets` 删除硬截断 `serialized[:maxChars]`，改用三级结构化降维：① 清空 `Deps.FileImports` 与 `Tree.Files`；② 按事实优先级缩减大列表切片并注入 `_meta: {"truncated": true, "budget_chars": ..., "omitted_counts": {...}}`；③ 极端小预算返回最小合法 JSON 对象，保证 **100% 满足 `json.Valid == true`**，并在 `sourceToolsGuidancePrompt` 引导模型遇到 `_meta.truncated == true` 时优先调只读工具检索源码。
+
+### 7.3 单槽位独立重试全面加固 (`executeSingleSlotRetry`)
+
+1. **租约、信号量与引擎继承**：全程持有 `AcquireRepo` + `AcquireSnapshot` 租约，统一经 `o.acquireLLMSlot(ctx)` 排队（删除直接写 `o.llmSem`）；继承 `task.Engine`——`native` 走 `executeSlotLLM`（`stage = "slot_retry"`），`opencode` 在 `opencodeSem` + `WithRepoReadLock` 保护下仅将该槽位作为单元素 `ActiveSlots` 跑 OpenCode 会话（`stage = "slot_retry_opencode"`）。
+2. **兄弟槽位证据保留与全败任务恢复收敛**：
+   - 加载上一修订时执行 `overlaySectionMetadata` 并从 `prevEvs` 还原全部非目标槽位的 `CitedAnchors` 传入 `Verifier`；
+   - 若原任务因 `ALL_SLOTS_FAILED` 尚未建档（`GetByScope` 返回 `ErrNotFound` 或 `CurrentRevisionNo == 0`），自动回查该任务全部槽位并调用 `persistGeneratedDocument` 创建文档与初始修订，回填 `slotTask.DocumentID`；
+   - 若原任务处于 `failed` 终态且重试落库成功，调用专有仓储方法 `TaskRepo.RecoverFailedTaskToReady`（绕过常规终态校验的原子条件更新）将主任务置为 `ready`（`progress_percent = 100`）。
+
+### 7.4 纯领域包 `pkg/opencode/` 分层与运行机制（`D-3`）
+
+```mermaid
+flowchart TB
+    Call["services.GenerationOrchestrator<br/>(持 Repo/Snapshot 租约 + TaskScheduler 槽位)"] --> Gate{"task.engine?"}
+    Gate -->|"native"| Native["pkg/llm (流式聚合 + 三层超时重试 + ToolLoop)"]
+    Gate -->|"opencode"| OCSem["opencodeSem (max_concurrency=2) + EnsureSandboxSynced(若被回收) + WithRepoReadLock"]
+    OCSem --> Bridge["config_bridge.go<br/>0700 隔离根 + 0600 opencode.json (Mode A/B) + 全套 XDG/CI 隔离 + 只读 Agent"]
+    Bridge --> Proc["process.go<br/>--file (>64KB) + LockOSThread 同线程 Start/Wait + Setpgid 强杀 + Idle 看门狗"]
+    Proc --> Parser["event_parser.go & prompt.go<br/>8MB JSONL + Usage 归一化 + 防重 H2 剥离 + 容错 JSON 解析"]
+    Parser --> Cont{"超时/限流/缺槽位<br/>且可续跑?"}
+    Cont -->|"<= 1 次且剩余 >= 60s"| Resume["同隔离目录 --session 续跑补齐"]
+    Cont -->|"完成"| Merge["统一回填 GenSlotTask + Verifier 四重门禁 + DocumentRevision"]
+    Resume --> Merge
+    Native --> Merge
+```
+
+1. **包结构与架构红线**：`pkg/opencode/` 下设 `runner.go`、`config_bridge.go`、`process.go`、`event_parser.go`、`prompt.go`、`opencode_test.go`，严格零导入 `models`/`services`/`handlers`/`gorm`/`gin` 与 `gitsync.Sync`。CLI 探活内置 30s TTL 缓存，依次检查 `opencode.binary_path` → `exec.LookPath("opencode")` → `$HOME/.opencode/bin/opencode` → `/usr/local/bin/opencode`。
+2. **双模式配置桥接与强制只读沙箱**：
+   - **模式 A（`LLMConfig.OpenCodeModel == ""`）**：在 `0700` 临时目录写入 `0600` `opencode.json`，配置 `@ai-sdk/openai-compatible` Provider 注入 `baseURL`/`apiKey`/`User-Agent` 并启动 `--model archdoc_ep/<model_name>`；明文 `APIKey` 绝不进入 `argv`、环境变量或日志，函数返回时 `defer os.RemoveAll` 彻底销毁。
+   - **模式 B（`LLMConfig.OpenCodeModel != ""`）**：直接传 `--model <OpenCodeModel>`，并按需将宿主机 `~/.local/share/opencode/auth.json` 拷贝至隔离 `xdg_data/opencode/auth.json`（`0600`）。
+   - **全隔离与只读矩阵**：白名单基础环境变量 + 覆写 `OPENCODE_CONFIG`/`OPENCODE_CONFIG_DIR`/`XDG_{CONFIG,DATA,STATE,CACHE}_HOME`/`CI=true`/`NO_COLOR=1`/`TERM=dumb`（隔离 SQLite 防多进程 `database is locked`）；固定 `--pure --agent archdoc-readonly-docgen`（仅允许 `read`/`grep`/`glob`/`list`，硬禁止 `edit`/`write`/`patch`/`bash`/`webfetch`/`external_directory`，禁用 `--auto`/`--thinking`）。
+3. **进程组与线程安全治理**：
+   - 规约文本 `> 64KB` 自动落盘至 `0600` `prompt.md` 通过 `--file` 传入；
+   - **单一 owner 协程全程 `runtime.LockOSThread()` 执行 `cmd.Start()` → 并发消费 `stdout` + `32KB` 环形 `stderr` + Idle 看门狗 → 等待读写协程排空 → 同线程 `cmd.Wait()`**，彻底防止 Go 调度器销毁 M 线程误触发 Linux `SysProcAttr.Pdeathsig`；取消或超时调用 `syscall.Kill(-pgid, syscall.SIGKILL)` 秒级回收整个进程树。
+4. **8MB JSONL、Usage 归一化、防重标题与 `--session` 续跑**：
+   - `bufio.Scanner` 缓冲上限 8MB 解析 `--format json` 事件，按 `messageID` 聚合末条助手文本，累计并归一化 `PromptTokens`/`CachedPromptTokens`（保证 `CachedPromptTokens <= PromptTokens`）；
+   - `ParseOpenCodeDocOutput` 兼容纯 JSON、`` ```json `` 围栏及顶层 `{slot_id: ...}` 映射，并自动剥离与 `slot.Title` 重复的首行 `#`/`##` 标题；
+   - 遇可恢复错误（`timeout`/`idle_timeout`/`rate_limited` 先退避 2.5s/`output_missing`）或部分 `MissingSlotIDs > 0` 且存在 `SessionID`、剩余父时间 `>= 60s` 时，在同一隔离目录执行 **至多 1 次** `--session <SessionID>` 轻量续跑并合并结果。
+
+### 7.5 双层并发、沙箱按需自愈、增量刷新与 Mode B Glossary 降级
+
+- **双层限流**：`GenerationOrchestrator` 新增独立 `opencodeSem`（容量 `opencode.max_concurrency`，默认 `2`），OpenCode 执行前依次持 `TaskScheduler` 槽位与 `opencodeSem`。
+- **沙箱按需自愈**：因 `ResourceReaper` 可按 LRU 回收闲置沙箱工作区，OpenCode 执行前若 `ResolveSandboxScope` 发现工作区缺失，先调用 `SnapshotService.EnsureSandboxSynced`（写锁）拉取，再进入 `WithRepoReadLock` 共享读锁执行。
+- **Mode B Glossary 降级**：若 `LLMConfig.OpenCodeModel != ""` 且前置 `EnsureGlossary`（Native HTTP）因端点格式差异失败，记录告警并优雅降级为 `glossary = nil` 继续启动 OpenCode 会话（Mode A 保持严格失败校验）。
+- **增量刷新承袭引擎**：`IncrementalRefresh` 未显式指定 `engine` 时，经 `TaskRepo.GetLatestEngineByDocumentID` 继承该文档最近一次生成引擎；`engine == "opencode"` 时合并所有受影响非锁定槽位为单次 OpenCode 会话（`stage = "inc_refresh_opencode"`）。Canvas Studio 实时 Chat 精修保持 Native 流式引擎。
+- **列宽安全保护**：写入 `GenSlotTask.ModelName` 与 `LLMUsageLog.ModelName` 的 `[opencode] <label>` 展示串按 128 runes 安全截断。

@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.4.0 (ADR-07 扩展：新增单仓远端分支列表与目标分支切换 2 条接口及 `REMOTE_BRANCH_FETCH_FAILED` 错误码)
+- **文档版本**：v1.5.0 (ADR-08 扩展：新增 `GET /api/engines` 与 `ENGINE_UNAVAILABLE` 错误码，扩展单文档拆单与双引擎契约)
 - **编制日期**：2026-11-22
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.7.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-07`](../05-adr/07-single-repo-branch-switch.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.8.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -58,6 +58,7 @@
 | `400` | `INVALID_SUBDIR` | `subdirectory` 含 `..`、`\x00`、`\` 或前导 `/`（`SC-06`） |
 | `400` | `INVALID_SLUG` | `DocType` `slug` 不满足 `^[a-z0-9][a-z0-9_-]{1,62}$`（`SC-08`） |
 | `400` | `DOC_TYPE_INACTIVE` | 触发生成时勾选了已停用或不存在的 `DocType` |
+| `400` | `ENGINE_UNAVAILABLE` | 请求显式指定 `engine="opencode"` 但服务端未启用（`opencode.enabled=false`）或未检测到可用 OpenCode CLI，`details: {"engine": "opencode", "reason": "..."}` |
 | `401` | `UNAUTHORIZED` | 缺失或无效 JWT |
 | `403` | `FORBIDDEN` | 非负责人操作范围资源、子目录负责人越权（`SC-12`）、非管理员调用管理接口（`SC-01`） |
 | `403` | `DRAFT_ACCESS_DENIED` | 普通用户尝试访问未发布草稿或修订历史 |
@@ -1129,3 +1130,84 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
 3. **存量接口向后兼容扩展**：
    - `GET /api/repos`、`GET /api/arch-tree` 与 `GET /api/repos/:repo_id/scopes`：`RepoScopeCoverageVO` 新增可选/兼容字段 `default_branch`、`is_branch_overridden`、`can_switch_branch`；`RepoScopesDetailResponse` 同步新增 `default_branch`、`is_branch_overridden`、`can_switch_branch`；`branch` 返回解析后的有效跟踪分支。
    - `POST /api/tasks/generate` 与 `POST /api/tasks/generate-batch`：单仓单活跃分支护栏——`ref_name` 留空时自动取有效目标分支，显式传值必须与有效目标分支一致（兼容 `master` → `main` 回退），不匹配返 `400 INVALID_PARAM`。
+
+---
+
+## 8. ADR-08 增量接口契约（`M14`，新增 1 Endpoint，总计 70 Endpoints）
+
+### 8.1 新增接口清单
+
+| # | 方法 | 路由路径 | 鉴权级别 | 里程碑 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| 70 | `GET` | `/api/engines` | `JWT` | M14 | 查询可用生成引擎清单、OpenCode CLI 版本状态与实时默认模型（CLI 探活内置 30s TTL 缓存，默认模型每次实时读取 DB） | - |
+
+### 8.2 `GET /api/engines` (`JWT`, M14)
+
+- **响应 (`200 OK`)**：
+  ```json
+  {
+    "default_engine": "native",
+    "engines": [
+      {
+        "id": "native",
+        "label": "Native 直连引擎",
+        "available": true,
+        "version": "",
+        "reason": "",
+        "default_model": "DeepSeek-V3"
+      },
+      {
+        "id": "opencode",
+        "label": "OpenCode 深度 Agent",
+        "available": true,
+        "version": "1.18.21",
+        "reason": "",
+        "default_model": "DeepSeek-V3"
+      }
+    ]
+  }
+  ```
+- **字段规则**：
+  - `default_engine` 取自 `config.AppConfig.OpenCode.EffectiveDefaultEngine()`（若配置为 `"opencode"` 但 CLI 不可用，仍如实返回并配合 `engines[].available=false` 及 `reason` 供前端回退）。
+  - `engines[1].available == false` 时，`reason` 返回中文说明（如 `"服务端已禁用 OpenCode 引擎"` 或 `"未在 PATH 及常见安装路径检测到 opencode 可执行文件"`）。
+
+### 8.3 存量接口向后兼容扩展
+
+1. **`POST /api/tasks/generate` (`ScopeWrite`, M14 单文档自动拆单与引擎选择)**：
+   - **请求体扩展**：保留 `doc_types: string[]`，新增可选 `doc_type?: string`（两者按出现顺序合并去重，`len(dedupSlugs) >= 1`）与可选 `engine?: "native" | "opencode"`（留空自动取 `EffectiveDefaultEngine()`）。
+   - **校验与容量保护**：`engine` 非法返回 `400 INVALID_PARAM`；指定 `opencode` 但不可用返回 `400 ENGINE_UNAVAILABLE`；调用 `TaskScheduler.ReserveSlots(Interactive, len(dedupSlugs))`，剩余容量不足返回 `429 QUEUE_FULL` 且 DB 创建 `0` 条记录。
+   - **响应 (`202 Accepted` — `GenerateTaskSubmitResponse`)**：
+     ```json
+     {
+       "id": 101,
+       "repo_id": 167,
+       "subdirectory": "",
+       "ref_name": "main",
+       "task_kind": "generate",
+       "engine": "opencode",
+       "priority": "interactive",
+       "doc_types": ["system-architecture"],
+       "status": "pending",
+       "progress_percent": 0,
+       "estimated_tokens": 0,
+       "triggered_by": 2001,
+       "created_at": "2026-11-22T21:40:00+08:00",
+       "created_count": 3,
+       "tasks": [
+         { "id": 101, "engine": "opencode", "doc_types": ["system-architecture"], "status": "pending" },
+         { "id": 102, "engine": "opencode", "doc_types": ["code-walkthrough"], "status": "pending" },
+         { "id": 103, "engine": "opencode", "doc_types": ["agents-context"], "status": "pending" }
+       ]
+     }
+     ```
+     > 顶层匿名内嵌首任务 `tasks[0]`（使仅读取 `resp.id` 的存量客户端与单测 100% 兼容），同时返回 `created_count` 与完整单文档 `tasks[]` 数组。
+2. **`POST /api/tasks/generate-batch` (`BatchScopeWrite`, M14)**：
+   - 请求体新增可选 `engine?: "native" | "opencode"`（非法返 `400 INVALID_PARAM`，不可用前置返 `400 ENGINE_UNAVAILABLE`）；
+   - 父任务与所有按 `(subdir, doc_type)` 拆分的单文档子任务均持久化并透传 `engine`，`budget_advice.module_breakdown` 仍按目标范围 `subdirectory` 聚合。
+3. **`GET /api/tasks`、`GET /api/tasks/:task_id` 与 `GET /api/repos/:repo_id/scopes` (`JWT`, M14)**：
+   - `GET /api/tasks` 新增可选 Query `?engine=all|native|opencode`（非法值返 `400 INVALID_PARAM`）；
+   - `GenTaskDetailVO` 与 `GenTaskSummaryVO` 新增 `engine: "native" | "opencode"` 字段。
+4. **`POST /api/documents/:id/incremental-refresh` (`ScopeWrite`, M14)**：
+   - 请求体新增可选 `engine?: "native" | "opencode"`（留空默认取该文档最近一次生成任务使用的引擎 `GetLatestEngineByDocumentID`，无记录时回退系统默认引擎）；指定不可用引擎返 `400 ENGINE_UNAVAILABLE`。
+5. **`GET` / `POST` / `PUT` `/api/admin/llm-configs` (`Admin`, M14)**：
+   - 请求与响应新增可选字段 `opencode_model?: string`（最长 128 字符，禁止包含空白符与换行/控制字符，否则返 `400 INVALID_PARAM`）；`LLMConfigVO` 与 `LLMConfigAuditSnapshot` 同步暴露 `opencode_model`。

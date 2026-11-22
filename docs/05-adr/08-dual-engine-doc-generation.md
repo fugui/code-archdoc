@@ -2,8 +2,8 @@
 
 - **文档编号**：`08-dual-engine-doc-generation.md`
 - **日期**：2026-11-22
-- **状态**：已检视修订 (Reviewed & Revised) —— 一次统筹规划 M14（Native 加固 + 单文档拆单 + OpenCode 双引擎 + 前端可选引擎），待确认后同步冻结 `01-features` ~ `04-tasks`（M14 作战卡）进入 TDD 实施
-- **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-05`, `F-07`, `F-09`, `F-12`, `F-14`, `F-27`, `F-31`, `SC-02`, `SC-04`, `SC-09`, `SC-13`, `SC-18`)；[`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)；[`05-database-schema.md`](../02-design/05-database-schema.md)；[`01-http-api-contract.md`](../03-api/01-http-api-contract.md)；[`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；[`ADR-01`](./01-microfrontend-and-table-prefix-isolation.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`ADR-06`](./06-document-review-and-refine-studio.md)；[`ADR-07`](./07-single-repo-branch-switch.md)
+- **状态**：已冻结 SDD 设计与 M14 作战卡 (SDD Frozen & Ready for TDD Implementation) —— 已同步更新 `01-features` ~ `04-tasks` 并冻结 [`15-m14-dual-engine-doc-generation.md`](../04-tasks/15-m14-dual-engine-doc-generation.md)，待进入阶段四 TDD 实施
+- **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-05`, `F-07`, `F-09`, `F-12`, `F-14`, `F-27`, `F-31`, `F-35`, `SC-02`, `SC-04`, `SC-09`, `SC-13`, `SC-18`, `SC-22`)；[`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)；[`05-database-schema.md`](../02-design/05-database-schema.md)；[`01-http-api-contract.md`](../03-api/01-http-api-contract.md)；[`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；[`15-m14-dual-engine-doc-generation.md`](../04-tasks/15-m14-dual-engine-doc-generation.md)；[`ADR-01`](./01-microfrontend-and-table-prefix-isolation.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`ADR-06`](./06-document-review-and-refine-studio.md)；[`ADR-07`](./07-single-repo-branch-switch.md)
 
 ---
 

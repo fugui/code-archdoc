@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 系统总体架构、跨模块协同与包分层治理
 
 - **文档编号**：`01-system-architecture.md`
-- **文档版本**：v1.0.0 (Stage 2 SDD Baseline)
-- **编制日期**：2026-11-19
+- **文档版本**：v1.1.0 (ADR-04 ~ ADR-08 演进对齐)
+- **编制日期**：2026-11-22
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.3.1)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md)、[`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md)、[`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.8.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
 
 ---
 
@@ -18,8 +18,8 @@
 | **【核心引擎篇】** | [`02-extraction-and-generation-engine.md`](./02-extraction-and-generation-engine.md) | Git 沙箱与三层降噪、Canonical Code IR Schema 与多语言 SPI、L2 分层摘要/预算熔断/Prompt 安全与缓存优化、状态机、Verifier 四重门禁、LRU 回收与调度（`F-27`） |
 | **【领域治理篇】** | [`03-doctype-drift-and-publishing.md`](./03-doctype-drift-and-publishing.md) | `DocType` 目录 SSOT 注册表与 5 类内置槽位规划、`slot_id` 锁定与孤立章节、`publish_dir` 原子落盘/撤回/导出、`F-25` 巡检与 `F-12` 双维漂移算法、`F-26` 评测与度量 |
 | **【应用与安全篇】** | [`04-workbench-and-security.md`](./04-workbench-and-security.md) | `./App` & `./menu` 联邦契约、四大工作台 React 组件分层树、手工直编 + SSE Chat 双轨修订协议、三层 RBAC 权限决策引擎与 `commonAudit` 审计清单 |
-| **【数据模型篇】** | [`05-database-schema.md`](./05-database-schema.md) | 共享主数据只读契约、完整 Mermaid ER 图、全量 16 张 `archdoc_*` GORM Struct 建模字典、迁移/加密与 `testdb` 物理隔离约束 |
-| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) / [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md) / [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md) / [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)（提议） | 微前端与表前缀隔离、C/C++ `tree-sitter` 解析与 Code IR 压缩分片存储、双键稳定证据锚点与 `publish_dir` 符号链接挂载契约、Monorepo 一层模块发现与层级文档汇总 |
+| **【数据模型篇】** | [`05-database-schema.md`](./05-database-schema.md) | 共享主数据只读契约、完整 Mermaid ER 图、全量 20 张 `archdoc_*` GORM Struct 建模字典、迁移/加密与 `testdb` 物理隔离约束 |
+| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md) | 微前端与表前缀隔离、Code IR 存储、`publish_dir` 挂载、Monorepo 发现/切片/汇总、蓝图双模编辑器、审阅精修台、单仓分支切换、单文档拆单与 OpenCode 双引擎 |
 
 ---
 
@@ -83,7 +83,7 @@ flowchart LR
    - 开发者直接访问 Vite 端口 `http://192.168.56.18:5182/archdoc/`（由 Vite 代理 `/archdoc/api` 与 `/api` 至 `:8100`）或单二进制 `:8100`，自动激活 `StandaloneShell`、`UnifiedLogin` 与亮/暗主题切换器。
 3. **单二进制交付边界**：
    - 编译期采用 `CGO_ENABLED=1`（见 [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md)）将 `tree-sitter` C 语法解析器与 `frontend/dist` 一并内嵌至 `code-archdoc-server`。
-   - 除内网共享 PostgreSQL、宿主机标准 `git`（已配全局免密只读 SSH Key，`KA-02`）与内网 LLM HTTP 接口外，零外部运行时服务或 CLI 依赖。
+   - 除内网共享 PostgreSQL、宿主机标准 `git`（已配全局免密只读 SSH Key，`KA-02`）与内网 LLM HTTP 接口外，自 `ADR-08` 起可选接入宿主机 `opencode` CLI 作为深度反推引擎（未安装或 `opencode.enabled=false` 时自动回退至 Native 引擎，不影响单二进制开箱即用）。
 
 ---
 
@@ -95,9 +95,9 @@ flowchart LR
 flowchart TB
     L1["1. HTTP / SSE 接入层 (handlers/)<br/>Gin 路由绑定 | JWT 鉴权 | 三层 RBAC 守卫 | SSE 流式推流 | commonAudit 审计埋点"]
     L2["2. 领域编排与调度层 (services/)<br/>TaskScheduler (双优先级队列/并发限流) | GenerationOrchestrator | RevisionService |<br/>PublishService | DriftOrchestrator | RemoteHeadPoller (F-25) | ResourceReaper (F-27) | QualityMetricsService"]
-    L3["3. 纯领域引擎与算法层 (pkg/)<br/>pkg/sandbox (路径安全与降噪) | pkg/codeir (L1 多语言 SPI & 脱敏) | pkg/doctype (目录 SSOT 注册表) |<br/>pkg/llm (OpenAI Compatible 客户端 & Prompt 编排) | pkg/verifier (四重门禁) | pkg/publisher (原子渲染与导出) | pkg/drift (双维定位)"]
+    L3["3. 纯领域引擎与算法层 (pkg/)<br/>pkg/sandbox (路径安全与降噪) | pkg/codeir (L1 多语言 SPI & 脱敏) | pkg/doctype (目录 SSOT 注册表) |<br/>pkg/llm (OpenAI Compatible 客户端 & Prompt 编排) | pkg/opencode (只读 OpenCode CLI 双模式桥接与事件解析) | pkg/verifier (四重门禁) | pkg/publisher (原子渲染与导出) | pkg/drift (双维定位)"]
     L4["4. 共享基础设施与外部适配层<br/>code-common/backend/gitsync (D-04) | code-common/backend/auth & audit & server |<br/>pkg/security (AES-256-GCM 密钥封装) | models/ (GORM 仓储实现)"]
-    L5["5. 受控本地文件系统 & 共享 PostgreSQL 持久化层<br/>LocalFS: sandbox_dir / ir_cache / doc_types / publish_dir | PG: 只读公共表 + 16 张 archdoc_* 表"]
+    L5["5. 受控本地文件系统 & 共享 PostgreSQL 持久化层<br/>LocalFS: sandbox_dir / ir_cache / doc_types / publish_dir | PG: 只读公共表 + 20 张 archdoc_* 表"]
 
     L1 --> L2
     L2 --> L3
@@ -115,7 +115,7 @@ flowchart TB
   - `ir_cache/`：压缩分片的 Code IR `.json.gz` 与术语表缓存（[`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md)）；
   - `doc_types/`：`DocType` 资产唯一事实源目录；
   - `publish_dir/`：已审批定稿 Markdown 原子落盘目录（[`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)）。
-- **PostgreSQL 共享持久化层 (`models/`)**：复用平台只读主数据，自有 16 张表强制 `archdoc_` 前缀与 `TableName() string` 方法。
+- **PostgreSQL 共享持久化层 (`models/`)**：复用平台只读主数据，自有 20 张表强制 `archdoc_` 前缀与 `TableName() string` 方法（`ADR-08` 零新增表）。
 
 ---
 
@@ -239,7 +239,8 @@ code-archdoc/
     ├── codeir/                      # Canonical Code IR 模型、FacetStore 接口、LanguageExtractor SPI、通用与 Proto 提取器
     │   └── treesitter/              # CGO 隔离包：tree-sitter C/C++ (W1) 与 Java/Python (W2) 语法树解析器
     ├── doctype/                     # DocType 目录 SSOT 解析、meta.json 校验、未知字段保留、有序聚合哈希与原子写盘
-    ├── llm/                         # OpenAI Compatible HTTP/SSE 客户端、分层模型路由、Prompt 注入隔离与 KV Cache 编排器
+    ├── llm/                         # OpenAI Compatible HTTP/SSE 客户端、三层超时重试、Prompt 注入隔离、结构化裁剪与 KV Cache 编排器
+    ├── opencode/                    # 只读 OpenCode CLI 双模式配置桥接、进程组强杀、8MB JSONL 事件解析与 --session 续跑（零 DB/Gin 耦合）
     ├── verifier/                    # 四重确定性校验管线（符号/路径、槽位完备度、Mermaid 语法与上限、凭据拦截）
     ├── publisher/                   # Frontmatter 渲染、平台深链转换、跨文档相对链接检查、publish_dir 原子落盘与 ZIP 导出
     └── drift/                       # 章节级 Code Drift（证据锚点+内容指纹）与 Spec Drift（slot_id 差异）纯计算引擎
@@ -265,7 +266,7 @@ code-archdoc/
 ```makefile
 lint-arch:
 	@echo "Checking architecture boundaries (ArchGuard)..."
-	@# 规则 1: pkg/ 下所有引擎包严禁导入 code-archdoc/models、gorm.io/gorm 或 github.com/gin-gonic/gin
+	@# 规则 1: pkg/ 下所有引擎包（含 pkg/opencode）严禁导入 code-archdoc/models、services、handlers、gorm.io/gorm 或 github.com/gin-gonic/gin
 	@bad_pkg_imports=$$(go list -f '{{.ImportPath}} -> {{.Imports}}' ./pkg/... | grep -E 'code-archdoc/models|code-archdoc/services|code-archdoc/handlers|gorm\.io/gorm|github\.com/gin-gonic/gin' || true); \
 	if [ -n "$$bad_pkg_imports" ]; then \
 		echo "❌ [ArchGuard Failed] pkg/* must not import models/services/handlers/gorm/gin:"; \

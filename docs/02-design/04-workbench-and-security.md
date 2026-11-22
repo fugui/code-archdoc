@@ -1,10 +1,10 @@
 # Canvas Studio 微前端工作台、双轨修订与 RBAC 审计设计
 
 - **文档编号**：`04-workbench-and-security.md`
-- **文档版本**：v1.2.0 (ADR-06 Canvas Studio 审阅批注篮、多槽位综合精修与画布原地审阅工作台)
-- **编制日期**：2026-11-21
+- **文档版本**：v1.3.0 (ADR-08 新建任务引擎选择器、多文档拆单监控队列与任务中心引擎治理)
+- **编制日期**：2026-11-22
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
+- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
 
 ---
 
@@ -72,7 +72,14 @@ RepoCoveragePage
 │       ├── DriftSummaryBadge (W2: Code Drift / Spec Drift 计数标牌)
 │       └── ActionGroup (进入工作台 | 触发生成 [RBAC 控制] | ZIP 导出已发布文档)
 ├── Pagination (@code/common 5 页滑动窗口, 默认 25 条/页)
-└── GenerateTaskModal (勾选 1~N 个启用 DocType、展示预估范围、提交后展示实时任务进度条与取消/单槽位重试入口)
+└── GenerateTaskModal (ADR-08 升级：支持双引擎配置态与多文档拆单增量轮询监控态)
+    ├── EngineSelectorCard (请求 GET /api/engines，记忆 localStorage 偏好，不可用置灰并展示原因，选 OpenCode 时展示只读/耗时微提示)
+    ├── DocTypeMultiSelectGrid (提交按钮动态显示「开始生成 (1 篇)」/「创建 N 个文档生成任务」/「提交批量编排任务」)
+    └── SplitTaskQueueMonitor (多文档拆单返回 tasks.length > 1 时激活：增量轮询未终态任务、单篇 ready 即刻通知刷新并展示「进入工作台」、支持下钻单任务槽位明细与「返回拆单队列」)
+
+TaskCenterPage (F-05 / ADR-08)
+├── TaskFilterBar (URL Search Params 双向同步：仓库 / 状态 / 类型 / 执行引擎 [全部 | Native 直连 | OpenCode Agent] / 仅看我)
+└── TaskListTable (展示引擎徽标 Native / OpenCode 与单文档 DocType 徽标；展开批量父任务同步展示子任务引擎徽标)
 ```
 
 ### 2.2 Canvas Studio 双栏协同工作台 (`CanvasStudioPage`，`F-08`/`F-09`/`F-10`)
@@ -132,7 +139,7 @@ QualityMetricsPage (F-26)
 AdminLLMConfigPage (F-14, W1)
 ├── LLMModelPoolGrid (内网平等 OpenAI Compatible 模型卡片流：DeepSeek / GLM / Kimi 等；展示默认模型徽章、启停/探活状态、脱敏 api_key_masked)
 ├── ModelCardActions (设为唯一默认 [手动切换，不做静默自动降级] | 测试连通性 | 编辑 | 删除 [拦截默认/被引用的模型])
-└── LLMUpsertModal (新增 / 编辑弹窗：支持留空保留原 API Key、清空已保存 Key、保存前预探活测试)
+└── LLMUpsertModal (新增 / 编辑弹窗：支持留空保留原 API Key、清空已保存 Key、保存前预探活测试、可选配置 OpenCode 原生模型映射 opencode_model)
 
 AdminOpsPage (F-27, W2)
 ├── StorageQuotaGovernanceCard (sandbox_dir / ir_cache / publish_dir 本地配额水位与手动触发受租约保护的 LRU 回收)
@@ -269,11 +276,11 @@ func CheckScopeWritePermission(ctx context.Context, db *gorm.DB, user *commonMod
 
 | 业务操作 | `audit_action` | 风险等级 | `target_type` | `before` / `after` 审计记录与敏感字段脱敏规则 |
 | :--- | :---: | :---: | :--- | :--- |
-| 触发生成 / 增量刷新 / 取消任务 | `trigger` / `cancel` | `P1` | `gen_task` | 记录 `repo_id`, `subdir`, `doc_types`, `priority`, `status` |
+| 触发生成 / 增量刷新 / 取消任务 | `trigger` / `cancel` | `P1` | `gen_task` | 记录 `repo_id`, `subdir`, `engine`, `doc_types`, `created_count` / `task_ids`, `priority`, `status` |
 | 手工直编章节 / Chat Diff `Accept` / 多槽位提案 `Apply` | `update` | `P1` | `document_section` | 记录 `doc_id`, `slot_id`/`slot_ids`, `revision_no`, `before_hash`/`after_hash` 与修改摘要（避免超大正文撑爆审计表） |
 | 章节锁定 / 解锁 / 孤立章节处置 | `update` | `P1` | `document_section` | 记录 `slot_id` 的 `ownership` 变更前/后值（`auto` ↔ `hybrid` ↔ `locked`）或 `is_orphan` 处置结果 |
 | 版本回滚 | `rollback` | `P1` | `document` | 记录 `from_revision_no` → `to_revision_no` 与新产出的 `revision_no` |
 | 审批发布 / 一键撤回 | `publish` / `unpublish` | **`P0`** | `document` | 记录 `status` (`draft` ↔ `approved`)、`published_revision_id`、`published_rel_path`、`commit_sha` |
 | `DocType` 新建 / 克隆 / 编辑 / 启停 / 删除 | `create` / `update` / `delete` | **`P0`** | `doc_type` | 记录 `slug`、`is_active`、`latest_revision_id`、`aggregate_hash` 与变更元数据 Diff |
-| LLM 分层模型配置修改 | `update` | **`P0`** | `llm_config` | **强制脱敏红线**：传入 `SetBefore`/`SetAfter` 的结构体必须使用脱敏视图（`api_key` 仅记录 `sk-****<last4>` 或 `"[UPDATED]"`，**严禁将明文 `APIKey` 或密文写入审计日志与系统日志**） |
+| LLM 模型配置修改 | `update` | **`P0`** | `llm_config` | **强制脱敏红线**：传入 `SetBefore`/`SetAfter` 的结构体必须使用脱敏视图（包含 `opencode_model`，`api_key` 仅记录 `sk-****<last4>` 或 `"[UPDATED]"`，**严禁将明文 `APIKey` 或密文写入审计日志与系统日志**） |
 | 管理员手动触发全量远端巡检 | `trigger` | `P2` | `drift_poll` | 记录触发人、巡检目标仓库数 |
