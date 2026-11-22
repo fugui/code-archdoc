@@ -64,6 +64,7 @@ type TaskRepo interface {
 	GetSlotTask(ctx context.Context, taskID, slotTaskID uint) (*models.GenSlotTask, error)
 	ListChildTasks(ctx context.Context, parentTaskID uint) ([]models.GenTask, error)
 	HasActiveTasksInSubdirs(ctx context.Context, repoID uint, subdirs []string) (bool, error)
+	HasActiveTasksInRepo(ctx context.Context, repoID uint) (bool, error)
 }
 
 // DocumentRepo 管理 archdoc_documents / archdoc_document_revisions / archdoc_section_evidences
@@ -86,12 +87,15 @@ type DocumentRepo interface {
 	MarkPublished(ctx context.Context, docID, revID uint, commitSHA, relPath string, publishedBy uint, publishedAt time.Time) error
 	MarkUnpublished(ctx context.Context, docID uint) error
 	MigrateScopeDocuments(ctx context.Context, repoID uint, fromSubdir, toSubdir string, titleBuilder func(docTypeSlug, oldTitle string) string) ([]models.Document, error)
+	RebindRepoBranch(ctx context.Context, repoID uint, newRefName string) ([]models.Document, error)
 }
 
 // ModuleRepo 管理 archdoc_repo_module_policies 与 archdoc_repo_modules（派生模块索引与策略）
 type ModuleRepo interface {
 	GetPolicy(ctx context.Context, repoID uint) (*models.RepoModulePolicy, error)
+	ListPoliciesByRepos(ctx context.Context, repoIDs []uint) ([]models.RepoModulePolicy, error)
 	UpsertPolicy(ctx context.Context, policy *models.RepoModulePolicy) error
+	UpdateTargetBranch(ctx context.Context, repoID uint, targetBranch string, updatedBy *uint) error
 	ListModulesByRepo(ctx context.Context, repoID uint) ([]models.RepoModule, error)
 	ListModulesByRepos(ctx context.Context, repoIDs []uint) ([]models.RepoModule, error)
 	GetModuleByID(ctx context.Context, repoID, moduleID uint) (*models.RepoModule, error)
@@ -143,6 +147,7 @@ type DriftRepo interface {
 	GetRemoteHead(ctx context.Context, repoID uint, refName string) (*models.RepoRemoteHead, error)
 	ListDriftsByDocIDs(ctx context.Context, docIDs []uint) ([]models.DocumentDrift, error)
 	UpsertRemoteHead(ctx context.Context, head *models.RepoRemoteHead) error
+	ReplaceRepoRemoteHead(ctx context.Context, head *models.RepoRemoteHead) error
 	UpsertDocumentDrift(ctx context.Context, drift *models.DocumentDrift) error
 	ClearDocumentDrifts(ctx context.Context, docID uint) error
 	ListPollableRepos(ctx context.Context) ([]models.PollableRepoRecord, error)

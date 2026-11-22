@@ -341,6 +341,9 @@ export const TaskCenterPage: React.FC = () => {
         repoName: repo.repo_name,
         subdirectory: targetSubdir,
         branch: repo.branch || 'master',
+        defaultBranch: repo.default_branch,
+        isBranchOverridden: repo.is_branch_overridden,
+        canSwitchBranch: repo.can_switch_branch ?? repo.can_write,
         canWrite: true,
       },
       initialTaskId: null,
@@ -781,6 +784,33 @@ export const TaskCenterPage: React.FC = () => {
         onClose={() => setTaskModal((prev) => ({ ...prev, open: false }))}
         onTaskCompleted={() => void loadTasks(true)}
         onModulesRefreshed={() => void loadTasks(true)}
+        onBranchChanged={(res) => {
+          setTaskModal((prev) =>
+            prev.scope
+              ? {
+                  ...prev,
+                  scope: {
+                    ...prev.scope,
+                    branch: res.current_branch,
+                    defaultBranch: res.default_branch,
+                    isBranchOverridden: res.is_overridden,
+                  },
+                }
+              : prev,
+          );
+          setRepoOptions((prev) =>
+            prev.map((item) =>
+              item.repo_id === res.repo_id
+                ? {
+                    ...item,
+                    branch: res.current_branch,
+                    default_branch: res.default_branch,
+                    is_branch_overridden: res.is_overridden,
+                  }
+                : item,
+            ),
+          );
+        }}
         onOpenStudio={(rId, dId, sub) => {
           navigate(buildStudioPath(isEmbedded, rId, { docId: dId, subdirectory: sub }));
         }}

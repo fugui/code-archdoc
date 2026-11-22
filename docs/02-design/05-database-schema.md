@@ -1,10 +1,10 @@
 # PostgreSQL 物理模型与 `archdoc_*` GORM 建模字典
 
 - **文档编号**：`05-database-schema.md`
-- **文档版本**：v1.2.0 (ADR-06 扩展：18 → 20 张自有表，新增 `archdoc_review_comments` 与 `archdoc_chat_proposal_items`，扩展 `ChatMessage` 与 `Document.LastCommentNo`)
-- **编制日期**：2026-11-21
+- **文档版本**：v1.3.0 (ADR-07 扩展：`archdoc_repo_module_policies` 新增 `target_branch` 列以支撑单仓目标分支切换，零共享表 DDL)
+- **编制日期**：2026-11-22
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-33`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
+- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-34`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-07`](../05-adr/07-single-repo-branch-switch.md)
 
 ---
 
@@ -528,13 +528,14 @@ func (QualityMetric) TableName() string { return config.TablePrefix + "quality_m
 ### 3.8 Monorepo 模块发现域（`F-28`，[`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)）
 
 ```go
-// RepoModulePolicy 仓库级模块发现策略（缺省行使用默认策略 merged + MinEffectiveFiles=3）
+// RepoModulePolicy 仓库级治理策略（含模块发现策略与目标跟踪分支；缺省行使用默认策略 merged + MinEffectiveFiles=3，TargetBranch 为空表示跟随 repositories.branch）
 type RepoModulePolicy struct {
 	ID                uint           `gorm:"primaryKey" json:"id"`
 	RepoID            uint           `gorm:"not null;uniqueIndex" json:"repo_id"`
 	Strategy          string         `gorm:"size:20;not null;default:'merged'" json:"strategy"`       // arch_elements | top_level_dirs | merged
 	ExcludeGlobs      datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"exclude_globs"`   // 叠加默认排除名单
 	MinEffectiveFiles int            `gorm:"not null;default:3" json:"min_effective_files"`           // 降噪后有效文件数下限
+	TargetBranch      string         `gorm:"size:128;not null;default:''" json:"target_branch"`       // ADR-07：单仓目标分支覆写（空串表示跟随 repositories.branch）
 	UpdatedBy         *uint          `json:"updated_by"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`

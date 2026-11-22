@@ -37,14 +37,16 @@ docs/
 │   ├── 10-m9-base-slice-module-context-and-repo-anchors.md # 【M9 作战卡】整仓基线切片、module_context 分片、仓库级证据锚点与外部契约漂移
 │   ├── 11-m10-hierarchical-rollup-drift-and-navigation.md  # 【M10 作战卡】仓库级共享术语表、层级汇总 (module_digests)、双源漂移与模块导航
 │   ├── 12-m11-doctype-blueprint-editor.md                  # 【M11 作战卡】DocType 蓝图化双模融合编辑器与 Spec Drift 模板判定精化
-│   └── 13-m12-review-and-refine-studio.md                  # 【M12 作战卡】Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校记忆
+│   ├── 13-m12-review-and-refine-studio.md                  # 【M12 作战卡】Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校记忆
+│   └── 14-m13-single-repo-branch-switch.md                 # 【M13 作战卡】单仓目标分支切换与远端分支发现 (ADR-07)
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
 │   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型
 │   ├── 03-evidence-anchor-and-publish-mount.md        # ADR-03：跨提交稳定证据锚点与 code-bench 符号链接挂载发布契约
 │   ├── 04-module-scope-discovery-and-hierarchical-docs.md # ADR-04：Monorepo 一层模块发现、整仓抽取按模块切片与层级文档汇总
 │   ├── 05-doctype-blueprint-dual-mode-editor.md       # ADR-05：文档类型蓝图化双模融合编辑器与 Spec Drift 模板判定精化
-│   └── 06-document-review-and-refine-studio.md        # ADR-06：Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校工作台架构
+│   ├── 06-document-review-and-refine-studio.md        # ADR-06：Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校工作台架构
+│   └── 07-single-repo-branch-switch.md                # ADR-07：单仓目标分支切换与远端分支发现架构
 └── 06-ops/          # 交付、运维与使用指南：双模联调、隔离测试、生产部署与模板配置手册
     ├── 01-verification-and-deployment-guide.md  # 联调验证、自动化回归测试与生产部署操作指南
     └── 02-code-ir-facets-subscription-guide.md  # Code IR 分片订阅 (ir_facets) 原理解析与配置使用指南

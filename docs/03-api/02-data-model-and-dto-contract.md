@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.2.0 (ADR-04, ADR-05 & ADR-06 Frozen Contract)
-- **编制日期**：2026-11-21
+- **文档版本**：v1.3.0 (ADR-04, ADR-05, ADR-06 & ADR-07 Frozen Contract)
+- **编制日期**：2026-11-22
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.2.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.3.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.3.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.4.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)、[`ADR-07`](../05-adr/07-single-repo-branch-switch.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -785,4 +785,60 @@ export interface ChatProposalItemVO {
 
 // frontend/src/types/sse.ts (10 事件联合成员增量)
 // 新增 'plan' | 'stage' | 'proposal_item'；现有 'meta' / 'tool_call' / 'delta' / 'verifier_preview' 同步扩展可选字段。
+```
+
+---
+
+## 10. ADR-07 契约增量（`M13`：单仓目标分支切换与远端分支发现）
+
+### 10.1 表结构与仓储接口契约 (`models/` & `services/repos.go`)
+
+1. **`archdoc_repo_module_policies` 扩展列**：
+   - 新增 `target_branch`（`varchar(128), not null, default ''`），通过 `models.ResolveEffectiveBranch(repoBranch, targetBranch)` 与 `models.NormalizeRepoDefaultBranch(repoBranch)` 统一解析有效分支。
+2. **新增仓储接口方法**：
+   - `ModuleRepo`：`ListPoliciesByRepos(ctx, repoIDs)`、`UpdateTargetBranch(ctx, repoID, targetBranch, updatedBy)`（`OnConflict(repo_id)` 仅更新分支相关字段，保留既有发现策略）；
+   - `TaskRepo`：`HasActiveTasksInRepo(ctx, repoID)`；
+   - `DocumentRepo`：`RebindRepoBranch(ctx, repoID, newRefName)`（事务 `FOR UPDATE` 锁定整仓文档、冲突检出返回 `ErrMigrationConflict`、统一更新 `ref_name`）；
+   - `DriftRepo`：`ReplaceRepoRemoteHead(ctx, head)`（事务清理同仓非目标分支历史 HEAD 记录并写入新记录）；`ListPollableRepos` 关联 `archdoc_repo_module_policies` 解析有效分支 `COALESCE(NULLIF(p.target_branch, ''), NULLIF(r.branch, ''), 'master')`。
+
+### 10.2 前端 TypeScript 强类型契约 (`frontend/src/types/`)
+
+```typescript
+// domain.ts 增量
+export interface RepoBranchItemVO {
+  name: string;
+  commit_sha: string;
+  is_head: boolean;
+  is_default: boolean;
+  is_current: boolean;
+}
+
+export interface RepoBranchesVO {
+  repo_id: number;
+  default_branch: string;
+  current_branch: string;
+  is_overridden: boolean;
+  remote_head_branch: string;
+  branches: RepoBranchItemVO[];
+}
+
+export interface SwitchRepoBranchVO {
+  repo_id: number;
+  previous_branch: string;
+  current_branch: string;
+  default_branch: string;
+  is_overridden: boolean;
+  remote_head_sha: string;
+  rebound_documents: number;
+  drifted_documents: number;
+  changed: boolean;
+}
+
+// RepoScopeCoverageVO 与 RepoScopesDetailResponse 新增可选兼容字段：
+// default_branch?: string; is_branch_overridden?: boolean; can_switch_branch?: boolean;
+
+// api.ts 增量
+export interface SwitchRepoBranchPayload {
+  branch: string;
+}
 ```

@@ -272,6 +272,9 @@ export interface RepoScopeCoverageVO {
   subsystem_id?: number | null;
   subsystem_name?: string;
   branch: string;
+  default_branch?: string;
+  is_branch_overridden?: boolean;
+  can_switch_branch?: boolean;
   owner_id: number;
   owner_name: string;
   can_write: boolean;
@@ -283,6 +286,7 @@ export interface RepoScopeCoverageVO {
 
 export interface RepoModulePolicyVO {
   repo_id: number;
+  target_branch?: string;
   strategy: ModuleDiscoveryStrategy;
   exclude_globs: string[];
   min_effective_files: number;
@@ -401,10 +405,42 @@ export interface RepoScopesDetailResponse {
   department_id: number;
   department_name: string;
   branch: string;
+  default_branch?: string;
+  is_branch_overridden?: boolean;
+  can_switch_branch?: boolean;
   owner_id: number;
   owner_name: string;
   scopes: RepoScopeCoverageVO[];
   recent_tasks: GenTaskSummaryVO[];
+}
+
+export interface RepoBranchItemVO {
+  name: string;
+  commit_sha: string;
+  is_head: boolean;
+  is_default: boolean;
+  is_current: boolean;
+}
+
+export interface RepoBranchesVO {
+  repo_id: number;
+  default_branch: string;
+  current_branch: string;
+  is_overridden: boolean;
+  remote_head_branch: string;
+  branches: RepoBranchItemVO[];
+}
+
+export interface SwitchRepoBranchVO {
+  repo_id: number;
+  previous_branch: string;
+  current_branch: string;
+  default_branch: string;
+  is_overridden: boolean;
+  remote_head_sha: string;
+  rebound_documents: number;
+  drifted_documents: number;
+  changed: boolean;
 }
 
 export interface SlotDefinition {

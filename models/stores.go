@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	commonModels "code-common/backend/models"
@@ -846,6 +848,17 @@ func (s *TaskStore) HasActiveTasksInSubdirs(ctx context.Context, repoID uint, su
 	return count > 0, nil
 }
 
+func (s *TaskStore) HasActiveTasksInRepo(ctx context.Context, repoID uint) (bool, error) {
+	activeStatuses := []string{TaskStatusPending, TaskStatusExtracting, TaskStatusGenerating, TaskStatusVerifying}
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&GenTask{}).
+		Where("repo_id = ? AND status IN ?", repoID, activeStatuses).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // ─── 5. DocumentStore ───
 
 type DocumentStore struct {
@@ -1233,6 +1246,58 @@ func (s *DocumentStore) MigrateScopeDocuments(
 		return nil, err
 	}
 	return migratedBefore, nil
+}
+
+// RebindRepoBranch 在单个事务内将仓库下全部存量文档的 ref_name 无损重绑至新目标分支（保留修订历史与锁定槽位）。
+func (s *DocumentStore) RebindRepoBranch(ctx context.Context, repoID uint, newRefName string) ([]Document, error) {
+	newRef := strings.TrimSpace(newRefName)
+	if newRef == "" {
+		return nil, fmt.Errorf("新分支名称不能为空")
+	}
+
+	var updatedDocs []Document
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var docs []Document
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("repo_id = ?", repoID).
+			Order("id ASC").
+			Find(&docs).Error; err != nil {
+			return err
+		}
+		if len(docs) == 0 {
+			updatedDocs = []Document{}
+			return nil
+		}
+
+		// 单仓单活跃分支不变量检查：若历史已存在同 (subdirectory, doc_type_slug) 跨分支重复记录则返回冲突
+		seen := make(map[string]bool, len(docs))
+		for _, d := range docs {
+			k := d.Subdirectory + "\x00" + d.DocTypeSlug
+			if seen[k] {
+				return ErrMigrationConflict
+			}
+			seen[k] = true
+		}
+
+		if err := tx.Model(&Document{}).
+			Where("repo_id = ? AND ref_name <> ?", repoID, newRef).
+			Update("ref_name", newRef).Error; err != nil {
+			return err
+		}
+		updatedDocs = make([]Document, 0, len(docs))
+		for i := range docs {
+			if docs[i].RefName == newRef {
+				continue
+			}
+			docs[i].RefName = newRef
+			updatedDocs = append(updatedDocs, docs[i])
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updatedDocs, nil
 }
 
 // ─── 6. ChatStore (W2 仓储实现就绪) ───
@@ -1721,6 +1786,26 @@ func (s *DriftStore) UpsertRemoteHead(ctx context.Context, head *RepoRemoteHead)
 	}).Create(head).Error
 }
 
+// ReplaceRepoRemoteHead 在事务内清理同仓旧分支巡检记录并写入当前目标分支的远端 HEAD 状态。
+func (s *DriftStore) ReplaceRepoRemoteHead(ctx context.Context, head *RepoRemoteHead) error {
+	if head == nil {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repo_id = ? AND ref_name <> ?", head.RepoID, head.RefName).
+			Delete(&RepoRemoteHead{}).Error; err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "repo_id"}, {Name: "ref_name"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"remote_head_sha", "last_polled_at", "last_success_at",
+				"consecutive_failures", "last_error", "next_retry_at", "updated_at",
+			}),
+		}).Create(head).Error
+	})
+}
+
 func (s *DriftStore) UpsertDocumentDrift(ctx context.Context, drift *DocumentDrift) error {
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "document_id"}, {Name: "drift_type"}},
@@ -1765,14 +1850,16 @@ func (s *DriftStore) ListAllRemoteHeads(ctx context.Context) ([]RepoRemoteHead, 
 	return heads, nil
 }
 
-// ListPollableRepos 仅查询包含至少 1 篇已发布 (approved) 文档的活跃代码仓（F-25 巡检收敛红线）。
+// ListPollableRepos 仅查询包含至少 1 篇已发布 (approved) 文档的活跃代码仓（F-25 巡检收敛红线），并按 ADR-07 解析有效跟踪分支。
 func (s *DriftStore) ListPollableRepos(ctx context.Context) ([]PollableRepoRecord, error) {
 	docTable := Document{}.TableName()
+	policyTable := RepoModulePolicy{}.TableName()
 	var rows []PollableRepoRecord
 	err := s.db.WithContext(ctx).
 		Table("repositories r").
-		Select("DISTINCT r.id AS repo_id, r.url AS repo_url, COALESCE(NULLIF(r.branch, ''), 'master') AS branch").
+		Select("DISTINCT r.id AS repo_id, r.url AS repo_url, COALESCE(NULLIF(p.target_branch, ''), NULLIF(r.branch, ''), 'master') AS branch").
 		Joins("JOIN "+docTable+" d ON d.repo_id = r.id AND d.status = ?", DocStatusApproved).
+		Joins("LEFT JOIN "+policyTable+" p ON p.repo_id = r.id").
 		Where("r.is_active = ?", true).
 		Order("r.id ASC").
 		Scan(&rows).Error

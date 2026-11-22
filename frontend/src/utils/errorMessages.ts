@@ -179,6 +179,15 @@ export function formatApiError(err: unknown, fallback = '操作失败，请稍�
           code: err.code,
           status: err.status,
         };
+      case 'REMOTE_BRANCH_FETCH_FAILED':
+        return {
+          title: '获取远端分支列表失败',
+          message:
+            err.rawMessage ||
+            '无法连接远端 Git 仓库获取分支信息，请检查仓库远端地址、认证凭证或网络连通性后重试。',
+          code: err.code,
+          status: err.status,
+        };
       case 'QUEUE_FULL': {
         const waitHint = retryAfterSeconds ? `，建议约 ${retryAfterSeconds} 秒后重试` : '';
         return {

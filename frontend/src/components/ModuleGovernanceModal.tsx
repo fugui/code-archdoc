@@ -19,7 +19,12 @@ import {
   updateRepoModulePolicy,
   updateRepoModuleStatus,
 } from '../api/repos';
-import type { ModuleDiscoveryStrategy, ModuleStatus, RepoModuleVO } from '../types';
+import type {
+  ModuleDiscoveryStrategy,
+  ModuleStatus,
+  RepoModuleVO,
+  SwitchRepoBranchVO,
+} from '../types';
 import { formatApiError } from '../utils/errorMessages';
 import { validateRequiredInt } from '../utils/numberInput';
 import {
@@ -28,11 +33,15 @@ import {
   normalizeModuleStrategy,
 } from '../utils/moduleUtils';
 import { shortSha } from '../utils/urlQuery';
+import RepoBranchSelector from './RepoBranchSelector';
 
 export interface ModuleGovernanceTarget {
   repoId: number;
   repoName: string;
   branch: string;
+  defaultBranch?: string;
+  isBranchOverridden?: boolean;
+  canSwitchBranch?: boolean;
   canWrite: boolean;
 }
 
@@ -41,6 +50,7 @@ export interface ModuleGovernanceModalProps {
   target: ModuleGovernanceTarget | null;
   onClose: () => void;
   onChanged?: () => void;
+  onBranchChanged?: (res: SwitchRepoBranchVO) => void;
   onGenerateModule?: (subdir: string) => void;
   onBatchGenerateModules?: (subdirs: string[]) => void;
   onOpenStudio?: (repoId: number, subdir: string) => void;
@@ -62,6 +72,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
   target,
   onClose,
   onChanged,
+  onBranchChanged,
   onGenerateModule,
   onBatchGenerateModules,
   onOpenStudio,
@@ -75,6 +86,11 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [migrating, setMigrating] = useState<boolean>(false);
 
+  const [activeBranch, setActiveBranch] = useState<string>(target?.branch || 'master');
+  const [activeDefaultBranch, setActiveDefaultBranch] = useState<string | undefined>(target?.defaultBranch);
+  const [activeIsOverridden, setActiveIsOverridden] = useState<boolean>(Boolean(target?.isBranchOverridden));
+  const [branchChangedHint, setBranchChangedHint] = useState<boolean>(false);
+
   const [strategy, setStrategy] = useState<ModuleDiscoveryStrategy>('merged');
   const [minFiles, setMinFiles] = useState<string>('3');
   const [excludeGlobsText, setExcludeGlobsText] = useState<string>('');
@@ -83,6 +99,18 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
 
   const [fromSubdir, setFromSubdir] = useState<string>('');
   const [toSubdir, setToSubdir] = useState<string>('');
+
+  const targetRepoId = target?.repoId ?? 0;
+  const targetBranch = target?.branch || 'master';
+  const targetDefaultBranch = target?.defaultBranch;
+  const targetIsBranchOverridden = Boolean(target?.isBranchOverridden);
+
+  useEffect(() => {
+    if (!open || !targetRepoId) return;
+    setActiveBranch(targetBranch);
+    setActiveDefaultBranch(targetDefaultBranch);
+    setActiveIsOverridden(targetIsBranchOverridden);
+  }, [open, targetRepoId, targetBranch, targetDefaultBranch, targetIsBranchOverridden]);
 
   const activeModules = useMemo(
     () => modules.filter((mod) => mod.status === 'active'),
@@ -101,10 +129,10 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
   }, []);
 
   const loadModules = useCallback(async () => {
-    if (!target) return;
+    if (!targetRepoId) return;
     setLoading(true);
     try {
-      const res = await listRepoModules(target.repoId);
+      const res = await listRepoModules(targetRepoId);
       setStrategy(normalizeModuleStrategy(res.policy.strategy));
       setMinFiles(String(res.policy.min_effective_files));
       setExcludeGlobsText((res.policy.exclude_globs || []).join(', '));
@@ -116,15 +144,16 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [target, showToast, pruneSelection]);
+  }, [targetRepoId, showToast, pruneSelection]);
 
   useEffect(() => {
-    if (!open || !target) return;
+    if (!open || !targetRepoId) return;
     setFromSubdir('');
     setToSubdir('');
     setSelectedSubdirs([]);
+    setBranchChangedHint(false);
     void loadModules();
-  }, [open, target, loadModules]);
+  }, [open, targetRepoId, loadModules]);
 
   const handleSavePolicy = async () => {
     if (!target) return;
@@ -172,6 +201,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
         `已完成模块发现扫描（${shortSha(res.commit_sha)}），共发现 ${res.active_count} 个活跃子模块`,
         'success',
       );
+      setBranchChangedHint(false);
       onChanged?.();
     } catch (err: unknown) {
       showToast(formatApiError(err, '刷新仓库模块索引失败').message, 'error');
@@ -267,7 +297,9 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
       open={open}
       onClose={onClose}
       title={target ? `模块发现与子目录治理 · ${target.repoName}` : '模块发现与子目录治理'}
-      subtitle={target ? `分支 ${target.branch} · 策略配置、自动模块扫描与重命名文档迁移` : undefined}
+      subtitle={
+        target ? `分支 ${activeBranch} · 策略配置、自动模块扫描与重命名文档迁移` : undefined
+      }
       width="lg"
       destroyOnClose
       footer={
@@ -281,6 +313,57 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
       }
     >
       <div className="code-archdoc-module-modal">
+        {target && (
+          <section className="code-archdoc-module-section">
+            <div className="code-archdoc-module-branch-bar">
+              <div className="code-archdoc-module-branch-meta">
+                <span className="code-archdoc-field-label">当前跟踪分支</span>
+                <RepoBranchSelector
+                  repoId={target.repoId}
+                  repoName={target.repoName}
+                  currentBranch={activeBranch}
+                  defaultBranch={activeDefaultBranch}
+                  isOverridden={activeIsOverridden}
+                  canSwitch={Boolean(target.canSwitchBranch ?? target.canWrite)}
+                  onSwitched={(res) => {
+                    setActiveBranch(res.current_branch);
+                    setActiveDefaultBranch(res.default_branch);
+                    setActiveIsOverridden(res.is_overridden);
+                    setBranchChangedHint(true);
+                    onBranchChanged?.(res);
+                    onChanged?.();
+                  }}
+                />
+              </div>
+              <span className="text-muted">
+                切换分支会重绑存量文档并使后续扫描与生成以新分支源码为准
+              </span>
+            </div>
+
+            {branchChangedHint && (
+              <div className="code-archdoc-branch-hint-banner">
+                <span>
+                  已切换至分支 <code className="code-archdoc-mono">{activeBranch}</code>，不同分支的目录结构可能存在差异，建议重新扫描模块。
+                </span>
+                {target.canWrite && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-small"
+                    disabled={refreshing || loading}
+                    onClick={() => {
+                      setBranchChangedHint(false);
+                      void handleRefreshModules();
+                    }}
+                  >
+                    <RefreshCw size={12} className={refreshing ? 'code-archdoc-spin' : ''} />
+                    <span>立即重新扫描模块</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
         {/* 1. 模块发现策略表单 */}
         <section className="code-archdoc-module-section">
           <div className="code-archdoc-module-section-head">

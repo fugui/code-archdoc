@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.3.0 (ADR-06 扩展：新增审阅批注篮 CRUD 与多槽位提案组 Apply/Reject 6 条接口，升级 `/chat/refine` 入参与 10 事件 SSE 协议)
-- **编制日期**：2026-11-21
+- **文档版本**：v1.4.0 (ADR-07 扩展：新增单仓远端分支列表与目标分支切换 2 条接口及 `REMOTE_BRANCH_FETCH_FAILED` 错误码)
+- **编制日期**：2026-11-22
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.6.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.7.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-07`](../05-adr/07-single-repo-branch-switch.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -68,6 +68,7 @@
 | `409` | `OPTIMISTIC_LOCK_CONFLICT` | 手工直编 / Chat Accept / 回滚的 `base_revision_no` 落后于服务端当前版本，`details: {"current_revision_no": 5}` |
 | `422` | `VERIFIER_BLOCKED` | 发布时目标修订未通过 Verifier 硬门禁（如命中明文凭据泄漏 `blocker_count > 0`），`details: {"verifier_report": {...}}`（`SC-04`） |
 | `429` | `QUEUE_FULL` | 调度队列或单用户并发达到上限，`details: {"retry_after_seconds": 10}` |
+| `502` | `REMOTE_BRANCH_FETCH_FAILED` | 查询或校验 Git 远端分支失败（远端不可达、超时或鉴权异常，输出已脱敏） |
 | `500` | `INTERNAL_ERROR` | 服务端内部未预期异常（严禁泄露明文 `APIKey` 或底层密码） |
 
 ---
@@ -284,7 +285,7 @@
 - **响应 (`200 OK`)**：返回 `{ "summary": RepoCoverageSummaryVO, "subsystems": ArchSubsystemOptionVO[], "nodes": ArchTreeNodeVO[], "unassigned_scopes": RepoScopeCoverageVO[] }`，按 `architecture_elements`（`subsystem → group → module`）树形嵌套并向上聚合 `stats`（`scope_count`、`covered_scope_count`、`approved_doc_count`、`draft_doc_count`、`drifted_doc_count`、`blocked_doc_count`）；未绑定且无子系统归属的范围收拢至 `unassigned_scopes`。普通用户视角严格过滤未发布草稿统计与明细。
 
 #### `GET /api/repos/:repo_id/scopes` (`JWT`, W1)
-- **响应 (`200 OK`)**：返回仓库基础元数据与 `scopes: RepoScopeCoverageVO[]`（首条为整仓 `subdirectory: ""`，其余为关联的 `ArchitectureElement` 子目录），并附带该仓库最近 5 条活跃或历史 `GenTask` 摘要。
+- **响应 (`200 OK`)**：返回仓库基础元数据与 `scopes: RepoScopeCoverageVO[]`（首条为整仓 `subdirectory: ""`，其余为关联的 `ArchitectureElement` 子目录），并附带该仓库最近 5 条活跃或历史 `GenTask` 摘要；同时通过 `branch`、`default_branch`、`is_branch_overridden`、`can_switch_branch` 暴露有效跟踪分支状态。
 
 ---
 
@@ -1074,3 +1075,57 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
 4. **存量 `accept` / `reject` 向后兼容**：
    - `POST /api/documents/:id/chat/messages/:msg_id/accept` 委托给 `ApplyProposalItems`（采纳全部 `pending` 项）；
    - `POST /api/documents/:id/chat/messages/:msg_id/reject` 拒绝该消息下全部 `pending` 项并将关联 `proposed` 批注回退为 `open`。
+
+---
+
+## 7. ADR-07 增量接口契约（`M13`，新增 2 Endpoints）
+
+### 7.1 新增接口清单
+
+| # | 方法 | 路由路径 | 鉴权级别 | 里程碑 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| 68 | `GET` | `/api/repos/:repo_id/branches` | `JWT` | M13 | 轻量枚举远端 Git 分支清单并标注默认分支与当前生效分支（30s TTL 缓存，支持 `?refresh=true`） | - |
+| 69 | `PUT` | `/api/repos/:repo_id/branch` | `RepoWrite` | M13 | 切换单仓有效跟踪分支，事务重绑存量文档 `ref_name`、更新远端 HEAD 并同步已发布文档代码漂移 | `switch_branch / repo_branch / P1` |
+
+### 7.2 请求、响应与向后兼容扩展
+
+1. **`GET /api/repos/:repo_id/branches` (`JWT`, M13)**：
+   - **Query 参数**：`refresh=true`（可选，穿透 30 秒缓存强制执行 `git ls-remote --symref`）。
+   - **响应 (`200 OK`)**：
+     ```json
+     {
+       "repo_id": 101,
+       "default_branch": "main",
+       "current_branch": "develop",
+       "is_overridden": true,
+       "remote_head_branch": "main",
+       "branches": [
+         { "name": "main", "commit_sha": "a1b2c3...", "is_head": true, "is_default": true, "is_current": false },
+         { "name": "develop", "commit_sha": "d4e5f6...", "is_head": false, "is_default": false, "is_current": true }
+       ]
+     }
+     ```
+   - **错误码**：`400 INVALID_PARAM`、`404 NOT_FOUND`、`502 REMOTE_BRANCH_FETCH_FAILED`。
+
+2. **`PUT /api/repos/:repo_id/branch` (`RepoWrite`, M13)**：
+   - **权限守卫**：`CheckScopeWriteOrAbort(c, repoID, "")`（仅 `super_admin`、`archdoc_admin`、仓库 `OwnerID` / `RelatedMembers` 可操作；仅子目录负责人与普通用户返回 `403 FORBIDDEN`）。
+   - **请求体**：`{ "branch": "develop" }`（传入 `""` 或等于 `default_branch` 表示恢复跟随共享表默认分支）。
+   - **响应 (`200 OK`)**：
+     ```json
+     {
+       "repo_id": 101,
+       "previous_branch": "main",
+       "current_branch": "develop",
+       "default_branch": "main",
+       "is_overridden": true,
+       "remote_head_sha": "d4e5f6...",
+       "rebound_documents": 3,
+       "drifted_documents": 1,
+       "changed": true
+     }
+     ```
+   - **错误码**：`400 INVALID_PARAM`（分支名非法或远端不存在）、`403 FORBIDDEN`、`404 NOT_FOUND`、`409 CONFLICT`（存在活跃生成任务）、`409 MIGRATION_CONFLICT`、`502 REMOTE_BRANCH_FETCH_FAILED`。
+
+3. **存量接口向后兼容扩展**：
+   - `GET /api/repos`、`GET /api/arch-tree` 与 `GET /api/repos/:repo_id/scopes`：`RepoScopeCoverageVO` 新增可选/兼容字段 `default_branch`、`is_branch_overridden`、`can_switch_branch`；`RepoScopesDetailResponse` 同步新增 `default_branch`、`is_branch_overridden`、`can_switch_branch`；`branch` 返回解析后的有效跟踪分支。
+   - `POST /api/tasks/generate` 与 `POST /api/tasks/generate-batch`：单仓单活跃分支护栏——`ref_name` 留空时自动取有效目标分支，显式传值必须与有效目标分支一致（兼容 `master` → `main` 回退），不匹配返 `400 INVALID_PARAM`。

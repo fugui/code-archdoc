@@ -332,6 +332,9 @@ export const RepoCoveragePage: React.FC = () => {
           repoName: row.repo_name,
           subdirectory: row.subdirectory,
           branch: row.branch || 'master',
+          defaultBranch: row.default_branch,
+          isBranchOverridden: row.is_branch_overridden,
+          canSwitchBranch: row.can_switch_branch ?? row.can_write,
           canWrite: row.can_write,
         },
         initialDocTypeSlugs: options?.initialDocTypeSlugs,
@@ -350,6 +353,9 @@ export const RepoCoveragePage: React.FC = () => {
         repoId: row.repo_id,
         repoName: row.repo_name,
         branch: row.branch || 'master',
+        defaultBranch: row.default_branch,
+        isBranchOverridden: row.is_branch_overridden,
+        canSwitchBranch: row.can_switch_branch ?? row.can_write,
         canWrite: row.can_write,
       },
     });
@@ -822,6 +828,22 @@ export const RepoCoveragePage: React.FC = () => {
         onClose={() => setTaskModal((prev) => ({ ...prev, open: false }))}
         onTaskCompleted={() => void fetchCoverage()}
         onModulesRefreshed={() => void fetchCoverage()}
+        onBranchChanged={(res) => {
+          setTaskModal((prev) =>
+            prev.scope
+              ? {
+                  ...prev,
+                  scope: {
+                    ...prev.scope,
+                    branch: res.current_branch,
+                    defaultBranch: res.default_branch,
+                    isBranchOverridden: res.is_overridden,
+                  },
+                }
+              : prev,
+          );
+          void fetchCoverage();
+        }}
         onOpenStudio={openStudio}
         onOpenTaskCenter={() => navigate(buildModulePath(isEmbedded, '/tasks'))}
       />
@@ -832,6 +854,22 @@ export const RepoCoveragePage: React.FC = () => {
         target={moduleModal.target}
         onClose={() => setModuleModal((prev) => ({ ...prev, open: false }))}
         onChanged={() => void fetchCoverage()}
+        onBranchChanged={(res) => {
+          setModuleModal((prev) =>
+            prev.target
+              ? {
+                  ...prev,
+                  target: {
+                    ...prev.target,
+                    branch: res.current_branch,
+                    defaultBranch: res.default_branch,
+                    isBranchOverridden: res.is_overridden,
+                  },
+                }
+              : prev,
+          );
+          void fetchCoverage();
+        }}
         onGenerateModule={(subdir) => {
           const target = moduleModal.target;
           if (!target) return;
@@ -843,6 +881,9 @@ export const RepoCoveragePage: React.FC = () => {
               repoName: target.repoName,
               subdirectory: subdir,
               branch: target.branch,
+              defaultBranch: target.defaultBranch,
+              isBranchOverridden: target.isBranchOverridden,
+              canSwitchBranch: target.canSwitchBranch,
               canWrite: target.canWrite,
             },
             batchMode: false,
@@ -859,6 +900,9 @@ export const RepoCoveragePage: React.FC = () => {
               repoName: target.repoName,
               subdirectory: '',
               branch: target.branch,
+              defaultBranch: target.defaultBranch,
+              isBranchOverridden: target.isBranchOverridden,
+              canSwitchBranch: target.canSwitchBranch,
               canWrite: target.canWrite,
             },
             batchMode: true,

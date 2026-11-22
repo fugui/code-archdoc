@@ -111,6 +111,9 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const [repoMeta, setRepoMeta] = useState<{
     repoName: string;
     branch: string;
+    defaultBranch?: string;
+    isBranchOverridden?: boolean;
+    canSwitchBranch?: boolean;
     canWriteRepo: boolean;
   } | null>(null);
 
@@ -143,6 +146,9 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
           setRepoMeta({
             repoName: scopesData.repo_name,
             branch: scopesData.branch || 'master',
+            defaultBranch: scopesData.default_branch,
+            isBranchOverridden: scopesData.is_branch_overridden,
+            canSwitchBranch: scopesData.can_switch_branch ?? Boolean(rootScope?.can_write),
             canWriteRepo: Boolean(rootScope?.can_write),
           });
         }
@@ -799,7 +805,10 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
                 repoId: effectiveRepoId,
                 repoName: doc?.repo_name || repoMeta?.repoName || `仓库 #${effectiveRepoId}`,
                 subdirectory: effectiveSubdir,
-                branch: doc?.ref_name || repoMeta?.branch || 'master',
+                branch: repoMeta?.branch || doc?.ref_name || 'master',
+                defaultBranch: repoMeta?.defaultBranch,
+                isBranchOverridden: repoMeta?.isBranchOverridden,
+                canSwitchBranch: repoMeta?.canSwitchBranch ?? repoMeta?.canWriteRepo,
                 canWrite: scopeCanWrite,
               }
             : null
@@ -809,6 +818,19 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
         initialMode={doc ? 'regenerate' : 'generate'}
         onClose={() => setGenModalOpen(false)}
         onTaskCompleted={() => void loadStudioData()}
+        onBranchChanged={(res) => {
+          setRepoMeta((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  branch: res.current_branch,
+                  defaultBranch: res.default_branch,
+                  isBranchOverridden: res.is_overridden,
+                }
+              : prev,
+          );
+          void loadStudioData();
+        }}
         onOpenStudio={(rId, dId, sub) => {
           navigate(buildStudioPath(isEmbedded, rId, { docId: dId, subdirectory: sub }));
         }}

@@ -30,6 +30,7 @@ type RepoModulePolicyVO struct {
 	Strategy          string     `json:"strategy"`
 	ExcludeGlobs      []string   `json:"exclude_globs"`
 	MinEffectiveFiles int        `json:"min_effective_files"`
+	TargetBranch      string     `json:"target_branch,omitempty"`
 	UpdatedBy         *uint      `json:"updated_by,omitempty"`
 	UpdatedAt         *time.Time `json:"updated_at,omitempty"`
 }
@@ -157,6 +158,7 @@ func (s *ModuleService) loadEffectivePolicyVO(ctx context.Context, repoID uint) 
 		Strategy:          p.Strategy,
 		ExcludeGlobs:      globs,
 		MinEffectiveFiles: p.MinEffectiveFiles,
+		TargetBranch:      strings.TrimSpace(p.TargetBranch),
 		UpdatedBy:         p.UpdatedBy,
 		UpdatedAt:         &updatedAt,
 	}, nil
@@ -250,7 +252,14 @@ func (s *ModuleService) RefreshModules(ctx context.Context, repoID uint) (*Refre
 		return nil, fmt.Errorf("快照服务未初始化")
 	}
 
-	snapReady, err := s.snapSvc.EnsureSnapshot(ctx, repo, "", "")
+	effectiveBranch := models.NormalizeRepoDefaultBranch(repo.Branch)
+	if s.moduleRepo != nil {
+		if policy, pErr := s.moduleRepo.GetPolicy(ctx, repoID); pErr == nil && policy != nil {
+			effectiveBranch = models.ResolveEffectiveBranch(repo.Branch, policy.TargetBranch)
+		}
+	}
+
+	snapReady, err := s.snapSvc.EnsureSnapshot(ctx, repo, "", effectiveBranch)
 	if err != nil {
 		return nil, err
 	}

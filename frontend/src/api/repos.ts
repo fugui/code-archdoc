@@ -8,12 +8,15 @@ import type {
   MigrateModuleResultVO,
   MigrateRepoModulePayload,
   RefreshModulesResultVO,
+  RepoBranchesVO,
   RepoCoverageListResponse,
   RepoListQuery,
   RepoModulePolicyVO,
   RepoModuleVO,
   RepoModulesListVO,
   RepoScopesDetailResponse,
+  SwitchRepoBranchPayload,
+  SwitchRepoBranchVO,
   UpdateRepoModulePolicyPayload,
   UpdateRepoModuleStatusPayload,
 } from '../types';
@@ -66,6 +69,24 @@ export async function getArchTree(query: ArchTreeQuery): Promise<ArchTreeRespons
 
 export async function getRepoScopes(repoId: number): Promise<RepoScopesDetailResponse> {
   return apiRequest<RepoScopesDetailResponse>(`/repos/${repoId}/scopes`);
+}
+
+export async function listRepoBranches(
+  repoId: number,
+  refresh = false,
+): Promise<RepoBranchesVO> {
+  const qs = refresh ? '?refresh=true' : '';
+  return apiRequest<RepoBranchesVO>(`/repos/${repoId}/branches${qs}`);
+}
+
+export async function switchRepoBranch(
+  repoId: number,
+  payload: SwitchRepoBranchPayload,
+): Promise<SwitchRepoBranchVO> {
+  return apiRequest<SwitchRepoBranchVO>(`/repos/${repoId}/branch`, {
+    method: 'PUT',
+    bodyData: payload,
+  });
 }
 
 export async function listRepoModules(repoId: number): Promise<RepoModulesListVO> {

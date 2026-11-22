@@ -32,32 +32,35 @@ type DocStatusSummaryVO struct {
 }
 
 type RepoScopeCoverageVO struct {
-	RepoID            uint                          `json:"repo_id"`
-	RepoName          string                        `json:"repo_name"`
-	DepartmentID      uint                          `json:"department_id"`
-	DepartmentName    string                        `json:"department_name"`
-	Subdirectory      string                        `json:"subdirectory"`
-	ScopeType         string                        `json:"scope_type"`   // "repo" | "subdir"
-	ScopeStatus       string                        `json:"scope_status"` // "active" | "missing" | "orphan"
-	ModuleSource      string                        `json:"module_source,omitempty"`
-	EffectiveFiles    int                           `json:"effective_files"`
-	TotalLOC          int                           `json:"total_loc"`
-	ActiveModuleCount int                           `json:"active_module_count"`
-	ModulesScanned    bool                          `json:"modules_scanned"`
-	ArchElementID     *uint                         `json:"arch_element_id"`
-	ArchElementName   string                        `json:"arch_element_name"`
-	ArchElementType   string                        `json:"arch_element_type,omitempty"`
-	ArchPath          string                        `json:"arch_path,omitempty"`
-	SubsystemID       *uint                         `json:"subsystem_id,omitempty"`
-	SubsystemName     string                        `json:"subsystem_name,omitempty"`
-	Branch            string                        `json:"branch"`
-	OwnerID           uint                          `json:"owner_id"`
-	OwnerName         string                        `json:"owner_name"`
-	CanWrite          bool                          `json:"can_write"`
-	LatestCommitSHA   string                        `json:"latest_commit_sha"`
-	RemoteHeadSHA     string                        `json:"remote_head_sha"`
-	ActiveTaskID      *uint                         `json:"active_task_id"`
-	DocStatuses       map[string]DocStatusSummaryVO `json:"doc_statuses"`
+	RepoID             uint                          `json:"repo_id"`
+	RepoName           string                        `json:"repo_name"`
+	DepartmentID       uint                          `json:"department_id"`
+	DepartmentName     string                        `json:"department_name"`
+	Subdirectory       string                        `json:"subdirectory"`
+	ScopeType          string                        `json:"scope_type"`   // "repo" | "subdir"
+	ScopeStatus        string                        `json:"scope_status"` // "active" | "missing" | "orphan"
+	ModuleSource       string                        `json:"module_source,omitempty"`
+	EffectiveFiles     int                           `json:"effective_files"`
+	TotalLOC           int                           `json:"total_loc"`
+	ActiveModuleCount  int                           `json:"active_module_count"`
+	ModulesScanned     bool                          `json:"modules_scanned"`
+	ArchElementID      *uint                         `json:"arch_element_id"`
+	ArchElementName    string                        `json:"arch_element_name"`
+	ArchElementType    string                        `json:"arch_element_type,omitempty"`
+	ArchPath           string                        `json:"arch_path,omitempty"`
+	SubsystemID        *uint                         `json:"subsystem_id,omitempty"`
+	SubsystemName      string                        `json:"subsystem_name,omitempty"`
+	Branch             string                        `json:"branch"`
+	DefaultBranch      string                        `json:"default_branch"`
+	IsBranchOverridden bool                          `json:"is_branch_overridden"`
+	CanSwitchBranch    bool                          `json:"can_switch_branch"`
+	OwnerID            uint                          `json:"owner_id"`
+	OwnerName          string                        `json:"owner_name"`
+	CanWrite           bool                          `json:"can_write"`
+	LatestCommitSHA    string                        `json:"latest_commit_sha"`
+	RemoteHeadSHA      string                        `json:"remote_head_sha"`
+	ActiveTaskID       *uint                         `json:"active_task_id"`
+	DocStatuses        map[string]DocStatusSummaryVO `json:"doc_statuses"`
 }
 
 type ArchSubsystemOptionVO struct {
@@ -133,15 +136,18 @@ type GenTaskSummaryVO struct {
 }
 
 type RepoScopesDetailResponse struct {
-	RepoID         uint                  `json:"repo_id"`
-	RepoName       string                `json:"repo_name"`
-	DepartmentID   uint                  `json:"department_id"`
-	DepartmentName string                `json:"department_name"`
-	Branch         string                `json:"branch"`
-	OwnerID        uint                  `json:"owner_id"`
-	OwnerName      string                `json:"owner_name"`
-	Scopes         []RepoScopeCoverageVO `json:"scopes"`
-	RecentTasks    []GenTaskSummaryVO    `json:"recent_tasks"`
+	RepoID             uint                  `json:"repo_id"`
+	RepoName           string                `json:"repo_name"`
+	DepartmentID       uint                  `json:"department_id"`
+	DepartmentName     string                `json:"department_name"`
+	Branch             string                `json:"branch"`
+	DefaultBranch      string                `json:"default_branch"`
+	IsBranchOverridden bool                  `json:"is_branch_overridden"`
+	CanSwitchBranch    bool                  `json:"can_switch_branch"`
+	OwnerID            uint                  `json:"owner_id"`
+	OwnerName          string                `json:"owner_name"`
+	Scopes             []RepoScopeCoverageVO `json:"scopes"`
+	RecentTasks        []GenTaskSummaryVO    `json:"recent_tasks"`
 }
 
 type RepoCoverageFilter struct {
@@ -420,21 +426,30 @@ func (s *RepoService) GetRepoScopes(ctx context.Context, user *commonModels.User
 	if ownerName == "" {
 		ownerName = repo.Owner.Username
 	}
-	branch := strings.TrimSpace(repo.Branch)
-	if branch == "" {
-		branch = "master"
+	defaultBranch := models.NormalizeRepoDefaultBranch(repo.Branch)
+	targetBranch := ""
+	if s.moduleRepo != nil {
+		if policy, pErr := s.moduleRepo.GetPolicy(ctx, repoID); pErr == nil && policy != nil {
+			targetBranch = strings.TrimSpace(policy.TargetBranch)
+		}
 	}
+	branch := models.ResolveEffectiveBranch(repo.Branch, targetBranch)
+	isOverridden := targetBranch != "" && targetBranch != defaultBranch
+	canSwitch := IsRepoLevelWriter(user, repo)
 
 	return &RepoScopesDetailResponse{
-		RepoID:         repo.ID,
-		RepoName:       repo.Name,
-		DepartmentID:   repo.DepartmentID,
-		DepartmentName: repo.Department.Name,
-		Branch:         branch,
-		OwnerID:        repo.OwnerID,
-		OwnerName:      ownerName,
-		Scopes:         rows,
-		RecentTasks:    recentTasks,
+		RepoID:             repo.ID,
+		RepoName:           repo.Name,
+		DepartmentID:       repo.DepartmentID,
+		DepartmentName:     repo.Department.Name,
+		Branch:             branch,
+		DefaultBranch:      defaultBranch,
+		IsBranchOverridden: isOverridden,
+		CanSwitchBranch:    canSwitch,
+		OwnerID:            repo.OwnerID,
+		OwnerName:          ownerName,
+		Scopes:             rows,
+		RecentTasks:        recentTasks,
 	}, nil
 }
 
@@ -780,6 +795,26 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 		repoIDs = append(repoIDs, r.ID)
 	}
 
+	targetBranchByRepo := make(map[uint]string, len(repos))
+	if s.moduleRepo != nil {
+		if policies, pErr := s.moduleRepo.ListPoliciesByRepos(ctx, repoIDs); pErr == nil {
+			for _, p := range policies {
+				targetBranchByRepo[p.RepoID] = strings.TrimSpace(p.TargetBranch)
+			}
+		}
+	}
+	defaultBranchByRepo := make(map[uint]string, len(repos))
+	effectiveBranchByRepo := make(map[uint]string, len(repos))
+	overriddenByRepo := make(map[uint]bool, len(repos))
+	for _, r := range repos {
+		defBr := models.NormalizeRepoDefaultBranch(r.Branch)
+		tgtBr := targetBranchByRepo[r.ID]
+		effBr := models.ResolveEffectiveBranch(r.Branch, tgtBr)
+		defaultBranchByRepo[r.ID] = defBr
+		effectiveBranchByRepo[r.ID] = effBr
+		overriddenByRepo[r.ID] = tgtBr != "" && tgtBr != defBr
+	}
+
 	docs, err := s.docRepo.ListByRepos(ctx, repoIDs)
 	if err != nil {
 		return nil, nil, err
@@ -819,8 +854,18 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 	if err != nil {
 		return nil, nil, err
 	}
+	snapMatchesBranch := func(repoID uint, refName string) bool {
+		eff := effectiveBranchByRepo[repoID]
+		if refName == eff {
+			return true
+		}
+		return eff == "master" && refName == "main" && targetBranchByRepo[repoID] == ""
+	}
 	latestCommitByScope := make(map[scopeKey]string)
 	for _, sn := range snaps {
+		if !snapMatchesBranch(sn.RepoID, sn.RefName) {
+			continue
+		}
 		k := scopeKey{repoID: sn.RepoID, subdir: sn.Subdirectory}
 		if _, exists := latestCommitByScope[k]; !exists {
 			latestCommitByScope[k] = sn.CommitSHA
@@ -833,7 +878,12 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 	}
 	remoteHeadByRepo := make(map[uint]string)
 	for _, rh := range remoteHeads {
-		if rh.RemoteHeadSHA != "" {
+		if rh.RemoteHeadSHA == "" {
+			continue
+		}
+		if snapMatchesBranch(rh.RepoID, rh.RefName) {
+			remoteHeadByRepo[rh.RepoID] = rh.RemoteHeadSHA
+		} else if _, exists := remoteHeadByRepo[rh.RepoID]; !exists && targetBranchByRepo[rh.RepoID] == "" {
 			remoteHeadByRepo[rh.RepoID] = rh.RemoteHeadSHA
 		}
 	}
@@ -872,9 +922,12 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 		}
 	}
 
-	// 整仓最新快照文件数/LOC（供整仓行展示）
+	// 整仓最新快照文件数/LOC（供整仓行展示，按当前有效分支匹配）
 	latestSnapByScope := make(map[scopeKey]models.RepoSnapshot)
 	for _, sn := range snaps {
+		if !snapMatchesBranch(sn.RepoID, sn.RefName) {
+			continue
+		}
 		k := scopeKey{repoID: sn.RepoID, subdir: sn.Subdirectory}
 		if _, exists := latestSnapByScope[k]; !exists {
 			latestSnapByScope[k] = sn
@@ -884,10 +937,9 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 	rows := make([]RepoScopeCoverageVO, 0, len(repos)+len(idx.allElems))
 	for i := range repos {
 		repo := &repos[i]
-		branch := strings.TrimSpace(repo.Branch)
-		if branch == "" {
-			branch = "master"
-		}
+		branch := effectiveBranchByRepo[repo.ID]
+		defBranch := defaultBranchByRepo[repo.ID]
+		isOverridden := overriddenByRepo[repo.ID]
 		repoOwnerName := repo.Owner.Name
 		if repoOwnerName == "" {
 			repoOwnerName = repo.Owner.Username
@@ -947,6 +999,9 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 			remoteHeadByRepo[repo.ID],
 			activeTaskByScope[scopeKey{repoID: repo.ID, subdir: ""}],
 		)
+		repoRow.DefaultBranch = defBranch
+		repoRow.IsBranchOverridden = isOverridden
+		repoRow.CanSwitchBranch = repoLevelWrite
 		repoRow.ScopeStatus = models.ModuleStatusActive
 		repoRow.EffectiveFiles = repoSnap.EffectiveFiles
 		repoRow.TotalLOC = repoSnap.TotalLOC
@@ -1028,6 +1083,9 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 					remoteHeadByRepo[repo.ID],
 					activeTaskByScope[k],
 				)
+				row.DefaultBranch = defBranch
+				row.IsBranchOverridden = isOverridden
+				row.CanSwitchBranch = repoLevelWrite
 				row.ScopeStatus = mod.Status
 				row.ModuleSource = mod.Source
 				row.EffectiveFiles = mod.EffectiveFiles
@@ -1055,6 +1113,9 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 					remoteHeadByRepo[repo.ID],
 					activeTaskByScope[k],
 				)
+				row.DefaultBranch = defBranch
+				row.IsBranchOverridden = isOverridden
+				row.CanSwitchBranch = repoLevelWrite
 				row.ScopeStatus = models.ModuleStatusActive
 				row.ModuleSource = models.ModuleSourceArchElement
 				if sn, ok := latestSnapByScope[k]; ok {
@@ -1087,6 +1148,9 @@ func (s *RepoService) buildCoverageData(ctx context.Context, user *commonModels.
 				continue
 			}
 			seenSubdirs[docSub] = true
+			row.DefaultBranch = defBranch
+			row.IsBranchOverridden = isOverridden
+			row.CanSwitchBranch = repoLevelWrite
 			row.ScopeStatus = "orphan"
 			rows = append(rows, row)
 		}

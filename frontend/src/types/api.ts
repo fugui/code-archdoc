@@ -41,7 +41,12 @@ export type ArchdocErrorCode =
   | 'TOKEN_BUDGET_EXCEEDED'
   | 'BATCH_TOKEN_BUDGET_EXCEEDED'
   | 'FILE_BUDGET_EXCEEDED'
+  | 'REMOTE_BRANCH_FETCH_FAILED'
   | 'INTERNAL_ERROR';
+
+export interface SwitchRepoBranchPayload {
+  branch: string;
+}
 
 export interface RepoListQuery {
   page: number;

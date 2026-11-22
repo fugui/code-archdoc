@@ -23,17 +23,22 @@ import type {
   GenTaskDetailVO,
   RepoModuleVO,
   SlotTaskStatus,
+  SwitchRepoBranchVO,
   TaskStatus,
 } from '../types';
 import { formatApiError, formatTaskErrorCode } from '../utils/errorMessages';
 import { isBatchTaskKind } from '../utils/moduleUtils';
 import { shortSha } from '../utils/urlQuery';
+import RepoBranchSelector from './RepoBranchSelector';
 
 export interface GenerateTaskScope {
   repoId: number;
   repoName: string;
   subdirectory: string;
   branch: string;
+  defaultBranch?: string;
+  isBranchOverridden?: boolean;
+  canSwitchBranch?: boolean;
   canWrite: boolean;
 }
 
@@ -49,6 +54,7 @@ export interface GenerateTaskModalProps {
   onClose: () => void;
   onTaskCompleted?: () => void;
   onModulesRefreshed?: () => void;
+  onBranchChanged?: (res: SwitchRepoBranchVO) => void;
   onOpenStudio?: (repoId: number, docId?: number, subdirectory?: string) => void;
   onOpenTaskCenter?: () => void;
 }
@@ -116,6 +122,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   onClose,
   onTaskCompleted,
   onModulesRefreshed,
+  onBranchChanged,
   onOpenStudio,
   onOpenTaskCenter,
 }) => {
@@ -132,6 +139,12 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   const [taskDetail, setTaskDetail] = useState<GenTaskDetailVO | null>(null);
   const [pollError, setPollError] = useState<string>('');
 
+  // 单仓活动分支状态（允许在配置态内直接切换，切换后立即更新后续提交入参）
+  const [activeBranch, setActiveBranch] = useState<string>(scope?.branch || 'master');
+  const [activeDefaultBranch, setActiveDefaultBranch] = useState<string | undefined>(scope?.defaultBranch);
+  const [activeIsOverridden, setActiveIsOverridden] = useState<boolean>(Boolean(scope?.isBranchOverridden));
+  const [branchRescanHint, setBranchRescanHint] = useState<boolean>(false);
+
   // 批量模式状态（F-31）
   const [repoModules, setRepoModules] = useState<RepoModuleVO[]>([]);
   const [loadingModules, setLoadingModules] = useState<boolean>(false);
@@ -142,9 +155,27 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
 
   const notifiedReadyRef = useRef<number | null>(null);
 
+  const scopeRepoId = scope?.repoId ?? 0;
+  const scopeBranch = scope?.branch || 'master';
+  const scopeDefaultBranch = scope?.defaultBranch;
+  const scopeIsBranchOverridden = Boolean(scope?.isBranchOverridden);
+
+  useEffect(() => {
+    if (!open || !scopeRepoId) return;
+    setActiveBranch(scopeBranch);
+    setActiveDefaultBranch(scopeDefaultBranch);
+    setActiveIsOverridden(scopeIsBranchOverridden);
+  }, [open, scopeRepoId, scopeBranch, scopeDefaultBranch, scopeIsBranchOverridden]);
+
+  useEffect(() => {
+    if (!open) {
+      setBranchRescanHint(false);
+    }
+  }, [open, scopeRepoId]);
+
   // 批量模式打开时加载活跃子模块清单（支持预选特定目录）
   useEffect(() => {
-    if (!open || !batchMode || !scope || initialTaskId) return;
+    if (!open || !batchMode || !scopeRepoId || initialTaskId) return;
     let active = true;
     const presetList = initialSelectedModules ? [...initialSelectedModules] : [];
     const hasPreset = presetList.length > 0;
@@ -152,7 +183,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     setAllModules(!hasPreset);
     setIncludeRepoScope(true);
     setSelectedModules(hasPreset ? presetList : []);
-    void listRepoModules(scope.repoId)
+    void listRepoModules(scopeRepoId)
       .then((res) => {
         if (!active) return;
         const actives = (res.modules || []).filter((m) => m.status === 'active');
@@ -175,7 +206,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     return () => {
       active = false;
     };
-  }, [open, batchMode, scope, initialTaskId, initialSelectedModules]);
+  }, [open, batchMode, scopeRepoId, initialTaskId, initialSelectedModules]);
 
   // 打开弹窗时初始化选中状态或加载既有任务
   useEffect(() => {
@@ -263,6 +294,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           'info',
         );
       }
+      setBranchRescanHint(false);
       onModulesRefreshed?.();
     } catch (err: unknown) {
       showToast(formatApiError(err, '扫描仓库一级目录失败').message, 'error');
@@ -289,7 +321,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       const created = batchMode
         ? await triggerBatchGenerateTask({
             repo_id: scope.repoId,
-            ref_name: scope.branch,
+            ref_name: activeBranch,
             all_modules: allModules,
             subdirectories: allModules ? undefined : selectedModules,
             include_repo_scope: includeRepoScope,
@@ -299,7 +331,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
         : await triggerGenerateTask({
             repo_id: scope.repoId,
             subdirectory: scope.subdirectory,
-            ref_name: scope.branch,
+            ref_name: activeBranch,
             doc_types: selectedSlugs,
             mode,
           });
@@ -383,7 +415,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       }
       subtitle={
         scope
-          ? `${scope.repoName}${scope.subdirectory ? ` / ${scope.subdirectory}` : ' (整仓)'} · 分支 ${scope.branch}`
+          ? `${scope.repoName}${scope.subdirectory ? ` / ${scope.subdirectory}` : ' (整仓)'} · 分支 ${activeBranch}`
           : undefined
       }
       width="lg"
@@ -472,7 +504,31 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
             </div>
             <div>
               <span className="code-archdoc-task-scope-label">分支</span>
-              <span className="code-archdoc-mono">{scope.branch}</span>
+              {!taskDetail && !initialTaskId ? (
+                <RepoBranchSelector
+                  repoId={scope.repoId}
+                  repoName={scope.repoName}
+                  currentBranch={activeBranch}
+                  defaultBranch={activeDefaultBranch}
+                  isOverridden={activeIsOverridden}
+                  canSwitch={Boolean(scope.canSwitchBranch ?? scope.canWrite)}
+                  disabled={submitting}
+                  size="sm"
+                  onSwitched={(res) => {
+                    setActiveBranch(res.current_branch);
+                    setActiveDefaultBranch(res.default_branch);
+                    setActiveIsOverridden(res.is_overridden);
+                    if (batchMode) {
+                      setBranchRescanHint(true);
+                    }
+                    onBranchChanged?.(res);
+                  }}
+                />
+              ) : (
+                <span className="code-archdoc-mono">
+                  {taskDetail?.ref_name || activeBranch}
+                </span>
+              )}
             </div>
             {taskDetail?.commit_sha && (
               <div>
@@ -486,6 +542,28 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
         {/* 配置态：批量范围选择 + 选择 1~N DocType */}
         {!taskDetail && !initialTaskId && (
           <>
+            {batchMode && branchRescanHint && (
+              <div className="code-archdoc-branch-hint-banner">
+                <span>
+                  已切换至分支 <code className="code-archdoc-mono">{activeBranch}</code>，建议重新扫描一次一级目录模块以匹配新分支源码结构。
+                </span>
+                {scope?.canWrite && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-small"
+                    disabled={scanningModules}
+                    onClick={() => void handleScanModulesInBatch()}
+                  >
+                    {scanningModules ? (
+                      <Loader2 size={12} className="code-archdoc-spin" />
+                    ) : (
+                      <RefreshCw size={12} />
+                    )}
+                    <span>{scanningModules ? '扫描中...' : '立即重新扫描'}</span>
+                  </button>
+                )}
+              </div>
+            )}
             {batchMode && (
               <div className="code-archdoc-batch-panel">
                 <div className="code-archdoc-batch-panel-head">

@@ -146,12 +146,9 @@ func (o *GenerationOrchestrator) SubmitBatchGenerateTask(
 		}
 	}
 
-	refName := strings.TrimSpace(req.RefName)
-	if refName == "" {
-		refName = strings.TrimSpace(repo.Branch)
-	}
-	if refName == "" {
-		refName = "master"
+	refName, err := o.resolveAndValidateTaskBranch(ctx, repo, req.RefName)
+	if err != nil {
+		return nil, err
 	}
 
 	var operatorID uint

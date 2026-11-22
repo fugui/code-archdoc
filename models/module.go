@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"code-archdoc/config"
@@ -12,13 +13,32 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// RepoModulePolicy 仓库级模块发现策略（缺省行使用默认策略 merged + MinEffectiveFiles=3，管理员/仓库级写者可配置）。
+// NormalizeRepoDefaultBranch 规范化共享仓主数据的默认分支名（为空时回退 "master"）。
+func NormalizeRepoDefaultBranch(repoBranch string) string {
+	b := strings.TrimSpace(repoBranch)
+	if b == "" {
+		return "master"
+	}
+	return b
+}
+
+// ResolveEffectiveBranch 统一解析仓库在 code-archdoc 中的有效跟踪分支：
+// 优先使用 archdoc_repo_module_policies.target_branch，其次使用共享表 repositories.branch，均为空时回退 "master"。
+func ResolveEffectiveBranch(repoBranch, targetBranch string) string {
+	if tb := strings.TrimSpace(targetBranch); tb != "" {
+		return tb
+	}
+	return NormalizeRepoDefaultBranch(repoBranch)
+}
+
+// RepoModulePolicy 仓库级治理策略（含模块发现策略与目标分支覆写；缺省行使用默认策略 merged + MinEffectiveFiles=3，管理员/仓库级写者可配置）。
 type RepoModulePolicy struct {
 	ID                uint           `gorm:"primaryKey" json:"id"`
 	RepoID            uint           `gorm:"not null;uniqueIndex" json:"repo_id"`
 	Strategy          string         `gorm:"size:20;not null;default:'merged'" json:"strategy"`     // arch_elements | top_level_dirs | merged
 	ExcludeGlobs      datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"exclude_globs"` // 叠加默认排除名单
 	MinEffectiveFiles int            `gorm:"not null;default:3" json:"min_effective_files"`         // 降噪后有效文件数下限
+	TargetBranch      string         `gorm:"size:128;not null;default:''" json:"target_branch"`     // ADR-07：单仓目标分支覆写（空串表示跟随 repositories.branch）
 	UpdatedBy         *uint          `json:"updated_by"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
@@ -72,6 +92,34 @@ func (s *ModuleStore) UpsertPolicy(ctx context.Context, policy *RepoModulePolicy
 			"strategy", "exclude_globs", "min_effective_files", "updated_by", "updated_at",
 		}),
 	}).Create(policy).Error
+}
+
+func (s *ModuleStore) ListPoliciesByRepos(ctx context.Context, repoIDs []uint) ([]RepoModulePolicy, error) {
+	if len(repoIDs) == 0 {
+		return []RepoModulePolicy{}, nil
+	}
+	var policies []RepoModulePolicy
+	if err := s.db.WithContext(ctx).Where("repo_id IN ?", repoIDs).Find(&policies).Error; err != nil {
+		return nil, err
+	}
+	return policies, nil
+}
+
+func (s *ModuleStore) UpdateTargetBranch(ctx context.Context, repoID uint, targetBranch string, updatedBy *uint) error {
+	row := &RepoModulePolicy{
+		RepoID:            repoID,
+		Strategy:          ModuleStrategyMerged,
+		ExcludeGlobs:      datatypes.JSON("[]"),
+		MinEffectiveFiles: 3,
+		TargetBranch:      strings.TrimSpace(targetBranch),
+		UpdatedBy:         updatedBy,
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "repo_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"target_branch", "updated_by", "updated_at",
+		}),
+	}).Create(row).Error
 }
 
 func (s *ModuleStore) ListModulesByRepo(ctx context.Context, repoID uint) ([]RepoModule, error) {

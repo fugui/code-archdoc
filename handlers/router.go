@@ -13,6 +13,7 @@ import (
 type AppHandlers struct {
 	rbacSvc    *services.RBACService
 	repoSvc    *services.RepoService
+	branchSvc  *services.BranchService
 	moduleSvc  *services.ModuleService
 	llmSvc     *services.LLMConfigService
 	docTypeSvc *services.DocTypeService
@@ -75,6 +76,12 @@ func (h *AppHandlers) WithModuleService(moduleSvc *services.ModuleService) *AppH
 	return h
 }
 
+// WithBranchService 注入单仓目标分支发现与无损切换服务（M13 / ADR-07）。
+func (h *AppHandlers) WithBranchService(branchSvc *services.BranchService) *AppHandlers {
+	h.branchSvc = branchSvc
+	return h
+}
+
 // WithGovernanceServices 注入 M6 双维漂移编排、远端变更巡检、在线质量度量与磁盘配额治理服务。
 func (h *AppHandlers) WithGovernanceServices(
 	driftSvc *services.DriftOrchestrator,
@@ -121,6 +128,10 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 		protected.GET("/repos", h.ListRepos)
 		protected.GET("/arch-tree", h.GetArchTree)
 		protected.GET("/repos/:repo_id/scopes", h.GetRepoScopes)
+		if h.branchSvc != nil {
+			protected.GET("/repos/:repo_id/branches", h.ListRepoBranches)
+			protected.PUT("/repos/:repo_id/branch", h.SwitchRepoBranch)
+		}
 		if h.moduleSvc != nil {
 			protected.GET("/repos/:repo_id/modules", h.ListRepoModules)
 			protected.GET("/repos/:repo_id/module-policy", h.GetRepoModulePolicy)

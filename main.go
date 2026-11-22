@@ -189,6 +189,7 @@ func main() {
 		WithModuleContext(moduleStore, masterStore)
 	reviewSvc := services.NewReviewCommentService(reviewStore, docStore)
 	metricsSvc := services.NewQualityMetricsService(govStore, docTypeStore)
+	branchSvc := services.NewBranchService(masterStore, moduleStore, docStore, taskStore, driftStore, driftSvc, services.DefaultRemoteBranchFetcher{})
 
 	reaperSvc := services.NewResourceReaper(services.ReaperConfig{
 		SandboxDir:      config.AppConfig.Storage.SandboxDir(),
@@ -220,6 +221,7 @@ func main() {
 	pollerSvc.Start(bgCtx)
 
 	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, genSvc).
+		WithBranchService(branchSvc).
 		WithModuleService(moduleSvc).
 		WithDocumentServices(revSvc, previewSvc, publishSvc).
 		WithChatService(chatSvc).

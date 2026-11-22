@@ -146,7 +146,19 @@ export const ScopeIdentityCell: React.FC<ScopeIdentityCellProps> = ({
 
       <div className="code-archdoc-coverage-meta-row">
         {row.department_name && <span>{row.department_name}</span>}
-        <span className="code-archdoc-mono">{row.branch || 'master'}</span>
+        <span
+          className={`code-archdoc-mono ${
+            row.is_branch_overridden ? 'code-archdoc-branch-pill--overridden' : ''
+          }`}
+          title={
+            row.is_branch_overridden
+              ? `已切换自定义跟踪分支 ${row.branch}（仓库默认分支：${row.default_branch || 'master'}）`
+              : `正在跟踪仓库默认分支 ${row.branch || 'master'}`
+          }
+        >
+          {row.branch || 'master'}
+          {row.is_branch_overridden ? ' · 自定义' : ''}
+        </span>
         {typeof row.effective_files === 'number' && row.effective_files > 0 && (
           <span>
             · {row.effective_files} 文件

@@ -121,6 +121,9 @@ func (r *stubDocRepo) MarkUnpublished(context.Context, uint) error { return nil 
 func (r *stubDocRepo) MigrateScopeDocuments(context.Context, uint, string, string, func(string, string) string) ([]models.Document, error) {
 	return nil, nil
 }
+func (r *stubDocRepo) RebindRepoBranch(context.Context, uint, string) ([]models.Document, error) {
+	return nil, nil
+}
 
 type stubDocTypeRepo struct {
 	dt  *models.DocType

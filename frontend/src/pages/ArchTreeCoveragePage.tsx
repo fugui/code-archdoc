@@ -167,6 +167,9 @@ export const ArchTreeCoveragePage: React.FC = () => {
           repoName: row.repo_name,
           subdirectory: row.subdirectory,
           branch: row.branch || 'master',
+          defaultBranch: row.default_branch,
+          isBranchOverridden: row.is_branch_overridden,
+          canSwitchBranch: row.can_switch_branch ?? row.can_write,
           canWrite: row.can_write,
         },
         initialDocTypeSlugs: options?.initialDocTypeSlugs,
@@ -332,6 +335,22 @@ export const ArchTreeCoveragePage: React.FC = () => {
         initialTaskId={taskModal.initialTaskId}
         onClose={() => setTaskModal((prev) => ({ ...prev, open: false }))}
         onTaskCompleted={() => void fetchArchTree()}
+        onBranchChanged={(res) => {
+          setTaskModal((prev) =>
+            prev.scope
+              ? {
+                  ...prev,
+                  scope: {
+                    ...prev.scope,
+                    branch: res.current_branch,
+                    defaultBranch: res.default_branch,
+                    isBranchOverridden: res.is_overridden,
+                  },
+                }
+              : prev,
+          );
+          void fetchArchTree();
+        }}
         onOpenStudio={openStudio}
         onOpenTaskCenter={() => navigate(buildModulePath(isEmbedded, '/tasks'))}
       />

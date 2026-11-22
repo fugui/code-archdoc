@@ -804,3 +804,306 @@ body {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ── 单仓目标分支选择器 (RepoBranchSelector / ScopeIdentityCell) ── */
+.code-archdoc-branch-selector {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.code-archdoc-branch-trigger,
+.code-archdoc-branch-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-branch-selector--sm .code-archdoc-branch-trigger,
+.code-archdoc-branch-selector--sm .code-archdoc-branch-readonly {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.76rem;
+}
+
+.code-archdoc-branch-trigger {
+  cursor: pointer;
+}
+
+.code-archdoc-branch-trigger:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-branch-trigger:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.code-archdoc-branch-trigger:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.code-archdoc-branch-trigger--overridden,
+.code-archdoc-branch-readonly--overridden {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-subtle);
+}
+
+.code-archdoc-branch-readonly {
+  background: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+}
+
+.code-archdoc-branch-lock-icon {
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-branch-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.code-archdoc-branch-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.code-archdoc-branch-tag--default {
+  background: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-branch-tag--custom {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning-border);
+}
+
+.code-archdoc-branch-tag--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-border);
+}
+
+.code-archdoc-branch-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: 310px;
+  max-width: calc(100vw - 2rem);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-archdoc-branch-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-muted);
+}
+
+.code-archdoc-branch-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.code-archdoc-branch-search-icon {
+  position: absolute;
+  left: 0.5rem;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.code-archdoc-branch-search-input {
+  width: 100%;
+  padding-left: 1.65rem;
+  height: 28px;
+  font-size: 0.78rem;
+}
+
+.code-archdoc-branch-reset-bar {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-branch-reset-btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--color-warning-border);
+  background: var(--color-warning-subtle);
+  color: var(--color-text-primary);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-branch-reset-btn:hover:not(:disabled) {
+  border-color: var(--color-warning);
+  background: var(--color-bg-hover);
+}
+
+.code-archdoc-branch-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.code-archdoc-branch-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.code-archdoc-branch-option:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-subtle);
+}
+
+.code-archdoc-branch-option--current {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary-border);
+}
+
+.code-archdoc-branch-option-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.code-archdoc-branch-option-check {
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.code-archdoc-branch-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.code-archdoc-branch-option-sha {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.code-archdoc-branch-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 1rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-branch-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.85rem 0.75rem;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--color-danger);
+}
+
+.code-archdoc-branch-pill--overridden {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-subtle);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+.code-archdoc-branch-hint-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-subtle);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+}
+
+.code-archdoc-module-branch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.code-archdoc-module-branch-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}

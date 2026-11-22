@@ -166,7 +166,6 @@ func (s *DriftOrchestrator) evaluateRepoCodeDriftLocked(
 	remoteHeadSHA string,
 	resolvedBranch string,
 ) error {
-	_ = resolvedBranch
 	localPath := filepath.Join(s.sandboxDir, fmt.Sprintf("repo_%d", repo.RepoID))
 	gitDir, cleanupTmp, repoReady := s.ensureMetadataGitDir(ctx, localPath, repo.RepoURL, remoteHeadSHA)
 	if cleanupTmp != nil {
@@ -184,6 +183,12 @@ func (s *DriftOrchestrator) evaluateRepoCodeDriftLocked(
 		}
 		if doc.PublishedRevisionID == nil {
 			continue
+		}
+		// 严格按当前有效跟踪分支过滤，避免旧分支或其它分支文档误报漂移
+		if resolvedBranch != "" && doc.RefName != "" && doc.RefName != resolvedBranch {
+			if !(doc.RefName == "master" && resolvedBranch == "main") {
+				continue
+			}
 		}
 
 		pubSHA := strings.TrimSpace(doc.PublishedCommitSHA)
@@ -350,6 +355,53 @@ func (s *DriftOrchestrator) OnRepoModulesChanged(ctx context.Context, repoID uin
 		return
 	}
 	s.recomputeRepoModuleDrift(ctx, repoID, true)
+}
+
+// SyncCodeDriftAfterBranchSwitch 在单仓切换目标分支后，立即依据新分支远端 HEAD 对已发布文档同步代码漂移态（ADR-07）。
+func (s *DriftOrchestrator) SyncCodeDriftAfterBranchSwitch(ctx context.Context, repoID uint, newBranch, remoteHeadSHA string) int {
+	if s == nil || s.docRepo == nil || s.driftRepo == nil || repoID == 0 || strings.TrimSpace(remoteHeadSHA) == "" {
+		return 0
+	}
+	docs, err := s.docRepo.ListApprovedDocumentsByRepo(ctx, repoID)
+	if err != nil || len(docs) == 0 {
+		return 0
+	}
+
+	now := time.Now()
+	driftedCount := 0
+	for i := range docs {
+		doc := &docs[i]
+		if doc.PublishedRevisionID == nil {
+			continue
+		}
+		if newBranch != "" && doc.RefName != "" && doc.RefName != newBranch {
+			continue
+		}
+
+		pubSHA := strings.TrimSpace(doc.PublishedCommitSHA)
+		var modSlots []drift.AffectedSlot
+		if doc.Subdirectory == "" {
+			modSlots = s.computeModuleDriftForRepoDoc(ctx, doc, nil, nil, false)
+		}
+		merged := toModelAffectedSlots(drift.MergeCodeAndModuleDriftSlots(nil, modSlots))
+
+		if pubSHA != "" && pubSHA == remoteHeadSHA {
+			hasDrift := len(merged) > 0
+			if hasDrift {
+				driftedCount++
+			}
+			if uErr := s.upsertCodeDrift(ctx, doc.ID, hasDrift, models.DriftPrecisionSectionLevel, pubSHA, remoteHeadSHA, merged, now); uErr != nil {
+				log.Printf("[%s] 切分支后清零代码漂移失败 (doc=%d): %v", config.ServiceName, doc.ID, uErr)
+			}
+			continue
+		}
+
+		driftedCount++
+		if uErr := s.upsertCodeDrift(ctx, doc.ID, true, models.DriftPrecisionRepoLevel, pubSHA, remoteHeadSHA, merged, now); uErr != nil {
+			log.Printf("[%s] 切分支后标记代码漂移失败 (doc=%d): %v", config.ServiceName, doc.ID, uErr)
+		}
+	}
+	return driftedCount
 }
 
 func (s *DriftOrchestrator) recomputeRepoModuleDrift(ctx context.Context, repoID uint, forceScopeCheck bool) {

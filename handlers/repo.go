@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"code-archdoc/config"
 	"code-archdoc/models"
 	"code-archdoc/services"
+	commonAudit "code-common/backend/audit"
+	commonModels "code-common/backend/models"
 
 	"github.com/gin-gonic/gin"
 )
@@ -149,4 +152,89 @@ func (h *AppHandlers) GetRepoScopes(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// ListRepoBranches 轻量列举远端代码仓分支清单并标识默认分支与当前生效分支（GET /api/repos/:repo_id/branches）。
+func (h *AppHandlers) ListRepoBranches(c *gin.Context) {
+	if _, ok := CurrentUserFromContext(c); !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+
+	repoID, ok := parseRepoIDParam(c)
+	if !ok {
+		return
+	}
+
+	refreshRaw := strings.TrimSpace(c.Query("refresh"))
+	forceRefresh := strings.EqualFold(refreshRaw, "true") || refreshRaw == "1"
+
+	vo, err := h.branchSvc.ListRepoBranches(c.Request.Context(), repoID, forceRefresh)
+	if err != nil {
+		switch {
+		case errors.Is(err, models.ErrNotFound):
+			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标代码仓库不存在", nil)
+		case errors.Is(err, services.ErrRemoteBranchFetchFailed):
+			WriteError(c, http.StatusBadGateway, ErrCodeRemoteBranchFetchFailed, err.Error(), nil)
+		default:
+			log.Printf("[%s] 查询仓库远端分支失败 (repo_id=%d): %v", config.ServiceName, repoID, err)
+			WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "查询仓库分支列表失败", nil)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, vo)
+}
+
+// SwitchRepoBranch 切换单仓有效跟踪分支并事务重绑存量文档与漂移状态（PUT /api/repos/:repo_id/branch，仅仓库级写者/管理员）。
+func (h *AppHandlers) SwitchRepoBranch(c *gin.Context) {
+	repoID, ok := parseRepoIDParam(c)
+	if !ok {
+		return
+	}
+	user, _, allowed := h.CheckScopeWriteOrAbort(c, repoID, "")
+	if !allowed {
+		return
+	}
+
+	var req services.SwitchRepoBranchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "请求体 JSON 格式非法", nil)
+		return
+	}
+
+	vo, err := h.branchSvc.SwitchRepoBranch(c.Request.Context(), repoID, req, user.ID)
+	if err != nil {
+		switch {
+		case errors.Is(err, services.ErrInvalidBranch), errors.Is(err, services.ErrBranchNotFound):
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, err.Error(), nil)
+		case errors.Is(err, models.ErrNotFound):
+			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标代码仓库不存在", nil)
+		case errors.Is(err, services.ErrActiveTasksBlockingBranchSwitch):
+			WriteError(c, http.StatusConflict, ErrCodeConflict, err.Error(), nil)
+		case errors.Is(err, models.ErrMigrationConflict):
+			WriteError(c, http.StatusConflict, ErrCodeMigrationConflict, "仓库存在跨分支同名文档冲突，请清理后再切换", nil)
+		case errors.Is(err, services.ErrRemoteBranchFetchFailed):
+			WriteError(c, http.StatusBadGateway, ErrCodeRemoteBranchFetchFailed, err.Error(), nil)
+		default:
+			log.Printf("[%s] 切换仓库目标分支失败 (repo_id=%d branch=%q): %v", config.ServiceName, repoID, req.Branch, err)
+			WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "切换仓库目标分支失败", nil)
+		}
+		return
+	}
+
+	commonAudit.SetAuditContext(
+		c,
+		config.ModuleKey,
+		"switch_branch",
+		commonModels.AuditLevelP1,
+		fmt.Sprintf("切换仓库 #%d 目标跟踪分支: %s -> %s（重绑 %d 篇文档，漂移 %d 篇）", repoID, vo.PreviousBranch, vo.CurrentBranch, vo.ReboundDocuments, vo.DriftedDocuments),
+		"repo_branch",
+		strconv.FormatUint(uint64(repoID), 10),
+		fmt.Sprintf("repo#%d:%s", repoID, vo.CurrentBranch),
+		map[string]string{"branch": vo.PreviousBranch},
+		vo,
+	)
+
+	c.JSON(http.StatusOK, vo)
 }

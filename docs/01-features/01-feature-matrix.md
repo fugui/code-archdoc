@@ -1,16 +1,17 @@
 # 代码设计文档反推 (`code-archdoc`) 特性清单与需求范围界定规范 (Feature Matrix & Scope)
 
 - **文档编号**：`01-feature-matrix.md`
-- **文档版本**：v0.6.0 (ADR-06 Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校记忆)
-- **更新日期**：2026-11-21
+- **文档版本**：v0.7.0 (ADR-07 单仓目标分支切换与远端分支发现)
+- **更新日期**：2026-11-22
 - **所属模块**：`archdoc`（服务名 `Code-Archdoc` / `code-archdoc-server`）
 - **当前阶段**：阶段一：特性清单与边界明确（`01-features`）
-- **状态**：已冻结（含 M1~M7 P0 基线、ADR-04 M8~M10、ADR-05 M11 与 ADR-06 M12 演进特性）。
+- **状态**：已冻结（含 M1~M7 P0 基线、ADR-04 M8~M10、ADR-05 M11、ADR-06 M12 与 ADR-07 M13 演进特性）。
 
 ### 修订记录
 
 | 版本 | 日期 | 修订要点 |
 | :--- | :--- | :--- |
+| v0.7.0 | 2026-11-22 | 采纳 [`ADR-07`](../05-adr/07-single-repo-branch-switch.md)：<br>1. 更新 `KA-07` 与 `Non-Goal 4`：保持「单仓单活跃分支」边界，新增 `F-34`（单仓目标分支切换与远端分支发现，纳入 `P0 / M13`），支持在不修改共享表 `repositories` 的前提下基于 `archdoc_repo_module_policies.target_branch` 切换目标跟踪分支并无损重绑存量文档；<br>2. 新增核心验收场景 `SC-21`（对应 `M13` 交付波次）。 |
 | v0.6.0 | 2026-11-21 | 采纳 [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)：<br>1. 新增 `F-33`（Canvas Studio 审阅批注篮、多槽位综合精修与持久审校记忆，纳入 `P0 / M12`）：升级 `F-08`/`F-09` 并提前落地 `F-15` 批注批量修订主干；新增第 19 张表 `archdoc_review_comments`（含文档内单调 `comment_no`）与第 20 张表 `archdoc_chat_proposal_items`；<br>2. 引入「审阅批注篮为主、精修对话为辅」双视图工作台、划词/块级零依赖锚定、两阶段 `Plan -> Scoped Slot Refine` 引擎、`Ask` 只读查证模式（含 `locked` 章节）、双段流式协议净化 JSON 噪音、多槽位原子合并微调采纳与 `persist_for_regen` 三路径回流，并修复非内联证据锚点丢失与 `ADR-04` 多模块上下文断链缺陷；<br>3. 新增核心验收场景 `SC-20`（对应 `M12` 交付波次）。 |
 | v0.5.0 | 2026-11-21 | 采纳 [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)：<br>1. 新增 `F-32`（`DocType` 蓝图化双模融合编辑器与 `Spec Drift` 模板静态骨架归一化）：将 `DocTypeEditorDrawer` 收敛为三 Tab 融合蓝图架构（可视化编排 + `Blueprint Source DSL v1` 参数化源码双向同步），支持顶层 `ir_facets` 自动并集、高级治理策略透出与跨模式 `persistedSlotIds` 防误改门禁；<br>2. 精化 `F-12` `Spec Drift` 模板比对：剥离 `template.md` 中绑定的 `<!-- slot:id -->` 与紧邻 `##~####` 标题行，仅在静态骨架或 `PromptHash` 变更时触发全篇 `prompt_changed`，并将 `enable_source_tools` / `max_tool_rounds` 纳入槽位级漂移检测；<br>3. 新增核心验收场景 `SC-19`（对应 `M11` 交付波次）。 |
 | v0.4.0 | 2026-11-20 | 采纳 [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md)：<br>1. 更新 `KA-04`：明确 Monorepo「一层子目录即模块」为默认粒度（支持按仓策略与 `architecture_elements` 合并），无损兼容单模块仓库；<br>2. 新增 `F-28`（一层模块自动发现与范围迁移）、`F-29`（多模块批次生成与批次预算熔断）、`F-30`（整仓基线切片、模块外部上下文与仓库级证据锚点）、`F-31`（仓库级共享术语表、层级汇总与模块导航）；<br>3. 新增核心验收场景 `SC-14`~`SC-18`（对应 `M8`~`M10` 交付波次）。 |
@@ -57,7 +58,7 @@
 | **KA-04** | **分析对象粒度**：默认支持「整仓」与「Monorepo 一层功能模块（按仓策略 `arch_elements` / `top_level_dirs` / `merged` 合并派生）」及已登记多级子目录（`ArchitectureElement.RepoID + Subdirectory`），单模块仓库平滑回退为整仓分析；跨多仓子系统级聚合放至 P1。 | `F-01`, `F-04`, `F-16`, `F-28`~`F-31` |
 | **KA-05** | **定稿发布与 CodeBench 同步**（已与业务方确认）：`code-bench` 开发者文档中心以 `docs.path` 为根，通过**符号链接挂载各子树**展示 Markdown 文档树。P0 约定：<br>• `code-archdoc` 将定稿文档落盘至自有的受控发布目录（`publish_dir`），部署时在 `docs.path` 下建立指向该目录的符号链接子树，与 SDD 研发文档物理分离；<br>• 渲染所需的 Frontmatter 解析与平台路由链接由本项目在 `code-bench` 中直接改造实现（见 §3），随 `W1` 交付；<br>• 符号链接挂载要求 `code-archdoc` 与 `code-bench` **同机部署**（或共享存储）；跨机部署改为 `code-bench` 经网关 API 拉取（P1）。<br>向源码仓自动提 MR/PR 放至 P1。 | `F-11`, `F-17` |
 | **KA-06** | **全局治理与三层权限**：已发布文档全员只读；仓库/模块负责人可在生成时勾选任意已启用的 `DocType`，并拥有所属范围的生成、编辑、精修、加锁与发布权限；**全局 `DocType`、`DocPack`、批量全仓触发与 LLM 配置由管理员（`archdoc_admin` / `super_admin`）独占治理**（不做个人私有 `DocType` 分叉）；P0 允许负责人自审自发布，不强制第二审批人。 | `F-03`, `F-09`, `F-13`, `F-14` |
-| **KA-07** | **分支基线与大仓降噪**：P0 默认追踪主干分支（`Repository.Branch`），数据模型预留 `ref_name` 供 P1 支持多分支基线；默认过滤三方依赖与自动生成代码，支持仓库级 `.archdocignore` 与 `DocType` 级范围声明覆盖。 | `F-02`, `F-03`, `F-04`, `F-20` |
+| **KA-07** | **分支基线与大仓降噪**：P0 坚持「单仓单活跃分支」模型——默认追踪 `Repository.Branch`，并支持仓库级写者通过 `archdoc_repo_module_policies.target_branch` 切换为远端其他目标分支（数据模型预留 `ref_name` 供 P1 `F-20` 扩展多分支并存基线）；默认过滤三方依赖与自动生成代码，支持仓库级 `.archdocignore` 与 `DocType` 级范围声明覆盖。 | `F-02`, `F-03`, `F-04`, `F-20`, `F-34` |
 
 ---
 
@@ -127,6 +128,7 @@
 | **F-31** | **仓库级共享术语表、层级汇总 (`module_digests`) 与模块导航** | `Backend`<br>`Frontend` | **P0 / M10** | 术语表由基线快照统一生成 1 次供同仓所有模块复用；整仓 `DocType` 声明式消费 `module_digests`（已发布优先 → 草稿 → 术语表兜底）与跨模块依赖图并按 `repo_ir_facets` 收敛 IR；支持 `module_doc` 锚点与双源合并漂移联动（模块发布/变更触发整仓 `module_digest_changed` / `module_scope_changed` 且不被 `EvaluateRepoCodeDrift` 覆盖）；发布自动追加「模块导航」节、动态深度 `parent_doc` Frontmatter 与两级仓库 `README.md`。 | 1. 同仓多模块并发仅触发 1 次术语表 LLM 调用。<br>2. 模块发布新修订后，仅引用该模块摘要的整仓章节标记 `module_digest_changed`。<br>3. 发布产物含正确 `scope_type`/`module`/`parent_doc` 与模块导航链接。 |
 | **F-32** | **`DocType` 蓝图化双模融合编辑器与 `Spec Drift` 模板判定精化（ADR-05）** | `Backend`<br>`Frontend`<br>`Models` | **P0 / M11** | 1. **统一蓝图 IR 与双模融合编排**：保持磁盘四文件 SSOT 与 `ExtraFields` 零破坏，前端通过 `DocBlueprint` IR 在同一「文档蓝图」视图内融合全局 Prompt、`template.md` 骨架与 `slots[]`，提供「可视化卡片编排」与「参数化源码 `Blueprint Source DSL v1`（Markdown + ```` ```slot <slot_id> ```` 围栏块）」双向无损实时切换及行号级错误诊断；<br>2. **自动并集、高级策略透出与跨模式防误改**：顶层 `meta.ir_facets` 默认自动聚合所有槽位分片并集（兼容手动覆写）；折叠透出 `repo_ir_facets`、`context_inputs`、`module_digest_source`、`verify_policy`、`scope_profile` 及槽位 `enable_source_tools`/`max_tool_rounds`；修复 `SlotsSnapshotJSON` 源码工具字段持久化与 `CreateDocTypeRequest` 对齐；建立跨可视化/源码模式的 `persistedSlotIds` 修改/删除 `useConfirm` 强制风险确认门禁；<br>3. **`Spec Drift` 静态骨架归一化**：剥离 `template.md` 中已声明槽位的 `<!-- slot:id -->` 及紧邻 `##~####` 绑定标题行，仅当剩余静态骨架或 `PromptHash` 变化时才判定全局 `prompt_changed`，消除修改单章标题或增删槽位时对兄弟槽位的全篇漂移误报，并将 `enable_source_tools` / `max_tool_rounds` 纳入 `slot_modified` 检测。 | 1. 5 类内置模板与复杂自由排版模板经 `decompile ↔ compile` 与 `DSL parse ↔ serialize` 连续往返 100% 字节级幂等。<br>2. DSL 未知键、越界值、非法分片或未闭合围栏触发精确行号 `error` 并阻断切换与保存；源码中修改/移除既有 `slot_id` 触发强制确认门禁。<br>3. 修改单槽位标题或增删槽位时，未修改的兄弟非锁定槽位 `Spec Drift` 零误报；修改静态导语或开启槽位 `enable_source_tools` 时精确标出对应漂移。 |
 | **F-33** | **Canvas Studio 审阅批注篮、多槽位综合精修与持久审校记忆（ADR-06）** | `Backend`<br>`Frontend`<br>`Models` | **P0 / M12** | 1. **结构化审阅批注篮与前端零依赖锚定**：新增第 19 张自有表 `archdoc_review_comments`（文档内单调递增 `comment_no` `#1, #2...`、`inline`/`section`/`global`、5 类语义标签与 `persist_for_regen`）；扩展 `markdown.ts` 块级行号（含递归 `blockquote` 偏移），纯函数 `reviewAnchor.ts` 实现划词/块级捕获、跨行内节点偏移区间投影高亮与三级降级定位；<br>2. **两阶段隔离精修、`Ask` 纯查证与双段流式净化**：升级 `RightUtilityDrawer` 为「审阅批注篮为主、精修对话为辅」双视图（抽屉支持 `440px ↔ 680px` 展宽）；支持 `mode="ask"`（含 `locked` 章节只读查证）、单槽位微创快路径、以及 `global`/`review_batch` 两阶段 `Plan → Scoped Slot Refine` 引擎（`locked` 槽位强制转 `advisory_locked` 零篡改）；引入 `StreamSplitFilter` 屏蔽流式 JSON 裸露，并贯通 `ADR-04` `ModuleContext` 工具白名单与 `ModuleDigests`；<br>3. **多槽位提案组单事务采纳、证据无损继承与审校记忆回流**：新增第 20 张自有表 `archdoc_chat_proposal_items`（持久化 `cited_anchors`），支持画布原地「红绿 Diff / 渲染态对比 / 微调正文（暂存或即时采纳）」与单事务合并生成 1 个不可变 `Revision`；修复未修改及已采纳槽位非内联证据锚点丢失缺陷；支持提案 `superseded` 自动回退 `proposed` 批注为 `open`；支持 `persist_for_regen` 持久约束注入全量重生成、增量刷新与单槽位重试 3 条 L2 路径尾部（保护 KV Cache 前缀）。 | 1. 同文档 `comment_no` 单调递增且删除后永不复用；`ScopeWrite` 外用户访问批注/提案接口返回 `403`。<br>2. `Ask` 模式放行 `locked` 章节查证且零提案落库；多槽位综合精修严格遵守 `locked` 零篡改与非目标槽位 SHA256 字节级不变；流式 `delta` 零裸露 JSON。<br>3. 批量/微调采纳仅生成 1 个 `Revision` 并无损保留未修改/已采纳章节的 `module_doc`/`proto_rpc` 锚点；`persist_for_regen` 3 条 L2 路径均生效且稳定前缀字节不变。 |
+| **F-34** | **单仓目标分支切换与远端分支发现（ADR-07）** | `Backend`<br>`Frontend`<br>`Models` | **P0 / M13** | 1. **通用远端分支发现与浅克隆切换修复**：在 `code-common/backend/gitsync` 新增 `ValidateBranchName`、`ListRemoteBranches`（零对象克隆识别 `HEAD` 并排序），并将已有工作区同步改为显式 refspec 拉取以彻底支持 `--depth=1` 浅克隆跨分支切换；<br>2. **单仓无损分支切换与全链路对齐**：在 `archdoc_repo_module_policies` 新增 `target_branch`（零共享表 DDL），支持仓库级写者将追踪分支切换为远端任意有效分支（含恢复默认分支）；事务内将存量 `archdoc_documents` 无损重绑至新 `ref_name`（保留修订与 `locked` 槽位）、清理旧分支 `archdoc_repo_remote_heads` 并同步已发布文档代码漂移，同时使生成、模块发现、覆盖视图与后台巡检统一跟随新分支；<br>3. **工作台与触发弹窗换分支体验**：在触发生成弹窗、模块治理弹窗提供支持搜索与刷新的分支选择器，覆盖列表标示自定义跟踪分支状态。 | 1. 非法分支名（含 `-`、`..`、`.lock`）拦截返 `400`；普通用户与仅子目录负责人切换返 `403`；存在活跃任务返 `409`。<br>2. 切分支后共享 `repositories` 表零改动，存量文档修订与 `locked` 槽位完整保留，已发布文档若提交不同即刻标出漂移。<br>3. 浅克隆工作区与后续生成/模块扫描/远端巡检均正确命中新分支。 |
 
 ### 子域 E：P1/P2 进阶演进特性
 
@@ -168,6 +170,7 @@
 | **SC-18** | M10 | **层级文档汇总、模块摘要漂移联动与模块导航发布** | 整仓 `system-architecture` 消费 `order` 摘要发布；随后 `order` 发布新修订更新 `overview_boundaries`。 | 1. 整仓仅引用 `order` 摘要的章节标记 `module_digest_changed` 且不被 `EvaluateRepoCodeDrift` 覆盖；<br>2. 发布产物自动附带「模块导航」节、动态深度 `parent_doc` 与两级 `README.md`。 |
 | **SC-19** | M11 | **`DocType` 蓝图双模往返、源码防误改与 `Spec Drift` 静态骨架零误报** | 1. 在融合编辑器中对内置模板切换「可视化编排 ↔ 参数化源码 DSL v1」，调整槽位顺序、修改单章标题并为某槽位开启 `enable_source_tools: true`；<br>2. 在源码模式输入拼写错误键 `token_budegt` 或删改既有 `slot_id`。 | 1. 编译产出的 `slots[]` 顺序、`template.md` 占位符及 `## 标题`、顶层 `ir_facets` 并集 100% 同步；已发布文档仅被改标题/工具开关的槽位标记 `slot_modified`，其余兄弟非锁定槽位零 `prompt_changed` 误报；<br>2. 拼写错误键精确报行号 `error` 并阻断保存；删改既有 `slot_id` 触发底部风险徽标与 `useConfirm` 确认门禁。 |
 | **SC-20** | M12 | **审阅批注篮综合精修、原地微调原子采纳、证据无损与持久记忆回流** | 1. 在画布划选跨行内标签文本建 `#1` 局部批注、在 Mermaid 块加 `#2` 批注、添 `#3` 全局规范（`persist_for_regen=true`）及指向 `locked` 章节的 `#4` 批注，对 `locked` 章节发起 `Ask` 查证后再点击「一键综合精修」；<br>2. 在画布原地切换「渲染态对比」与「微调正文」暂存 `#2` 修改，勾选部分提案提交 `/apply`（同时验证未改章节含 `module_doc` 锚点）；<br>3. 触发重生成/增量刷新/单槽位重试。 | 1. `Ask` 放行 `locked` 章节查证且零提案落库；综合精修流式 `delta` 零 JSON 噪音，`#4` 被归入 `advisory_locked` 且原文零篡改；<br>2. `/apply` 单事务生成 1 个 `Revision`，未改/未选槽位 SHA256 不变且 `module_doc` 等证据锚点无损保留，已采纳批注转 `resolved`，未采纳或被 `superseded` 批注自动回退 `open`；<br>3. 三条 L2 生成路径均准确将 `#3` 注入非锁定槽位尾部且稳定前缀字节不变。 |
+| **SC-21** | M13 | **单仓目标分支切换、浅克隆切分支与全链路一致性** | 1. 仓库默认分支为 `main`，已发布文档且仅在 `develop` 新增一级目录 `payments/`；<br>2. 仅子目录负责人与仓库负责人分别发起切分支至 `develop`（及存在活跃任务时 / 目标分支不存在时）；<br>3. 切换后触发模块扫描、生成任务、覆盖查询与远端漂移巡检，随后切回默认分支 `main`。 | 1. 仅子目录负责人返 `403`；活跃任务中返 `409`；不存在分支返 `400`；<br>2. 仓库负责人切至 `develop` 后共享表 `repositories.branch` 不变、存量文档无损保留且 `ref_name="develop"`、已发布文档即时标为 `Code Drift`；<br>3. 浅克隆工作区切换并扫描出 `payments` 模块，生成/巡检/覆盖页统一使用 `develop`，切回 `main` 后 `is_branch_overridden` 归为 `false`。 |
 
 ---
 
@@ -176,7 +179,7 @@
 - **Non-Goal 1（主数据自治禁令）**：不自建用户中心、部门树或代码仓主表，统一复用共享库 `users`、`departments`、`repositories` 与 `architecture_elements`。
 - **Non-Goal 2（P0 语言边界）**：P0 不承诺 Go、TypeScript/React、Rust 等语言的高精度抽取，此类文件只做目录与基础文本摘要；C/C++ 不承诺宏展开与条件编译求值。
 - **Non-Goal 3（P0 Git 凭据与写操作边界）**：P0 不建设凭据保险库，不向远程仓库推分支/提 MR，不接入 Webhook（以 `F-25` 轮询替代）。
-- **Non-Goal 4（P0 跨仓与多分支边界）**：P0 不做跨多个独立仓库的联合生成，前端仅提供主干分支视图（数据模型预留 `ref_name`）。
+- **Non-Goal 4（P0 跨仓与多分支并存边界）**：P0 不做跨多个独立仓库的联合生成，且同一仓库同一时刻仅跟踪 1 条活跃目标分支（支持通过 `F-34` 切换跟踪分支，数据模型预留 `ref_name` 供 P1 `F-20` 支持多分支并存基线）。
 - **Non-Goal 5（AI 驱动边界）**：P0 不集成 Claude Code / OpenCode / Codex 等本地 CLI 子进程调度器，统一通过 Go OpenAI Compatible HTTP/SSE 客户端调用。
 - **Non-Goal 6（表前缀与 UI 技术栈红线）**：不创建无 `archdoc_` 前缀的裸表；前端不引入 Ant Design / Material UI 等重型组件库，全面使用 `@code/common` 与原生 Vanilla CSS。
 - **Non-Goal 7（`DocType` 零任意脚本红线）**：`DocType` 的范围裁剪、槽位结构与校验策略全部采用**声明式配置**，严禁引入可执行脚本。

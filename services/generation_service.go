@@ -19,6 +19,7 @@ import (
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/verifier"
+	"code-common/backend/gitsync"
 	commonModels "code-common/backend/models"
 
 	"gorm.io/datatypes"
@@ -376,12 +377,9 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 		return nil, fmt.Errorf("%w: doc_types 不能为空", ErrInvalidTaskParam)
 	}
 
-	refName := strings.TrimSpace(req.RefName)
-	if refName == "" {
-		refName = strings.TrimSpace(repo.Branch)
-	}
-	if refName == "" {
-		refName = "master"
+	refName, err := o.resolveAndValidateTaskBranch(ctx, repo, req.RefName)
+	if err != nil {
+		return nil, err
 	}
 
 	docTypesJSON, _ := json.Marshal(dedupSlugs)
@@ -552,6 +550,37 @@ func (o *GenerationOrchestrator) GetTaskScopesForCancel(ctx context.Context, tas
 		}
 	}
 	return task.RepoID, scopes, nil
+}
+
+func (o *GenerationOrchestrator) resolveEffectiveBranch(ctx context.Context, repo *commonModels.Repository) string {
+	targetBranch := ""
+	if o != nil && o.moduleRepo != nil && repo != nil {
+		if policy, err := o.moduleRepo.GetPolicy(ctx, repo.ID); err == nil && policy != nil {
+			targetBranch = policy.TargetBranch
+		}
+	}
+	if repo == nil {
+		return models.ResolveEffectiveBranch("", targetBranch)
+	}
+	return models.ResolveEffectiveBranch(repo.Branch, targetBranch)
+}
+
+func (o *GenerationOrchestrator) resolveAndValidateTaskBranch(ctx context.Context, repo *commonModels.Repository, rawRefName string) (string, error) {
+	effective := o.resolveEffectiveBranch(ctx, repo)
+	reqRef := strings.TrimSpace(rawRefName)
+	if reqRef == "" {
+		return effective, nil
+	}
+	if err := gitsync.ValidateBranchName(reqRef); err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidTaskParam, err.Error())
+	}
+	if reqRef == effective {
+		return effective, nil
+	}
+	if effective == "master" && reqRef == "main" {
+		return reqRef, nil
+	}
+	return "", fmt.Errorf("%w: 当前仓库已绑定跟踪分支 %q，请先通过单仓分支切换后再基于 %q 生成", ErrInvalidTaskParam, effective, reqRef)
 }
 
 func resolveUserDisplayName(u commonModels.User) string {
