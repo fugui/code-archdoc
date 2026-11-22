@@ -293,11 +293,12 @@ type DocGenResult struct {
 1. **双模式模型映射（兼容现有 `archdoc_llm_configs` 零门槛开箱即用）**：
    - **模式 A（默认自动桥接模式 — 当 `LLMConfig.OpenCodeModel == ""`）**：
      - 调用 `os.MkdirTemp("", "archdoc-oc-*")` 创建权限为 `0700` 的本次会话专属隔离根目录 `<tmpDir>`（函数退出时由 `defer os.RemoveAll(tmpDir)` 强制销毁）；
-     - 在 `<tmpDir>/opencode.json`（权限 `0600`）中动态写入 `@ai-sdk/openai-compatible` Provider `archdoc_ep`（注入 `baseURL`、`apiKey`、`headers.User-Agent` 及 `models.<model_name>`）与专属只读 Agent `archdoc-readonly-docgen`；
-     - 启动参数固定为：`opencode run --format json --pure --agent archdoc-readonly-docgen --model archdoc_ep/<model_name> --dir <WorkDir> ...`；
+     - 根据 `Probe()` 识别的 CLI 主版本自适应写入 `<tmpDir>/opencode.json`（权限 `0600`）：
+       - **OpenCode v1.x**：写入 `provider.archdoc_ep`（`npm: "@ai-sdk/openai-compatible"`, `options`, `models`）与 `agent.archdoc-readonly-docgen`（`tools` + `permission`），启动参数：`opencode run --format json --pure --agent archdoc-readonly-docgen --model archdoc_ep/<model_name> --dir <WorkDir> ...`；
+       - **OpenCode v2.x+**：写入 `"update": "disable"`、原生 `providers.archdoc_ep`（`package: "aisdk:@ai-sdk/openai-compatible"`, `settings`, `headers`, `models`）与原生有序 `agents.archdoc-readonly-docgen.permissions` 数组，启动参数：`opencode run --standalone --format json --agent archdoc-readonly-docgen --model archdoc_ep/<model_name> --archived --title archdoc-<slug> ... -- <prompt>`（通过 `cmd.Dir` 与 `PWD=<WorkDir>` 双重锁定工作目录）；
      - **优势**：管理员无需登录服务器手工维护 `~/.config/opencode/` 或 `auth.json`；**明文 API Key 仅存在于受 `0600` 保护的短命临时文件中，绝对不会出现在 `ps` 命令行参数（`argv`）、环境变量或系统日志中**。
    - **模式 B（可选原生 Provider 直连 — 当 `LLMConfig.OpenCodeModel != ""`）**：
-     - 直接以 `--model <OpenCodeModel>` 启动，向临时 `<tmpDir>/opencode.json` 写入只读 Agent 配置，并将宿主机 `~/.local/share/opencode/auth.json`（若存在）拷贝为 `<tmpDir>/xdg_data/opencode/auth.json`（权限 `0600`）。
+     - 直接以 `--model <OpenCodeModel>` 启动，向临时 `<tmpDir>/opencode.json` 写入只读 Agent 配置（v2.x 下额外从宿主机配置按 `<provider>` 精准提取对应 `providers[<provider>]` 条目，严禁拷贝无关 `agents`/`plugins`），并将宿主机 `~/.local/share/opencode/auth.json`（若存在）拷贝为 `<tmpDir>/xdg_data/opencode/auth.json`（权限 `0600`）。
 2. **全套环境变量与 XDG 状态隔离**：
    - 子进程环境仅继承白名单基础系统变量（`PATH`、`HOME`、`USER`、`LANG`、`LC_ALL`、`TMPDIR`、`SSL_CERT_FILE`、`SSL_CERT_DIR`、`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`），并显式覆写：
      - `OPENCODE_CONFIG=<tmpDir>/opencode.json`
@@ -306,29 +307,63 @@ type DocGenResult struct {
      - `XDG_DATA_HOME=<tmpDir>/xdg_data`
      - `XDG_STATE_HOME=<tmpDir>/xdg_state`
      - `XDG_CACHE_HOME=<tmpDir>/xdg_cache`
-     - `CI=true`、`NO_COLOR=1`、`TERM=dumb`（彻底禁用交互式 TUI 确认阻塞与 ANSI 颜色控制符，且使每个会话拥有独立 SQLite 库，根治多进程并发 `database is locked`）。
+     - `CI=true`、`NO_COLOR=1`、`TERM=dumb`（彻底禁用交互式 TUI 确认阻塞与 ANSI 颜色控制符，且使每个会话拥有独立 SQLite 库，根治多进程并发 `database is locked`）；
+     - `OPENCODE_DISABLE_PROJECT_CONFIG=1`、`OPENCODE_CONFIG_PROJECT_DISABLE=1`、`OPENCODE_DISABLE_CLAUDE_CODE=1`、`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1`、`OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1`、`OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_DISABLE_MODELS_FETCH=1`、`OPENCODE_FILEWATCHER_DISABLE=1`、`OPENCODE_DISABLE_FILEWATCHER=1` 与 `PWD=<WorkDir>`（v2.x 替代 `--pure` 与 `--dir` 实现严格项目隔离与工作目录对齐）。
 3. **强制进程级只读权限矩阵（不修改宿主机全局配置）**：
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "agent": {
-       "archdoc-readonly-docgen": {
-         "description": "Code-Archdoc Read-Only Documentation Reverse-Engineering Agent",
-         "tools": {
-           "read": true, "grep": true, "glob": true, "list": true,
-           "edit": false, "write": false, "patch": false, "bash": false, "webfetch": false
-         },
-         "permission": {
-           "*": "deny",
-           "read": "allow", "grep": "allow", "glob": "allow", "list": "allow",
-           "edit": "deny", "write": "deny", "bash": "deny", "webfetch": "deny",
-           "external_directory": "deny"
+   - **OpenCode v1.x** (`agent.archdoc-readonly-docgen`)：
+     ```json
+     {
+       "$schema": "https://opencode.ai/config.json",
+       "agent": {
+         "archdoc-readonly-docgen": {
+           "description": "Code-Archdoc Read-Only Documentation Reverse-Engineering Agent",
+           "tools": {
+             "read": true, "grep": true, "glob": true, "list": true,
+             "edit": false, "write": false, "patch": false, "bash": false, "webfetch": false
+           },
+           "permission": {
+             "*": "deny",
+             "read": "allow", "grep": "allow", "glob": "allow", "list": "allow",
+             "edit": "deny", "write": "deny", "bash": "deny", "webfetch": "deny",
+             "external_directory": "deny"
+           }
          }
        }
      }
-   }
-   ```
-   - 严禁传入 `--auto` 或 `--thinking`，通过 `--pure` 禁用外部不可控插件，确保 OpenCode 绝不执行 Shell、外网请求、越界目录访问或修改源码工作区。
+     ```
+   - **OpenCode v2.x+** (`agents.archdoc-readonly-docgen.permissions`，因 v2 采用 `findLast` 后匹配优先，`* : deny` 必须位于首位，随后依次放行只读工具并覆写禁用 `*.env`/`edit`/`shell`/`webfetch`/`websearch`/`subagent`/`skill`/`browser`/`question`/`external_directory`)：
+     ```json
+     {
+       "$schema": "https://opencode.ai/config.json",
+       "update": "disable",
+       "agents": {
+         "archdoc-readonly-docgen": {
+           "description": "Code-Archdoc Read-Only Documentation Reverse-Engineering Agent",
+           "mode": "primary",
+           "permissions": [
+             {"action": "*", "resource": "*", "effect": "deny"},
+             {"action": "read", "resource": "*", "effect": "allow"},
+             {"action": "read", "resource": "*.env", "effect": "deny"},
+             {"action": "read", "resource": "*.env.*", "effect": "deny"},
+             {"action": "read", "resource": "*.env.example", "effect": "allow"},
+             {"action": "grep", "resource": "*", "effect": "allow"},
+             {"action": "glob", "resource": "*", "effect": "allow"},
+             {"action": "list", "resource": "*", "effect": "allow"},
+             {"action": "edit", "resource": "*", "effect": "deny"},
+             {"action": "shell", "resource": "*", "effect": "deny"},
+             {"action": "webfetch", "resource": "*", "effect": "deny"},
+             {"action": "websearch", "resource": "*", "effect": "deny"},
+             {"action": "subagent", "resource": "*", "effect": "deny"},
+             {"action": "skill", "resource": "*", "effect": "deny"},
+             {"action": "browser", "resource": "*", "effect": "deny"},
+             {"action": "question", "resource": "*", "effect": "deny"},
+             {"action": "external_directory", "resource": "*", "effect": "deny"}
+           ]
+         }
+       }
+     }
+     ```
+   - 严禁传入 `--auto` 或 `--thinking`，通过 `--pure`（v1）或全套 `OPENCODE_DISABLE_*` + `--standalone`（v2）禁用外部不可控插件与宿主机服务，确保 OpenCode 绝不执行 Shell、外网请求、越界目录访问或修改源码工作区。
 
 ### 5.3 单文档单会话执行、进程组治理、防重标题与 `--session` 断点续跑
 
@@ -478,13 +513,13 @@ opencode:
 1. **明示安全权衡（OpenCode 入参边界 vs Native 数据栅栏）**：
    - **差异事实**：Native 引擎在进程内对每次送入 LLM 的源码切片与工具输出均执行 `pkg/security.SecretRedactor` 三级脱敏，并包裹 128-bit 随机 `nonce` 的 `<untrusted_repo_data>` 防注入栅栏；而 OpenCode 通过内置 `read`/`grep`/`glob` 直接读取本地沙箱目录文件，**不会经过 `SecretRedactor` 入参脱敏与 `nonce` 栅栏**，从而直接将沙箱源码发送至所配置的内网模型服务端。
    - **纵深缓解措施**：
-     1. **只读沙箱硬隔离**：OpenCode Agent 权限策略白名单仅开放 `read`/`grep`/`glob`/`list`，显式 `deny` 所有 `edit`/`write`/`patch`/`bash`/`webfetch`/`external_directory`，且工作目录严格经 `SafeJoin` 锁定于当前目标作用域；
+     1. **只读沙箱硬隔离**：OpenCode Agent 权限策略白名单仅开放 `read`/`grep`/`glob`/`list`，显式 `deny` 所有 `edit`/`write`/`patch`/`bash`/`webfetch`/`websearch`/`subagent`/`skill`/`browser`/`question`/`external_directory` 及 `*.env` 敏感文件，且工作目录严格经 `SafeJoin` 锁定于当前目标作用域；
      2. **输出侧硬阻断不妥协**：无论上游由哪个引擎生成，全部产出必须经过独立于 LLM 的 **Verifier 四重门禁（Gate 4 `SecretScanner`）**，一旦命中疑似明文密码、私钥或高熵 Token 立即标 `can_approve = false` 并由发布接口返回 `422 VERIFIER_BLOCKED` 硬阻断；
      3. **显式前端知情选择**：高安全合规或严格要求外发前入参脱敏的仓库，管理员与研发可在新建任务时选择 `Native` 引擎或通过 `config.yaml` 关闭 `opencode.enabled`。
 2. **临时凭据零泄漏**：
    - 模式 A 生成的含明文 `apiKey` 的 `opencode.json` 仅写入 `0700` 临时目录下权限 `0600` 的随机文件，进程退出后立即在 `defer` 中 `os.RemoveAll` 彻底销毁；绝不写入仓库工作区、命令行参数（`argv`）、环境变量、系统日志或持久化 DB 调试字段。
 3. **命令行与环境变量防注入**：
-   - `opencode` 进程一律通过 `exec.Command(binary, args...)` 参数数组直接调起（禁止 `sh -c`）；`--dir` 仅传递已通过 `NormalizeSubdir` + `SafeJoin` 校验的物理路径；日志仅输出经摘要脱敏后的参数概要。
+   - `opencode` 进程一律通过 `exec.Command(binary, args...)` 参数数组直接调起（禁止 `sh -c`）；目标工作目录（v1 通过 `--dir` 与 `cmd.Dir`，v2 通过 `cmd.Dir` 与 `PWD`）仅传递已通过 `NormalizeSubdir` + `SafeJoin` 校验的物理路径；v2 强制注入 `--standalone` 与全套 `OPENCODE_DISABLE_*` 隔离环境变量，不连接宿主机后台服务或读取宿主机/目标仓无关配置；日志仅输出经摘要脱敏后的参数概要。
 4. **`make lint-arch` 架构红线守护**：
    - `pkg/opencode/` 严禁导入 `code-archdoc/models`、`services`、`handlers`、`gorm` 或 `gin`；
    - `pkg/opencode/` 与 `handlers/` 严禁直接调用 `gitsync.Sync`，所有沙箱同步、工作区锁与租约管理继续收口在 `services.SnapshotService` 与 `services.ActiveLeaseManager`。

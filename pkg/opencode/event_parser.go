@@ -24,6 +24,7 @@ type jsonlEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	Error     *struct {
+		Type    string `json:"type"`
 		Name    string `json:"name"`
 		Message string `json:"message"`
 		Data    *struct {
@@ -133,6 +134,8 @@ func ParseEventStream(stdout []byte) ParsedEventStream {
 					msg = strings.TrimSpace(ev.Error.Message)
 				} else if strings.TrimSpace(ev.Error.Name) != "" {
 					msg = strings.TrimSpace(ev.Error.Name)
+				} else if strings.TrimSpace(ev.Error.Type) != "" {
+					msg = strings.TrimSpace(ev.Error.Type)
 				}
 			}
 			if msg != "" {

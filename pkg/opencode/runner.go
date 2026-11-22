@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -312,6 +313,28 @@ func parseOpenCodeVersion(raw string) string {
 	return ""
 }
 
+// isOpenCodeV2 判断探测到的 OpenCode CLI 主版本号是否 >= 2。
+// v2.x 移除了 --pure / --dir，并要求 --standalone 与新版 agents.permissions/providers 结构；空串或非数字版本按 v1 处理以保兼容。
+func isOpenCodeV2(version string) bool {
+	v := strings.TrimSpace(version)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	if v == "" {
+		return false
+	}
+	if idx := strings.IndexByte(v, '.'); idx >= 0 {
+		v = v[:idx]
+	}
+	end := 0
+	for end < len(v) && v[end] >= '0' && v[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return false
+	}
+	major, err := strconv.Atoi(v[:end])
+	return err == nil && major >= 2
+}
+
 // GenerateDocument 在受限只读沙箱工作目录内执行单文档 OpenCode 会话（含至多 1 次 --session 断点续跑）。
 func (r *Runner) GenerateDocument(ctx context.Context, req DocGenRequest) (*DocGenResult, error) {
 	if ctx == nil {
@@ -331,6 +354,7 @@ func (r *Runner) GenerateDocument(ctx context.Context, req DocGenRequest) (*DocG
 	if !probe.Available || probe.BinaryPath == "" {
 		return nil, &ClassifiedError{Class: ErrorClassCLINotFound, Message: probe.Reason}
 	}
+	isV2 := isOpenCodeV2(probe.Version)
 
 	cfg := r.currentConfig()
 	timeoutSec := req.TimeoutSeconds
@@ -356,25 +380,32 @@ func (r *Runner) GenerateDocument(ctx context.Context, req DocGenRequest) (*DocG
 	}
 
 	// 在 0700 独立隔离根目录下创建本次会话的 XDG 与 0600 opencode.json，退出时彻底销毁
-	sessEnv, err := prepareSessionEnv(req)
+	sessEnv, err := prepareSessionEnv(req, isV2)
 	if err != nil {
 		return nil, &ClassifiedError{Class: ErrorClassUnknown, Message: "初始化 OpenCode 隔离会话环境失败", Cause: err}
 	}
 	defer sessEnv.Cleanup()
 
+	sessionTitle := "archdoc-docgen"
+	if slug := strings.TrimSpace(req.DocTypeSlug); slug != "" {
+		sessionTitle = "archdoc-" + slug
+	}
+
 	startedAt := time.Now()
 	promptText := BuildDocumentPrompt(req)
 
 	outcome1 := runOpenCodeProcess(ctx, processRunSpec{
-		BinaryPath:  probe.BinaryPath,
-		WorkDir:     req.WorkDir,
-		ModelArg:    sessEnv.ModelArg,
-		PromptText:  promptText,
-		PromptName:  "prompt-attempt1.md",
-		Env:         sessEnv.EnvList,
-		SessionDir:  sessEnv.RootDir,
-		Timeout:     time.Duration(timeoutSec) * time.Second,
-		IdleTimeout: time.Duration(idleSec) * time.Second,
+		BinaryPath:   probe.BinaryPath,
+		WorkDir:      req.WorkDir,
+		ModelArg:     sessEnv.ModelArg,
+		PromptText:   promptText,
+		PromptName:   "prompt-attempt1.md",
+		SessionTitle: sessionTitle,
+		IsV2:         isV2,
+		Env:          sessEnv.EnvList,
+		SessionDir:   sessEnv.RootDir,
+		Timeout:      time.Duration(timeoutSec) * time.Second,
+		IdleTimeout:  time.Duration(idleSec) * time.Second,
 	})
 
 	parsed1 := ParseEventStream(outcome1.Stdout)
@@ -449,16 +480,18 @@ func (r *Runner) GenerateDocument(ctx context.Context, req DocGenRequest) (*DocG
 	result.Continuations = 1
 
 	outcome2 := runOpenCodeProcess(ctx, processRunSpec{
-		BinaryPath:  probe.BinaryPath,
-		WorkDir:     req.WorkDir,
-		ModelArg:    sessEnv.ModelArg,
-		PromptText:  contPrompt,
-		PromptName:  "prompt-attempt2.md",
-		SessionID:   result.SessionID,
-		Env:         sessEnv.EnvList,
-		SessionDir:  sessEnv.RootDir,
-		Timeout:     contBudget,
-		IdleTimeout: time.Duration(idleSec) * time.Second,
+		BinaryPath:   probe.BinaryPath,
+		WorkDir:      req.WorkDir,
+		ModelArg:     sessEnv.ModelArg,
+		PromptText:   contPrompt,
+		PromptName:   "prompt-attempt2.md",
+		SessionID:    result.SessionID,
+		SessionTitle: sessionTitle,
+		IsV2:         isV2,
+		Env:          sessEnv.EnvList,
+		SessionDir:   sessEnv.RootDir,
+		Timeout:      contBudget,
+		IdleTimeout:  time.Duration(idleSec) * time.Second,
 	})
 
 	parsed2 := ParseEventStream(outcome2.Stdout)

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -21,16 +22,18 @@ const (
 )
 
 type processRunSpec struct {
-	BinaryPath  string
-	WorkDir     string
-	ModelArg    string
-	PromptText  string
-	PromptName  string
-	SessionID   string
-	Env         []string
-	SessionDir  string
-	Timeout     time.Duration
-	IdleTimeout time.Duration
+	BinaryPath   string
+	WorkDir      string
+	ModelArg     string
+	PromptText   string
+	PromptName   string
+	SessionID    string
+	SessionTitle string
+	IsV2         bool
+	Env          []string
+	SessionDir   string
+	Timeout      time.Duration
+	IdleTimeout  time.Duration
 }
 
 type processOutcome struct {
@@ -90,6 +93,30 @@ func buildProcessArgs(spec processRunSpec) ([]string, error) {
 			return nil, fmt.Errorf("落盘大 Prompt 至 %s 失败: %w", promptFilePath, err)
 		}
 		promptMsg = promptFileMessage
+	}
+
+	if spec.IsV2 {
+		args := []string{
+			"run",
+			"--standalone",
+			"--format", "json",
+			"--agent", ReadOnlyAgentName,
+			"--model", spec.ModelArg,
+		}
+		if spec.SessionID == "" {
+			args = append(args, "--archived")
+			if title := strings.TrimSpace(spec.SessionTitle); title != "" {
+				args = append(args, "--title", title)
+			}
+		}
+		if promptFilePath != "" {
+			args = append(args, "--file", promptFilePath)
+		}
+		if spec.SessionID != "" {
+			args = append(args, "--session", spec.SessionID)
+		}
+		args = append(args, "--", promptMsg)
+		return args, nil
 	}
 
 	args := []string{
