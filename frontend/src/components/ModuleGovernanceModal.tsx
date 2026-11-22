@@ -21,6 +21,7 @@ import {
 } from '../api/repos';
 import type { ModuleDiscoveryStrategy, ModuleStatus, RepoModuleVO } from '../types';
 import { formatApiError } from '../utils/errorMessages';
+import { validateRequiredInt } from '../utils/numberInput';
 import {
   MODULE_STRATEGY_OPTIONS,
   formatModuleSourceLabel,
@@ -75,7 +76,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
   const [migrating, setMigrating] = useState<boolean>(false);
 
   const [strategy, setStrategy] = useState<ModuleDiscoveryStrategy>('merged');
-  const [minFiles, setMinFiles] = useState<number>(3);
+  const [minFiles, setMinFiles] = useState<string>('3');
   const [excludeGlobsText, setExcludeGlobsText] = useState<string>('');
   const [modules, setModules] = useState<RepoModuleVO[]>([]);
   const [selectedSubdirs, setSelectedSubdirs] = useState<string[]>([]);
@@ -105,7 +106,7 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
     try {
       const res = await listRepoModules(target.repoId);
       setStrategy(normalizeModuleStrategy(res.policy.strategy));
-      setMinFiles(res.policy.min_effective_files);
+      setMinFiles(String(res.policy.min_effective_files));
       setExcludeGlobsText((res.policy.exclude_globs || []).join(', '));
       const nextModules = Array.isArray(res.modules) ? res.modules : [];
       setModules(nextModules);
@@ -127,6 +128,15 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
 
   const handleSavePolicy = async () => {
     if (!target) return;
+    const minFilesRes = validateRequiredInt(minFiles, {
+      label: '最小有效源码文件数',
+      min: 1,
+      max: 1000,
+    });
+    if (!minFilesRes.ok) {
+      showToast(minFilesRes.error, 'error');
+      return;
+    }
     const globs = excludeGlobsText
       .split(/[\n,]/)
       .map((s) => s.trim())
@@ -135,11 +145,11 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
     try {
       const updated = await updateRepoModulePolicy(target.repoId, {
         strategy,
-        min_effective_files: Math.max(1, minFiles),
+        min_effective_files: minFilesRes.value,
         exclude_globs: globs,
       });
       setStrategy(normalizeModuleStrategy(updated.strategy));
-      setMinFiles(updated.min_effective_files);
+      setMinFiles(String(updated.min_effective_files));
       setExcludeGlobsText((updated.exclude_globs || []).join(', '));
       showToast('模块发现策略已更新，点击「重新扫描模块」可立即生效', 'success');
       onChanged?.();
@@ -323,12 +333,14 @@ export const ModuleGovernanceModal: React.FC<ModuleGovernanceModalProps> = ({
               <span className="code-archdoc-field-label">最小有效源码文件数</span>
               <input
                 type="number"
+                inputMode="numeric"
                 min={1}
                 max={1000}
+                step={1}
                 className="code-input"
                 value={minFiles}
                 disabled={!target?.canWrite}
-                onChange={(e) => setMinFiles(Math.max(1, Number.parseInt(e.target.value || '1', 10) || 1))}
+                onChange={(e) => setMinFiles(e.target.value)}
               />
             </label>
 

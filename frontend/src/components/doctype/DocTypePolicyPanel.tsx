@@ -20,6 +20,7 @@ import {
   FACET_CATALOG,
   LIGHT_CONTRACT_REPO_FACETS,
 } from '../../utils/docTypeBlueprint';
+import IntegerInput from '../common/IntegerInput';
 
 export interface DocTypePolicyPanelProps {
   isCreate: boolean;
@@ -236,13 +237,12 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
 
         <div className="code-archdoc-form-field">
           <label className="code-archdoc-field-label">单任务超时 (秒)</label>
-          <input
-            type="number"
+          <IntegerInput
             className="code-archdoc-input"
             min={30}
             max={1800}
             value={timeoutSeconds}
-            onChange={(e) => onTimeoutSecondsChange(Number.parseInt(e.target.value, 10) || 300)}
+            onChange={onTimeoutSecondsChange}
           />
         </div>
 
@@ -250,6 +250,8 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
           <label className="code-archdoc-field-label">全篇输出 Token 上限（可选）</label>
           <input
             type="number"
+            inputMode="numeric"
+            step={1}
             className="code-archdoc-input"
             min={500}
             max={64000}
@@ -488,16 +490,15 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
                   </div>
                   <div className="code-archdoc-form-field">
                     <label className="code-archdoc-field-label">单模块摘要最大字符 (max_chars)</label>
-                    <input
-                      type="number"
+                    <IntegerInput
                       className="code-archdoc-input"
                       min={100}
                       max={4000}
                       value={moduleDigestSource.max_chars ?? 600}
-                      onChange={(e) =>
+                      onChange={(next) =>
                         onModuleDigestSourceChange({
                           ...moduleDigestSource,
-                          max_chars: Number.parseInt(e.target.value, 10) || 600,
+                          max_chars: next,
                         })
                       }
                     />
@@ -553,32 +554,30 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
               <div className="code-archdoc-form-grid">
                 <div className="code-archdoc-form-field">
                   <label className="code-archdoc-field-label">Mermaid 节点上限 (max_mermaid_nodes)</label>
-                  <input
-                    type="number"
+                  <IntegerInput
                     className="code-archdoc-input"
                     min={5}
                     max={100}
                     value={verifyPolicy.max_mermaid_nodes ?? 35}
-                    onChange={(e) =>
+                    onChange={(next) =>
                       onVerifyPolicyChange({
                         ...verifyPolicy,
-                        max_mermaid_nodes: Number.parseInt(e.target.value, 10) || 35,
+                        max_mermaid_nodes: next,
                       })
                     }
                   />
                 </div>
                 <div className="code-archdoc-form-field">
                   <label className="code-archdoc-field-label">Mermaid 连边上限 (max_mermaid_edges)</label>
-                  <input
-                    type="number"
+                  <IntegerInput
                     className="code-archdoc-input"
                     min={5}
                     max={200}
                     value={verifyPolicy.max_mermaid_edges ?? 60}
-                    onChange={(e) =>
+                    onChange={(next) =>
                       onVerifyPolicyChange({
                         ...verifyPolicy,
-                        max_mermaid_edges: Number.parseInt(e.target.value, 10) || 60,
+                        max_mermaid_edges: next,
                       })
                     }
                   />
@@ -592,16 +591,15 @@ export const DocTypePolicyPanel: React.FC<DocTypePolicyPanelProps> = ({
               <div className="code-archdoc-form-grid">
                 <div className="code-archdoc-form-field">
                   <label className="code-archdoc-field-label">最大目录深度 (max_depth)</label>
-                  <input
-                    type="number"
+                  <IntegerInput
                     className="code-archdoc-input"
                     min={1}
                     max={32}
                     value={scopeProfile.max_depth ?? 12}
-                    onChange={(e) =>
+                    onChange={(next) =>
                       onScopeProfileChange({
                         ...scopeProfile,
-                        max_depth: Number.parseInt(e.target.value, 10) || 12,
+                        max_depth: next,
                       })
                     }
                   />

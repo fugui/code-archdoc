@@ -53,6 +53,7 @@ import {
   type DocBlueprint,
 } from '../../utils/docTypeBlueprint';
 import { formatApiError } from '../../utils/errorMessages';
+import { validateIntValue, validateOptionalInt } from '../../utils/numberInput';
 import { formatDateTime } from '../../utils/urlQuery';
 import BlueprintSourceEditor from './BlueprintSourceEditor';
 import BlueprintVisualEditor from './BlueprintVisualEditor';
@@ -274,7 +275,13 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
         setIsActive(detail.is_active);
 
         const loadedSlots = Array.isArray(detail.slots)
-          ? detail.slots.map((s) => ({ ...s, ir_facets: [...(s.ir_facets || [])] }))
+          ? detail.slots.map((s) => ({
+              ...s,
+              ir_facets: [...(s.ir_facets || [])],
+              ...(s.enable_source_tools && (!s.max_tool_rounds || s.max_tool_rounds <= 0)
+                ? { max_tool_rounds: 4 }
+                : {}),
+            }))
           : [];
         const { blueprint: decompiledBp, diagnostics } = decompileToBlueprint(
           detail.template_md || '',
@@ -532,6 +539,56 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
     if (Array.from(category.trim()).length > 32) {
       return '文档分组 (category) 长度不能超过 32 个字符';
     }
+    const timeoutErr = validateIntValue(timeoutSeconds, {
+      label: '单任务超时 (秒)',
+      min: 30,
+      max: 1800,
+    });
+    if (timeoutErr) {
+      return timeoutErr;
+    }
+    const maxOutRes = validateOptionalInt(maxOutputTokens, {
+      label: '全篇输出 Token 上限',
+      min: 500,
+      max: 64000,
+    });
+    if (!maxOutRes.ok) {
+      return maxOutRes.error;
+    }
+    if (contextInputs.includes('module_digests')) {
+      const digestMaxCharsErr = validateIntValue(moduleDigestSource.max_chars ?? 600, {
+        label: '单模块摘要最大字符 (max_chars)',
+        min: 100,
+        max: 4000,
+      });
+      if (digestMaxCharsErr) {
+        return digestMaxCharsErr;
+      }
+    }
+    const nodesErr = validateIntValue(verifyPolicy.max_mermaid_nodes ?? 35, {
+      label: 'Mermaid 节点上限 (max_mermaid_nodes)',
+      min: 5,
+      max: 100,
+    });
+    if (nodesErr) {
+      return nodesErr;
+    }
+    const edgesErr = validateIntValue(verifyPolicy.max_mermaid_edges ?? 60, {
+      label: 'Mermaid 连边上限 (max_mermaid_edges)',
+      min: 5,
+      max: 200,
+    });
+    if (edgesErr) {
+      return edgesErr;
+    }
+    const depthErr = validateIntValue(scopeProfile.max_depth ?? 12, {
+      label: '最大目录深度 (max_depth)',
+      min: 1,
+      max: 32,
+    });
+    if (depthErr) {
+      return depthErr;
+    }
     if (effectiveTopFacets.length === 0) {
       return '请至少订阅 1 个 Code IR 分片（在任意章节槽位勾选分片，或切换为手动模式勾选）';
     }
@@ -549,6 +606,32 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
       seen.add(sl.slot_id);
       if (!sl.title.trim()) {
         return `槽位 "${sl.slot_id}" 缺少章节标题`;
+      }
+      const budgetErr = validateIntValue(sl.token_budget, {
+        label: `槽位 "${sl.slot_id}" 的 Token 预算 (token_budget)`,
+        min: 500,
+        max: 64000,
+      });
+      if (budgetErr) {
+        return budgetErr;
+      }
+      const minCharsErr = validateIntValue(sl.min_chars, {
+        label: `槽位 "${sl.slot_id}" 的最少有效字符 (min_chars)`,
+        min: 0,
+        max: 10000,
+      });
+      if (minCharsErr) {
+        return minCharsErr;
+      }
+      if (sl.enable_source_tools) {
+        const roundsErr = validateIntValue(sl.max_tool_rounds ?? 4, {
+          label: `槽位 "${sl.slot_id}" 的源码工具最大轮次`,
+          min: 1,
+          max: 6,
+        });
+        if (roundsErr) {
+          return roundsErr;
+        }
       }
       if (!effectiveTemplateMD.includes(`<!-- slot:${sl.slot_id} -->`)) {
         return `编译产物缺少槽位标记 <!-- slot:${sl.slot_id} -->`;
@@ -592,12 +675,19 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
       return;
     }
 
-    const parsedMaxOut = maxOutputTokens.trim()
-      ? Number.parseInt(maxOutputTokens.trim(), 10)
-      : undefined;
+    const maxOutRes = validateOptionalInt(maxOutputTokens, {
+      label: '全篇输出 Token 上限',
+      min: 500,
+      max: 64000,
+    });
+    if (!maxOutRes.ok) {
+      showToast(maxOutRes.error, 'error');
+      return;
+    }
+    const parsedMaxOut = maxOutRes.value;
 
     const cleanScopeProfile: ScopeProfileConfig = {
-      max_depth: scopeProfile.max_depth || 12,
+      max_depth: scopeProfile.max_depth ?? 12,
       include_tests: scopeProfile.include_tests,
       include_legacy_docs: Boolean(scopeProfile.include_legacy_docs),
       ...(scopeProfile.include_globs && scopeProfile.include_globs.length > 0
@@ -616,7 +706,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
         ? {
             doc_type_slug: moduleDigestSource.doc_type_slug.trim(),
             slot_id: moduleDigestSource.slot_id.trim(),
-            max_chars: moduleDigestSource.max_chars || 600,
+            max_chars: moduleDigestSource.max_chars ?? 600,
             ...(moduleDigestSource.fallback_order
               ? { fallback_order: moduleDigestSource.fallback_order }
               : {}),

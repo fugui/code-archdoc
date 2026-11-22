@@ -11,6 +11,7 @@ import {
   Unlock,
 } from 'lucide-react';
 import { useConfirm } from '@code/common';
+import IntegerInput from '../common/IntegerInput';
 import type { FacetName, SectionOwnership, SlotDefinition } from '../../types';
 import {
   FACET_CATALOG,
@@ -390,16 +391,14 @@ export const BlueprintVisualEditor: React.FC<BlueprintVisualEditorProps> = ({
 
                   <div className="code-archdoc-form-field">
                     <label className="code-archdoc-field-label">Token 预算 (token_budget)</label>
-                    <input
-                      type="number"
+                    <IntegerInput
                       className="code-archdoc-input"
                       min={500}
                       max={64000}
-                      step={500}
                       value={slot.token_budget}
-                      onChange={(e) =>
+                      onChange={(next) =>
                         updateSlotField(index, {
-                          token_budget: Number.parseInt(e.target.value, 10) || 8000,
+                          token_budget: next,
                         })
                       }
                     />
@@ -407,15 +406,14 @@ export const BlueprintVisualEditor: React.FC<BlueprintVisualEditorProps> = ({
 
                   <div className="code-archdoc-form-field">
                     <label className="code-archdoc-field-label">最少有效字符 (min_chars)</label>
-                    <input
-                      type="number"
+                    <IntegerInput
                       className="code-archdoc-input"
                       min={0}
                       max={10000}
                       value={slot.min_chars}
-                      onChange={(e) =>
+                      onChange={(next) =>
                         updateSlotField(index, {
-                          min_chars: Number.parseInt(e.target.value, 10) || 0,
+                          min_chars: next,
                         })
                       }
                     />
@@ -454,17 +452,16 @@ export const BlueprintVisualEditor: React.FC<BlueprintVisualEditorProps> = ({
                     {sourceToolsEnabled && (
                       <div className="code-archdoc-blueprint-rounds-wrap">
                         <span className="code-archdoc-field-hint">最大轮次</span>
-                        <input
-                          type="number"
+                        <IntegerInput
                           className="code-archdoc-input code-archdoc-blueprint-rounds-input"
                           min={1}
                           max={6}
-                          value={slot.max_tool_rounds && slot.max_tool_rounds > 0 ? slot.max_tool_rounds : 4}
-                          onChange={(e) => {
-                            const raw = Number.parseInt(e.target.value, 10);
-                            const clamped = Number.isNaN(raw) ? 4 : Math.min(6, Math.max(1, raw));
-                            updateSlotField(index, { max_tool_rounds: clamped });
-                          }}
+                          value={slot.max_tool_rounds ?? 4}
+                          onChange={(next) =>
+                            updateSlotField(index, {
+                              max_tool_rounds: next,
+                            })
+                          }
                         />
                       </div>
                     )}

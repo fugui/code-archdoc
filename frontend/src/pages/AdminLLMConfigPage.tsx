@@ -27,6 +27,7 @@ import {
 import { useModuleUser } from '../context/ModuleUserContext';
 import type { LLMConfigVO, LLMProbeResultVO } from '../types';
 import { formatApiError } from '../utils/errorMessages';
+import { MAX_PG_INT, validateHttpBaseUrl, validateRequiredInt } from '../utils/numberInput';
 import { formatDateTime } from '../utils/urlQuery';
 import './AdminLLMConfigPage.css';
 
@@ -36,10 +37,10 @@ interface LLMFormState {
   modelName: string;
   apiKey: string;
   clearApiKey: boolean;
-  timeoutSeconds: number;
-  maxRetries: number;
-  maxTokensPerTask: number;
-  maxFilesPerTask: number;
+  timeoutSeconds: string;
+  maxRetries: string;
+  maxTokensPerTask: string;
+  maxFilesPerTask: string;
   isActive: boolean;
   isDefault: boolean;
 }
@@ -50,10 +51,10 @@ const EMPTY_FORM: LLMFormState = {
   modelName: '',
   apiKey: '',
   clearApiKey: false,
-  timeoutSeconds: 180,
-  maxRetries: 3,
-  maxTokensPerTask: 200000,
-  maxFilesPerTask: 2000,
+  timeoutSeconds: '180',
+  maxRetries: '3',
+  maxTokensPerTask: '200000',
+  maxFilesPerTask: '2000',
   isActive: true,
   isDefault: false,
 };
@@ -133,10 +134,10 @@ export const AdminLLMConfigPage: React.FC = () => {
       modelName: cfg.model_name,
       apiKey: '',
       clearApiKey: false,
-      timeoutSeconds: cfg.timeout_seconds,
-      maxRetries: cfg.max_retries,
-      maxTokensPerTask: cfg.max_tokens_per_task,
-      maxFilesPerTask: cfg.max_files_per_task,
+      timeoutSeconds: String(cfg.timeout_seconds),
+      maxRetries: String(cfg.max_retries),
+      maxTokensPerTask: String(cfg.max_tokens_per_task),
+      maxFilesPerTask: String(cfg.max_files_per_task),
       isActive: cfg.is_active,
       isDefault: cfg.is_default,
     });
@@ -258,12 +259,50 @@ export const AdminLLMConfigPage: React.FC = () => {
       showToast('模型名称标识不能为空', 'error');
       return;
     }
-    if (!trimmedURL) {
-      showToast('OpenAI Compatible Base URL 不能为空', 'error');
+    const baseUrlError = validateHttpBaseUrl(form.baseUrl, 'OpenAI Compatible Base URL');
+    if (baseUrlError) {
+      showToast(baseUrlError, 'error');
       return;
     }
     if (!trimmedModel) {
       showToast('Model Name 不能为空', 'error');
+      return;
+    }
+
+    const timeoutRes = validateRequiredInt(form.timeoutSeconds, {
+      label: '单次调用超时（秒）',
+      min: 5,
+      max: 900,
+    });
+    if (!timeoutRes.ok) {
+      showToast(timeoutRes.error, 'error');
+      return;
+    }
+    const retriesRes = validateRequiredInt(form.maxRetries, {
+      label: '失败最大重试次数',
+      min: 0,
+      max: 10,
+    });
+    if (!retriesRes.ok) {
+      showToast(retriesRes.error, 'error');
+      return;
+    }
+    const maxTokensRes = validateRequiredInt(form.maxTokensPerTask, {
+      label: '单任务 Token 熔断上限',
+      min: 1000,
+      max: MAX_PG_INT,
+    });
+    if (!maxTokensRes.ok) {
+      showToast(maxTokensRes.error, 'error');
+      return;
+    }
+    const maxFilesRes = validateRequiredInt(form.maxFilesPerTask, {
+      label: '单任务有效源码文件数上限',
+      min: 1,
+      max: MAX_PG_INT,
+    });
+    if (!maxFilesRes.ok) {
+      showToast(maxFilesRes.error, 'error');
       return;
     }
 
@@ -275,10 +314,10 @@ export const AdminLLMConfigPage: React.FC = () => {
         model_name: trimmedModel,
         api_key: form.clearApiKey ? '' : form.apiKey.trim(),
         clear_api_key: editingConfig ? form.clearApiKey : false,
-        timeout_seconds: form.timeoutSeconds,
-        max_retries: form.maxRetries,
-        max_tokens_per_task: form.maxTokensPerTask,
-        max_files_per_task: form.maxFilesPerTask,
+        timeout_seconds: timeoutRes.value,
+        max_retries: retriesRes.value,
+        max_tokens_per_task: maxTokensRes.value,
+        max_files_per_task: maxFilesRes.value,
         is_active: form.isActive,
         is_default: editingConfig?.is_default ? true : form.isDefault,
       };
@@ -572,6 +611,7 @@ export const AdminLLMConfigPage: React.FC = () => {
         <form
           id="archdoc-llm-upsert-form"
           className="code-archdoc-llm-form"
+          noValidate
           onSubmit={(e) => void handleSave(e)}
         >
           <div className="code-archdoc-llm-row">
@@ -678,14 +718,16 @@ export const AdminLLMConfigPage: React.FC = () => {
               <input
                 id="llm-form-timeout"
                 type="number"
+                inputMode="numeric"
                 className="code-archdoc-input"
                 min={5}
                 max={900}
+                step={1}
                 value={form.timeoutSeconds}
                 onChange={(e) =>
                   setForm((p) => ({
                     ...p,
-                    timeoutSeconds: Number.parseInt(e.target.value, 10) || 180,
+                    timeoutSeconds: e.target.value,
                   }))
                 }
               />
@@ -698,14 +740,16 @@ export const AdminLLMConfigPage: React.FC = () => {
               <input
                 id="llm-form-retries"
                 type="number"
+                inputMode="numeric"
                 className="code-archdoc-input"
                 min={0}
                 max={10}
+                step={1}
                 value={form.maxRetries}
                 onChange={(e) =>
                   setForm((p) => ({
                     ...p,
-                    maxRetries: Number.parseInt(e.target.value, 10) || 0,
+                    maxRetries: e.target.value,
                   }))
                 }
               />
@@ -720,14 +764,15 @@ export const AdminLLMConfigPage: React.FC = () => {
               <input
                 id="llm-form-max-tokens"
                 type="number"
+                inputMode="numeric"
                 className="code-archdoc-input"
                 min={1000}
-                step={10000}
+                step={1}
                 value={form.maxTokensPerTask}
                 onChange={(e) =>
                   setForm((p) => ({
                     ...p,
-                    maxTokensPerTask: Number.parseInt(e.target.value, 10) || 200000,
+                    maxTokensPerTask: e.target.value,
                   }))
                 }
               />
@@ -740,14 +785,15 @@ export const AdminLLMConfigPage: React.FC = () => {
               <input
                 id="llm-form-max-files"
                 type="number"
+                inputMode="numeric"
                 className="code-archdoc-input"
-                min={50}
-                step={100}
+                min={1}
+                step={1}
                 value={form.maxFilesPerTask}
                 onChange={(e) =>
                   setForm((p) => ({
                     ...p,
-                    maxFilesPerTask: Number.parseInt(e.target.value, 10) || 2000,
+                    maxFilesPerTask: e.target.value,
                   }))
                 }
               />

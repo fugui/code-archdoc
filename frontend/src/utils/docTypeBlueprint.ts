@@ -4,6 +4,7 @@ import type {
   SectionOwnership,
   SlotDefinition,
 } from '../types/domain.ts';
+import { parseStrictInt } from './numberInput.ts';
 
 export const CANONICAL_FACET_NAMES: readonly CanonicalFacetName[] = [
   'tree',
@@ -1144,12 +1145,6 @@ function parseStrictBool(raw: string): boolean | null {
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   return null;
-}
-
-function parseStrictInt(raw: string): number | null {
-  if (!/^-?\d+$/.test(raw)) return null;
-  const n = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(n) ? n : null;
 }
 
 /**
