@@ -683,74 +683,19 @@
   margin: 0.4rem 0;
 }
 
-/* ── Mermaid 缩放拖拽容器 ── */
-.code-archdoc-mermaid {
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-app);
-  overflow: hidden;
+/* ── Mermaid 公共图表卡片容器微调 ── */
+.code-mermaid-card.code-archdoc-mermaid-card {
+  margin: 0;
 }
 
-.code-archdoc-mermaid-toolbar {
-  padding: 0.45rem 0.75rem;
-  background: var(--color-bg-muted);
-  border-bottom: 1px solid var(--color-border-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.code-archdoc-mermaid-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.code-archdoc-mermaid-tab--active {
-  background: var(--color-primary-subtle);
+.code-mermaid-toolbar .code-archdoc-review-mermaid-btn {
   color: var(--color-primary);
-  font-weight: 600;
 }
 
-.code-archdoc-mermaid-viewport {
-  position: relative;
-  height: 360px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: grab;
-  user-select: none;
-  background: var(--color-bg-surface);
-}
-
-.code-archdoc-mermaid-viewport--panning {
-  cursor: grabbing;
-}
-
-.code-archdoc-mermaid-stage {
-  transform-origin: center center;
-  transition: transform 0.04s linear;
-}
-
-.code-archdoc-mermaid-loading {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.82rem;
-  color: var(--color-text-muted);
-}
-
-.code-archdoc-mermaid-code-wrap {
-  padding: 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
+.code-mermaid-toolbar .code-archdoc-review-mermaid-btn:hover:not(:disabled) {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary-border);
+  color: var(--color-primary);
 }
 
 /* ── 章节底部源码证据标签栏 ── */

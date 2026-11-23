@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
 import { MessageSquarePlus } from 'lucide-react';
+import mermaid from 'mermaid';
+import { MermaidDiagram } from '@code/common/mermaid';
 import type { ReviewCommentAnchor, ReviewCommentVO } from '../../types';
 import { parseMarkdownBlocks, type MarkdownBlockNode, type MarkdownInlineNode } from '../../utils/markdown';
 import {
@@ -9,7 +11,6 @@ import {
   type TextHighlightRange,
 } from '../../utils/reviewAnchor';
 import { parseEvidenceHref, type EvidenceDeepLinkParams } from '../../utils/urlQuery';
-import MermaidZoomViewer from './MermaidZoomViewer';
 
 export interface SectionMarkdownRendererProps {
   markdown: string;
@@ -199,6 +200,7 @@ export const SectionMarkdownRenderer: React.FC<SectionMarkdownRendererProps> = (
     block: MarkdownBlockNode,
     idx: number,
     ranges: readonly TextHighlightRange[],
+    mermaidHeaderExtra?: React.ReactNode,
   ): React.ReactNode => {
     const key = `b-${idx}`;
     const cursor = { offset: 0 };
@@ -230,7 +232,16 @@ export const SectionMarkdownRenderer: React.FC<SectionMarkdownRendererProps> = (
           </div>
         );
       case 'mermaid':
-        return <MermaidZoomViewer key={key} chart={block.chart} />;
+        return (
+          <MermaidDiagram
+            key={key}
+            chart={block.chart}
+            mermaid={mermaid}
+            headerExtra={mermaidHeaderExtra}
+            className="code-archdoc-mermaid-card"
+            exportFilenamePrefix="archdoc-mermaid"
+          />
+        );
       case 'blockquote':
         return (
           <blockquote key={key} className="code-archdoc-md-quote">
@@ -301,6 +312,19 @@ export const SectionMarkdownRenderer: React.FC<SectionMarkdownRendererProps> = (
         const hasActiveBlockHl = Boolean(
           bucket?.blockComments.some((c) => c.id === activeCommentId),
         );
+        const canAnnotate = Boolean(canWrite && onAnnotateBlock && block.type !== 'hr');
+        const mermaidHeaderExtra =
+          canAnnotate && block.type === 'mermaid' && onAnnotateBlock ? (
+            <button
+              type="button"
+              className="code-mermaid-tool-btn code-archdoc-review-mermaid-btn"
+              onClick={() => onAnnotateBlock(buildBlockAnchor(block, idx))}
+              title="为此图表添加审阅批注"
+            >
+              <MessageSquarePlus size={13} />
+              <span>批注</span>
+            </button>
+          ) : undefined;
 
         return (
           <div
@@ -313,8 +337,8 @@ export const SectionMarkdownRenderer: React.FC<SectionMarkdownRendererProps> = (
             data-line-start={block.startLine}
             data-line-end={block.endLine}
           >
-            {renderBlockContent(block, idx, ranges)}
-            {canWrite && onAnnotateBlock && block.type !== 'hr' && (
+            {renderBlockContent(block, idx, ranges, mermaidHeaderExtra)}
+            {canAnnotate && block.type !== 'mermaid' && onAnnotateBlock && (
               <button
                 type="button"
                 className="code-archdoc-review-block-btn"
