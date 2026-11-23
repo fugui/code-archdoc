@@ -1,10 +1,10 @@
 # Canvas Studio 微前端工作台、双轨修订与 RBAC 审计设计
 
 - **文档编号**：`04-workbench-and-security.md`
-- **文档版本**：v1.3.0 (ADR-08 新建任务引擎选择器、多文档拆单监控队列与任务中心引擎治理)
-- **编制日期**：2026-11-22
+- **文档版本**：v1.4.0 (ADR-09 架构文档全景单一树表主视图、未关联代码仓收敛与全站安全返回动线)
+- **编制日期**：2026-11-23
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
+- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `F-36`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `SC-23`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md)
 
 ---
 
@@ -15,9 +15,9 @@
 - **构建契约**：`frontend/vite.config.ts` 保持 `name: 'archdoc'`、`base: '/archdoc/'`、`filename: 'remoteEntry.js'`，共享 `react`、`react-dom`、`react-router-dom`。
 - **`./menu` 侧边栏导出（3 组 8 项）**：
   - **文档全景（全员可见）**：
-    - `/overview`（全局概览：文档资产覆盖、双维漂移健康度、反推生产任务态势与生成质量度量大盘）
-    - `/repos`（仓库文档覆盖，`W1`）
-    - `/arch-tree`（架构文档全景，`W2`）
+    - `/overview`（全局概览：架构功能模块覆盖态势、全平台双维漂移健康度、反推生产任务态势与生成质量度量大盘）
+    - `/arch-tree`（**架构文档全景**，日常文档消费与生产唯一主入口，`M15` 升级为单一 4 列树形表格）
+    - `/repos`（**未关联代码仓**，默认按仓库级 MECE 展示尚未绑定任何功能模块的独立/待归类代码仓；支持切换「全部代码仓」承接模块治理与整仓 Roll-up）
   - **生产与保鲜（全员可见）**：
     - `/tasks`（反推任务中心，`W1`）
     - `/drift`（双维漂移雷达，`W2`）
@@ -25,14 +25,14 @@
     - `/admin/llm`（LLM 模型配置，`W1`）
     - `/admin/doc-types`（`DocType` 文档类型管理，`W2`）
     - `/admin/ops`（运行与存储运维，`W2`）
-- **`./App` 内部路由表（双模同时兼容相对子路径与 `/archdoc/*` 完整前缀）**：
+- **`./App` 内部路由表（双模同时兼容相对子路径与 `/archdoc/*` 完整前缀；独立调试态 `StandaloneShell` 中 `/studio` 与 `/docs/*` 默认高亮「架构文档全景」，`topbarTitle` 兜底文案为 `'未关联代码仓'`）**：
 
 | 路由路径（嵌入态均含 `/archdoc` 前缀兼容） | 视图组件 | 波次 | 角色访问边界 |
 | :--- | :--- | :---: | :--- |
 | `/` → 重定向至 `/overview` | `QualityMetricsPage` | W1/W2 | 登录全员 |
-| `/overview` & `/metrics`（兼容路由） | `QualityMetricsPage`（全局概览大盘：覆盖态势 + 漂移雷达汇总 + 任务态势 + 质量度量与修订纵向对比） | W2 | 登录全员 |
-| `/repos` | `RepoCoveragePage`（仓库与子目录文档覆盖列表，Header 保留极简微标） | W1 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
-| `/arch-tree` | `ArchTreeCoveragePage`（架构树文档全景视图，Header 保留极简微标） | W2 | 登录全员 |
+| `/overview` & `/metrics`（兼容路由） | `QualityMetricsPage`（全局概览大盘：架构模块覆盖态势 + 全平台漂移雷达汇总 + 任务态势 + 质量度量与修订纵向对比） | W2 | 登录全员 |
+| `/arch-tree` | `ArchTreeCoveragePage`（架构文档全景主视图：单一 4 列树形表格，Header 保留模块级极简微标） | W2 / M15 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
+| `/repos` | `RepoCoveragePage`（未关联代码仓：默认 `unbound_repo` 仓库级未关联列表，可切「全部代码仓」承接目录治理与整仓 Roll-up；兼容 `/repos?view=arch` 重定向至 `/arch-tree`） | W1 / M15 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
 | `/tasks` | `TaskCenterPage`（反推任务中心，Header 保留极简状态微标） | W1 | 登录全员 |
 | `/studio/:repoId` & `/studio/:repoId/docs/:docId` | `CanvasStudioPage`（双栏协同审校工作台） | W1 / W2 | 全员只读已发布；负责人可查看/编辑草稿 |
 | `/docs/:docId/evidence` | `CanvasStudioPage`（**深链直达入口**：自动定位 `docId` 并打开只读源码证据抽屉，读取 Query 参数 `commit`、`file`、`symbol`、`lines` 高亮渲染，承接 `code-bench` `D-03` 跳转） | W1 | 登录全员（仅限已发布文档；草稿仅负责人可看） |
@@ -55,27 +55,39 @@
 
 ## 2. 四大业务工作台 React 组件分层树
 
-### 2.1 仓库与子目录文档覆盖视图 (`RepoCoveragePage`，`F-01`，W1)
+### 2.1 架构文档全景主视图与未关联代码仓视图 (`ArchTreeCoveragePage` & `RepoCoveragePage`，`F-01` / `F-36`)
 
 ```text
-RepoCoveragePage
-├── PageHeader (标题、全局覆盖率摘要 KPI 卡片、快速筛选重置)
-├── RepoFilterBar (URL Search Params 双向同步)
-│   ├── SearchInput (仓库名 / 子目录关键词防抖搜索)
-│   ├── DepartmentSelect (复用共享部门列表)
-│   ├── DocTypeFilterSelect (按 DocType 筛选覆盖情况)
-│   └── StatusFilterSelect (全部 | 已发布 | 草稿中 | 存在漂移 | 未生成)
-├── RepoCoverageTable (Vanilla CSS 精细表格)
-│   └── RepoScopeRow (每行对应 1 个整仓或 Monorepo ArchitectureElement 子目录)
-│       ├── RepoIdentityCell (仓库名、子目录标签、分支、Owner、最近 commit_sha)
-│       ├── DocTypeStatusMatrix (各启用 DocType 的 StatusTag 徽章，点击直入 Studio)
-│       ├── DriftSummaryBadge (W2: Code Drift / Spec Drift 计数标牌)
-│       └── ActionGroup (进入工作台 | 触发生成 [RBAC 控制] | ZIP 导出已发布文档)
+ArchTreeCoveragePage（日常唯一主入口，/arch-tree，M15 树表化重构）
+├── PageHeader
+│   ├── Title & Subtitle（聚焦架构模块资产覆盖）
+│   └── OverviewMicroPills（buildArchTreeMicroPills：功能模块 | 已覆盖 | 已发布 | 漂移，点击后两者快捷筛选）
+├── ArchTreeFilterBar（单行精简筛选，移除独立图例横条）
+│   ├── SearchInput（架构节点 / 仓库 / 子目录关键词防抖搜索）
+│   ├── SubsystemSelect（括号显示 module_count 含缺口模块）
+│   ├── DocTypeFilterSelect & StatusFilterSelect
+│   └── TreeExpandCollapseGroup（受控「全部展开」「全部收起」收拢至最右侧）
+├── ArchTreeView（单一 4 列 Tree Table，移除底部未归类表与嵌套子表格）
+│   ├── TableHeader（架构层级 / 关联源码 | 负责人与基线 | 文档覆盖（N 类） | 操作）
+│   └── FlattenedTreeRows（由 flattenArchTreeRows 生成，--tree-depth 控制阶梯缩进与引导竖线）
+│       ├── NonModuleNodeRow（subsystem / group：展开箭头 + 节点图标/名称 + 负责人 + 模块覆盖 X/Y 进度条与计数微标 [0 模块占位] + 操作列纯空 "—"）
+│       └── ModuleLeafRow（key="module:${node.id}"，三态区分）
+│           ├── BoundModuleRow（保留 active_task_id 胶囊 / 自定义分支高亮 / missing 目录告警；移除部门/来源/重复负责人/范围计数噪声；ScopeDocCoverageCell + 可展开 <tr colSpan={4}>ScopeDocExpandedGrid</tr>；CoverageActionButtons 主次自适应 & 0 篇隐藏 ZIP 导出）
+│           ├── UnboundModuleRow（副行斜体弱化「未关联代码仓」，操作列「未绑定源码」）
+│           └── InactiveRepoModuleRow（副行告警弱化「所绑仓库已停用」，操作列「仓库已停用」）
+└── GenerateTaskModal（支持 ADR-07 切分支刷新与 ADR-08 双引擎/拆单监控）
+
+RepoCoveragePage（未关联代码仓，/repos，M15 仓库级 MECE 收敛与工程兜底）
+├── PageHeader（更名「未关联代码仓」，副标题明示独立/待归类仓定位；OverviewMicroPills；刷新矩阵）
+├── RepoFilterBar（URL Search Params 双向同步）
+│   ├── SearchInput / DepartmentSelect / DocTypeFilterSelect / StatusFilterSelect
+│   ├── ScopeModeSegmentedSwitch（仅未关联 [默认请求 arch_binding=unbound_repo，不写 URL] ↔ 全部代码仓 [显式持久化 arch_binding=all 至 URL]）
+│   └── CollapsibleAdvancedFilters（默认模式下隐藏无意义的 subsystem_id 与 arch_binding 下拉；仅受 computeRepoFilterFlags 触发，不因视图模式自动展开）
+├── PositiveEmptyState（默认未关联视图且 total===0 无筛选时提示“全部活跃代码仓均已关联架构功能模块”并附一键切「全部代码仓」）
+├── RepoCoverageTable（按仓库折叠子目录；切换「全部代码仓」后完整保留 ModuleGovernanceModal、整仓 Roll-up 与同仓多模块批量生成）
 ├── Pagination (@code/common 5 页滑动窗口, 默认 25 条/页)
-└── GenerateTaskModal (ADR-08 升级：支持双引擎配置态与多文档拆单增量轮询监控态)
-    ├── EngineSelectorCard (请求 GET /api/engines，记忆 localStorage 偏好，不可用置灰并展示原因，选 OpenCode 时展示只读/耗时微提示)
-    ├── DocTypeMultiSelectGrid (提交按钮动态显示「开始生成 (1 篇)」/「创建 N 个文档生成任务」/「提交批量编排任务」)
-    └── SplitTaskQueueMonitor (多文档拆单返回 tasks.length > 1 时激活：增量轮询未终态任务、单篇 ready 即刻通知刷新并展示「进入工作台」、支持下钻单任务槽位明细与「返回拆单队列」)
+├── GenerateTaskModal（支持单范围、批量分层编排与双引擎拆单队列监控）
+└── ModuleGovernanceModal（目录迁移与模块发现策略治理）
 
 TaskCenterPage (F-05 / ADR-08)
 ├── TaskFilterBar (URL Search Params 双向同步：仓库 / 状态 / 类型 / 执行引擎 [全部 | Native 直连 | OpenCode Agent] / 仅看我)
@@ -84,9 +96,15 @@ TaskCenterPage (F-05 / ADR-08)
 
 ### 2.2 Canvas Studio 双栏协同工作台 (`CanvasStudioPage`，`F-08`/`F-09`/`F-10`)
 
+- **来源返回与安全校验（`ADR-09` / `M15`）**：
+  - `ArchTreeCoveragePage`、`RepoCoveragePage`、`TaskCenterPage` 与 `DriftRadarPage` 跳转 Studio 时通过路由 `state: { from: currentPathWithSearch, fromLabel }` 传递来源；
+  - `CanvasStudioPage` 内部 `handleSelectDoc`、`handleSelectSubdirectory` 与 `GenerateTaskModal.onOpenStudio` 调用 `navigate(buildStudioPath(...))` 时持续透传 `{ state: location.state }` 防止来源丢失；
+  - 返回按钮调用 `resolveSafeStudioBackTarget(location.state, isEmbedded)` 执行模块内固定路径白名单正则 `/^(?:\/archdoc)?\/(arch-tree|repos|tasks|drift|overview)(\?[^#]*)?$/` 校验（彻底阻断外域 URL、`//` 协议相对路径及 `javascript:` 开放重定向），缺省或非法时安全回落至 `/arch-tree`（嵌入态 `/archdoc/arch-tree`），并动态更新 `StudioTopBar` 返回按钮 tooltip 及缺参提示文案。
+
 ```text
 CanvasStudioPage
 ├── StudioTopBar
+│   ├── SafeBackButton (基于 resolveSafeStudioBackTarget 返回来源页，默认「返回架构文档全景」)
 │   ├── ScopeBreadcrumb (仓库 / 子目录 / 分支 / commit_sha 短码 / DocTypeRevision 徽标)
 │   ├── DocumentStatusBar (Draft | Approved 状态标签、Verifier 汇总灯、双维漂移提示条)
 │   └── StudioActions (重新生成 | 撤回发布 | 审批发布 [Verifier 阻断时禁用并悬浮原因] | 下载 Markdown)
@@ -126,11 +144,17 @@ DriftRadarPage (F-12)
 │       └── IncrementalRefreshButton (仅负责人可见：一键触发受影响章节增量刷新，跳过 locked 章节)
 └── Pagination (@code/common)
 
-QualityMetricsPage (F-26)
-├── MetricsFilterBar (时间窗口 | DocType 下拉 | DocTypeRevision 多版本对比选择器)
-├── KPIGrid (4 大质量指标：平均草稿→定稿修改率 | Chat 采纳率 | Verifier 首次通过率 | 必填槽位完备度)
-├── RevisionTrendChart (原生轻量 SVG 百分比折线图，对比同一 DocType 不同 DocTypeRevision 的质量指标演进，严格使用 --color-* Token)
-└── SlotEditHeatmapTable (展示每个 slot_id 的历史平均修改比例，帮助管理员精准定位需优化 Prompt 的薄弱槽位)
+QualityMetricsPage (全局概览与质量度量, F-26 / F-36)
+├── Section1_ArchCoverageOverview (ADR-09: 数据源切换为 getArchTree({})，消费 ArchTreeSummaryVO)
+│   ├── HeaderActions (主推「架构文档全景 -> /arch-tree」; 次推「未关联代码仓 -> /repos」，unassigned_repo_count > 0 时附轻量提醒徽标)
+│   └── OverviewCardGrid (4 张卡片全部下钻 /arch-tree：架构功能模块总数 | 已覆盖功能模块 | 已发布架构文档 [?status=approved] | 架构漂移文档 [?status=drifted])
+├── Section2_PlatformDriftHealth (数据源 getDriftSummary()，副标题明示全平台已发布口径含独立未关联仓 -> /drift)
+├── Section3_GenerationTaskSummary (数据源 listTasks({ page: 1, pageSize: 15, topLevelOnly: true }) -> /tasks)
+└── Section4_QualityMetricsAnalytics
+    ├── MetricsFilterBar (时间窗口 | DocType 下拉 | DocTypeRevision 多版本对比选择器)
+    ├── KPIGrid (4 大质量指标：平均草稿→定稿修改率 | Chat 采纳率 | Verifier 首次通过率 | 必填槽位完备度)
+    ├── RevisionTrendChart (原生轻量 SVG 百分比折线图，对比同一 DocType 不同 DocTypeRevision 的质量指标演进，严格使用 --color-* Token)
+    └── SlotEditHeatmapTable (展示每个 slot_id 的历史平均修改比例，帮助管理员精准定位需优化 Prompt 的薄弱槽位)
 ```
 
 ### 2.4 管理员治理台 (`AdminLLMConfigPage` W1 + `AdminDocTypesPage` / `AdminOpsPage` W2)
@@ -219,6 +243,8 @@ AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
 | 浏览未发布草稿 & 修订历史 | `401` | `403` | ✅ (所属整仓及旗下子目录) | ✅ (**仅限所属子目录**) | ✅ |
 | 触发生成 / 取消 / 重试 / 手工直编 / Chat 精修 / 锁定 / 发布 / 撤回 / 增量刷新 | `401` | `403` | ✅ (所属整仓及旗下子目录) | ✅ (**仅限所属子目录，跨子目录或整仓返回 `403`**) | ✅ |
 | 全局 LLM 模型配置与探活、`DocType` 增删改启停、手动全量巡检 | `401` | `403` | `403` | `403` | ✅ |
+
+> **`ADR-09` 补充说明**：`GET /api/arch-tree`（含 `ignored` / 未扫描绑定目录的实时兜底构造路径）严格遵守普通用户草稿隔离红线（`!canWrite && status != "approved"` 过滤），确保 `ArchTreeStatsVO` 与 `ArchTreeSummaryVO` 零草稿泄露；整仓绑定模块（`subdir == ""`）写权限严格遵循仓库级权限（`SC-12`）。
 
 ### 4.2 权限判定引擎 Go 伪代码（精确落地 `SC-12`）
 

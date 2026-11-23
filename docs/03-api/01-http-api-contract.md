@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.5.0 (ADR-08 扩展：新增 `GET /api/engines` 与 `ENGINE_UNAVAILABLE` 错误码，扩展单文档拆单与双引擎契约)
-- **编制日期**：2026-11-22
+- **文档版本**：v1.6.0 (ADR-09 演进：`GET /api/arch-tree` 模块级三态树表契约冻结与 `GET /api/repos` 新增 `arch_binding=unbound_repo` 仓库级未关联筛选)
+- **编制日期**：2026-11-23
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.8.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.9.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -90,10 +90,10 @@
 | 7 | `PATCH` | `/api/password` | `JWT` | W1 | 独立模式修改本地密码 | `update / user_password / P1` |
 | 8 | `GET` | `/api/users` | `JWT` | W1 | 只读检索共享 `users`（供成员选择器复用） | - |
 | 9 | `GET` | `/api/departments` | `JWT` | W1 | 只读获取共享 `departments` 列表（筛选下拉用） | - |
-| **域 1：仓库与 Monorepo 子目录覆盖视图（`F-01`）** | | | | | | |
-| 10 | `GET` | `/api/repos` | `JWT` | W1 | 分页查询仓库及子目录在各 `DocType` 下的文档覆盖与漂移矩阵 | - |
+| **域 1：仓库与 Monorepo 子目录覆盖视图（`F-01` / `F-36`）** | | | | | | |
+| 10 | `GET` | `/api/repos` | `JWT` | W1 / M15 | 分页查询仓库及子目录文档覆盖与漂移矩阵（M15 新增 `arch_binding=unbound_repo` 仓库级未关联筛选） | - |
 | 11 | `GET` | `/api/repos/:repo_id/scopes` | `JWT` | W1 | 查询单仓（整仓 + 全部 `ArchitectureElement` 子目录）详细范围视图 | - |
-| 11a | `GET` | `/api/arch-tree` | `JWT` | W2 | 按平台 `architecture_elements` 树形结构只读聚合覆盖范围与统计指标 | - |
+| 11a | `GET` | `/api/arch-tree` | `JWT` | W2 / M15 | 按平台 `architecture_elements` 聚合功能模块级架构树与三态绑定/统计指标（主视图数据源） | - |
 | **域 2：可管理文档类型注册表（`F-03`）** | | | | | | |
 | 12 | `GET` | `/api/doc-types` | `JWT` | W1 | 获取 `DocType` 列表（支持 `active_only`） | - |
 | 13 | `GET` | `/api/doc-types/:slug` | `JWT` | W1 | 获取单个 `DocType` 元数据、槽位与当前修订资产内容 | - |
@@ -197,13 +197,13 @@
 
 ### 3.2 域 1：仓库与 Monorepo 子目录覆盖视图（`F-01`, W1）
 
-#### `GET /api/repos` (`JWT`, W1)
+#### `GET /api/repos` (`JWT`, W1 / M15 扩展)
 - **Query 参数**：
   - `page` (int, 默认 `1`)、`page_size` (int, `15|25|50|100`, 默认 `25`)
   - `search` (string, 模糊匹配仓库名、子目录路径、架构元素名、层级路径或子系统名)
   - `department_id` (uint, 可选)
   - `subsystem_id` (uint, 可选，按归属架构子系统 ID 筛选)
-  - `arch_binding` (string, 可选：`all` | `bound` | `unbound`，按是否已关联架构元素筛选)
+  - `arch_binding` (string, 可选：`all` | `bound` | `unbound` | `unbound_repo`，非法值返回 `400 INVALID_PARAM`；其中 `unbound_repo` 为 M15 新增的仓库级未关联 MECE 筛选，详规见 §9.2)
   - `doc_type` (string, 可选 `DocType.slug`，仅在搭配 `status` 筛选时限定该类型的状态)
   - `status` (string, 可选：`all` | `approved` | `draft` | `drifted` | `missing`)
   - `scope_type` (string, 可选：`all` | `repo` | `subdir`，默认 `all`)
@@ -281,9 +281,9 @@
 ```
 > **草稿可见性规则**：当当前用户对某行 `can_write == false` 时，`doc_statuses` 中仅包含 `status == "approved"` 的文档条目，未发布草稿对该用户显示为缺失（不暴露 `document_id` 与草稿状态）。
 
-#### `GET /api/arch-tree` (`JWT`)
-- **Query 参数**：复用 `GET /api/repos` 全部筛选条件（`search`、`department_id`、`subsystem_id`、`arch_binding`、`doc_type`、`status`、`scope_type`，不分页）。
-- **响应 (`200 OK`)**：返回 `{ "summary": RepoCoverageSummaryVO, "subsystems": ArchSubsystemOptionVO[], "nodes": ArchTreeNodeVO[], "unassigned_scopes": RepoScopeCoverageVO[] }`，按 `architecture_elements`（`subsystem → group → module`）树形嵌套并向上聚合 `stats`（`scope_count`、`covered_scope_count`、`approved_doc_count`、`draft_doc_count`、`drifted_doc_count`、`blocked_doc_count`）；未绑定且无子系统归属的范围收拢至 `unassigned_scopes`。普通用户视角严格过滤未发布草稿统计与明细。
+#### `GET /api/arch-tree` (`JWT`, W2 / M15 冻结契约见 §9.1)
+- **Query 参数**：`search`、`department_id`、`subsystem_id`、`arch_binding`（仅允许 `all | bound | unbound`，传 `unbound_repo` 等非法值返 `400 INVALID_PARAM`）、`doc_type`、`status`、`scope_type`（不分页）。
+- **响应 (`200 OK`)**：自 `ADR-09` (`M15`) 起升级为模块级三态树表契约，返回 `{ "summary": ArchTreeSummaryVO, "subsystems": ArchSubsystemOptionVO[], "nodes": ArchTreeNodeVO[], "unassigned_scopes": [] }`：非功能模块（`subsystem`/`group`）`scopes` 恒为 `[]`、`scope` 为 `null`；仅功能模块（`module`）承载唯一 `scope` 与 `binding_status`（`"bound" | "unbound" | "repo_inactive"`），严格遵循「先筛选剪枝、后向上聚合」及 `SC-12` 草稿隔离，详细契约与 JSON 示例见 **§9.1**。
 
 #### `GET /api/repos/:repo_id/scopes` (`JWT`, W1)
 - **响应 (`200 OK`)**：返回仓库基础元数据与 `scopes: RepoScopeCoverageVO[]`（首条为整仓 `subdirectory: ""`，其余为关联的 `ArchitectureElement` 子目录），并附带该仓库最近 5 条活跃或历史 `GenTask` 摘要；同时通过 `branch`、`default_branch`、`is_branch_overridden`、`can_switch_branch` 暴露有效跟踪分支状态。
@@ -1211,3 +1211,174 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
    - 请求体新增可选 `engine?: "native" | "opencode"`（留空默认取该文档最近一次生成任务使用的引擎 `GetLatestEngineByDocumentID`，无记录时回退系统默认引擎）；指定不可用引擎返 `400 ENGINE_UNAVAILABLE`。
 5. **`GET` / `POST` / `PUT` `/api/admin/llm-configs` (`Admin`, M14)**：
    - 请求与响应新增可选字段 `opencode_model?: string`（最长 128 字符，禁止包含空白符与换行/控制字符，否则返 `400 INVALID_PARAM`）；`LLMConfigVO` 与 `LLMConfigAuditSnapshot` 同步暴露 `opencode_model`。
+
+---
+
+## 9. ADR-09 增量与演进接口契约（`M15`，零新增路由，保持 70 Endpoints）
+
+### 9.1 `GET /api/arch-tree` (`JWT`, M15 冻结契约)
+
+- **Query 参数与白名单校验**：
+  - `search`、`department_id`、`subsystem_id`、`doc_type`、`status`（`all | approved | draft | drifted | missing`）、`scope_type`（`all | repo | subdir`）；
+  - `arch_binding`：**仅允许 `"" | "all" | "bound" | "unbound"`**（`/api/arch-tree` 不接受 `unbound_repo`，传入 `unbound_repo` 或其他非法值统一返回 `400 INVALID_PARAM`）。
+- **核心构造与聚合规则**：
+  1. **全量活跃仓加载**：`GetArchTree` 内部调用 `ListAllActiveRepositories(ctx, nil)` 加载全量活跃仓库（不按 `department_id` 预过滤，确保跨部门绑定仓库不误判为 `repo_inactive` 且 `summary.unassigned_repo_count` 不受树筛选影响）；
+  2. **非功能模块零挂仓**：`subsystem` 与 `group` 节点 `scopes` 固定为 `[]`、`scope` 为 `nil`、`binding_status` 为空，不再吸附整仓或未建模块的自动扫描目录；
+  3. **功能模块 (`module`) 三态与实时兜底构造**：
+     - `"bound"`：`el.RepoID != nil` 且目标仓库在活跃仓库集合中存在，`scope` 非空；若预构建行中未命中（如在 `archdoc_repo_modules` 中标为 `ignored` 或尚未执行扫描的新绑定目录），必须调用 `buildSingleScopeRow` 实时兜底构造该 `module` 的 `RepoScopeCoverageVO`（整仓模块 `normSub == ""` 仅认仓库级写权限，子目录模块遵循 `SC-12` 子目录隔离，普通用户严格过滤未发布草稿）；多模块指向同一 `(repo_id, subdir)` 时各自持有独立拷贝的 `Scope` 实例并独立计入聚合；
+     - `"unbound"`：`el.RepoID == nil`，`scope = nil`；
+     - `"repo_inactive"`：`el.RepoID != nil` 但仓库不存在或 `is_active == false`，`scope = nil`；
+  4. **先筛选剪枝，后向上聚合**：
+     - **无筛选**：保留全部节点（含 `0 模块` 空子系统/空功能组与 `unbound`/`repo_inactive` 缺口模块）；
+     - **`search` 命中非叶节点**：若 `subsystem`/`group` 名称或 `identifier` 命中 `search`，置 `ancestorSearchMatched = true` 向下传递（后代模块视为命中 `search`，但仍接受 `status`/`department_id`/`arch_binding`/`scope_type` 过滤）；仅 `search` 且无其他非搜索限制时，命中的空非叶节点亦可保留；
+     - **`status` / `department_id` / `scope_type`**：仅匹配 `binding_status == "bound"` 且满足条件的模块；
+     - **`arch_binding`**：`bound` 仅保留 `binding_status == "bound"` 模块；`unbound` 仅保留 `binding_status != "bound"`（即 `unbound` 与 `repo_inactive`）；
+     - **剪枝后聚合**：剪枝完成后自底向上递归计算 `ArchTreeStatsVO` 并汇总根节点产出 `ArchTreeSummaryVO`，确保父节点 `stats` 与顶部 `summary` 100% 等于可见 `module` 之和；
+     - **`subsystems[]` 计数口径**：在剪枝前基于完整树统计每个根子系统子树下的全部 `module` 数（含 `unbound`/`repo_inactive`），写入 `module_count` 并镜像填充 `scope_count = module_count`。
+- **响应 (`200 OK`)**：
+```json
+{
+  "summary": {
+    "total_modules": 4,
+    "bound_modules": 2,
+    "covered_modules": 1,
+    "approved_docs": 1,
+    "draft_docs": 1,
+    "drifted_docs": 1,
+    "unassigned_repo_count": 2
+  },
+  "subsystems": [
+    {
+      "id": 500,
+      "identifier": "RND_AI",
+      "name_cn": "AI辅助研发子系统",
+      "name_en": "AI R&D Subsystem",
+      "module_count": 4,
+      "scope_count": 4
+    }
+  ],
+  "nodes": [
+    {
+      "id": 500,
+      "identifier": "RND_AI",
+      "name_cn": "AI辅助研发子系统",
+      "name_en": "AI R&D Subsystem",
+      "type": "subsystem",
+      "parent_id": null,
+      "owner_id": 1001,
+      "owner_name": "管理员",
+      "repo_id": null,
+      "subdirectory": "",
+      "description": "",
+      "stats": {
+        "module_count": 4,
+        "bound_module_count": 2,
+        "covered_module_count": 1,
+        "approved_doc_count": 1,
+        "draft_doc_count": 1,
+        "drifted_doc_count": 1,
+        "blocked_doc_count": 0
+      },
+      "scopes": [],
+      "children": [
+        {
+          "id": 501,
+          "identifier": "BENCH",
+          "name_cn": "门户功能组",
+          "name_en": "Bench Group",
+          "type": "group",
+          "parent_id": 500,
+          "owner_id": 1001,
+          "owner_name": "管理员",
+          "repo_id": null,
+          "subdirectory": "",
+          "description": "",
+          "stats": {
+            "module_count": 4,
+            "bound_module_count": 2,
+            "covered_module_count": 1,
+            "approved_doc_count": 1,
+            "draft_doc_count": 1,
+            "drifted_doc_count": 1,
+            "blocked_doc_count": 0
+          },
+          "scopes": [],
+          "children": [
+            {
+              "id": 502,
+              "identifier": "BENCH_FRONT",
+              "name_cn": "门户前端",
+              "name_en": "Bench Frontend",
+              "type": "module",
+              "parent_id": 501,
+              "owner_id": 1001,
+              "owner_name": "管理员",
+              "repo_id": 101,
+              "subdirectory": "frontend",
+              "description": "",
+              "binding_status": "bound",
+              "scope": {
+                "repo_id": 101,
+                "repo_name": "code-bench",
+                "subdirectory": "frontend",
+                "scope_type": "subdir",
+                "arch_element_id": 502,
+                "branch": "develop",
+                "is_branch_overridden": true,
+                "can_write": true,
+                "doc_statuses": {}
+              },
+              "stats": {
+                "module_count": 1,
+                "bound_module_count": 1,
+                "covered_module_count": 1,
+                "approved_doc_count": 1,
+                "draft_doc_count": 1,
+                "drifted_doc_count": 1,
+                "blocked_doc_count": 0
+              },
+              "scopes": [],
+              "children": []
+            },
+            {
+              "id": 503,
+              "identifier": "BENCH_AUTH",
+              "name_cn": "权限中心",
+              "name_en": "Bench Auth",
+              "type": "module",
+              "parent_id": 501,
+              "owner_id": 1002,
+              "owner_name": "张三",
+              "repo_id": null,
+              "subdirectory": "",
+              "description": "",
+              "binding_status": "unbound",
+              "stats": {
+                "module_count": 1,
+                "bound_module_count": 0,
+                "covered_module_count": 0,
+                "approved_doc_count": 0,
+                "draft_doc_count": 0,
+                "drifted_doc_count": 0,
+                "blocked_doc_count": 0
+              },
+              "scopes": [],
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "unassigned_scopes": []
+}
+```
+
+### 9.2 `GET /api/repos` (`JWT`, M15 `arch_binding=unbound_repo` 仓库级 MECE 判定)
+
+- **合法枚举白名单**：`"" | "all" | "bound" | "unbound" | "unbound_repo"`；非法值返回 `400 INVALID_PARAM`。
+- **仓库级 MECE 判定规则 (`arch_binding=unbound_repo`)**：
+  1. 基于平台**全量** `architecture_elements`（不受 `department_id` 筛选截断）构建集合 `boundModuleRepoIDs = { *el.RepoID | el.Type == "module" && el.RepoID != nil && *el.RepoID > 0 }`；
+  2. 过滤掉所有 `row.RepoID ∈ boundModuleRepoIDs` 的覆盖行（包含该仓库的整仓行与所有自动发现/历史子目录行，彻底消除 `models`/`templates` 等辅助目录噪声）；
+  3. 仅设置 `repositories.service_group` 或仅被 `subsystem`/`group` 非叶节点引用的仓库，因其在 `/arch-tree` 中不承接代码仓渲染，按 MECE 原则保留在 `unbound_repo` 结果中，与 `ArchTreeSummaryVO.unassigned_repo_count`（无 `department_id` 等额外条件时）严格一致；
+  4. 保留既有 `arch_binding=all | bound | unbound` 行为不变以兼容既有调用方；`/repos` 前端默认模式请求 `arch_binding=unbound_repo`，切换至「全部代码仓」时请求 `arch_binding=all` 并显式写入 URL。

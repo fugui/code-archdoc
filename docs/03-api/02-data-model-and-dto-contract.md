@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.4.0 (ADR-04 ~ ADR-08 Frozen Contract)
-- **编制日期**：2026-11-22
+- **文档版本**：v1.5.0 (ADR-04 ~ ADR-09 Frozen Contract)
+- **编制日期**：2026-11-23
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.5.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)、[`ADR-07`](../05-adr/07-single-repo-branch-switch.md)、[`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.6.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)、[`ADR-07`](../05-adr/07-single-repo-branch-switch.md)、[`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)、[`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -951,4 +951,210 @@ export function normalizeGenerateSubmitResponse(resp: GenerateTaskSubmitResponse
 export function summarizeSplitTasksProgress(tasks: GenTaskDetailVO[]): {
   total: number; ready: number; failed: number; canceled: number; running: number; allTerminal: boolean; overallPercent: number;
 };
+```
+
+---
+
+## 12. ADR-09 契约增量（`M15`：架构全景树表 DTO、仓库级未关联枚举与前端纯函数契约）
+
+### 12.1 零数据库结构变更声明（坚守 20 表、共享表零 DDL）
+
+`M15` 完全复用既有的 `architecture_elements`（只读共享表）、`repositories`（只读共享表）、`archdoc_documents`、`archdoc_document_revisions`、`archdoc_repo_modules`、`archdoc_repo_module_policies`、`archdoc_repo_snapshots` 与 `archdoc_gen_tasks`，**零新增表、零修改列、严禁对共享表执行任何 DDL**，100% 遵守 [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md)。
+
+### 12.2 后端冻结 Go 常量与 VO 结构体 (`services/repo_service.go`)
+
+```go
+// services/repo_service.go — ADR-09 冻结常量与 VO 契约
+
+const (
+	ArchBindingStatusBound        = "bound"
+	ArchBindingStatusUnbound      = "unbound"
+	ArchBindingStatusRepoInactive = "repo_inactive"
+
+	ArchBindingFilterUnboundRepo = "unbound_repo"
+)
+
+type ArchSubsystemOptionVO struct {
+	ID          uint   `json:"id"`
+	Identifier  string `json:"identifier"`
+	NameCn      string `json:"name_cn"`
+	NameEn      string `json:"name_en"`
+	ModuleCount int    `json:"module_count"`
+	ScopeCount  int    `json:"scope_count"` // 向后兼容镜像 ModuleCount；/api/repos 中保持范围数
+}
+
+type ArchTreeSummaryVO struct {
+	TotalModules        int `json:"total_modules"`
+	BoundModules        int `json:"bound_modules"`
+	CoveredModules      int `json:"covered_modules"`
+	ApprovedDocs        int `json:"approved_docs"`
+	DraftDocs           int `json:"draft_docs"`
+	DriftedDocs         int `json:"drifted_docs"`
+	UnassignedRepoCount int `json:"unassigned_repo_count"` // 按全量活跃仓口径统计，不受当前树筛选影响
+}
+
+type ArchTreeStatsVO struct {
+	ModuleCount        int `json:"module_count"`
+	BoundModuleCount   int `json:"bound_module_count"`
+	CoveredModuleCount int `json:"covered_module_count"`
+	ApprovedDocCount   int `json:"approved_doc_count"`
+	DraftDocCount      int `json:"draft_doc_count"`
+	DriftedDocCount    int `json:"drifted_doc_count"`
+	BlockedDocCount    int `json:"blocked_doc_count"`
+}
+
+type ArchTreeNodeVO struct {
+	ID            uint                  `json:"id"`
+	Identifier    string                `json:"identifier"`
+	NameCn        string                `json:"name_cn"`
+	NameEn        string                `json:"name_en"`
+	Type          string                `json:"type"` // "subsystem" | "group" | "module"
+	ParentID      *uint                 `json:"parent_id"`
+	OwnerID       *uint                 `json:"owner_id"`
+	OwnerName     string                `json:"owner_name"`
+	RepoID        *uint                 `json:"repo_id"`
+	Subdirectory  string                `json:"subdirectory"`
+	Description   string                `json:"description"`
+	BindingStatus string                `json:"binding_status,omitempty"` // 仅 module: "bound" | "unbound" | "repo_inactive"
+	Scope         *RepoScopeCoverageVO  `json:"scope,omitempty"`          // 仅 module 且 binding_status=="bound" 时非空
+	Stats         ArchTreeStatsVO       `json:"stats"`
+	Scopes        []RepoScopeCoverageVO `json:"scopes"`   // @deprecated: 固定返回 []，不再挂载代码仓数组
+	Children      []*ArchTreeNodeVO     `json:"children"`
+}
+
+type ArchTreeResponse struct {
+	Summary          ArchTreeSummaryVO       `json:"summary"`
+	Subsystems       []ArchSubsystemOptionVO `json:"subsystems"`
+	Nodes            []*ArchTreeNodeVO       `json:"nodes"`
+	UnassignedScopes []RepoScopeCoverageVO   `json:"unassigned_scopes"` // @deprecated: 固定返回 []
+}
+```
+
+- **内部编排上下文不变量 (`coverageBuildContext`)**：
+  - `buildCoverageContext(ctx, user, repos)` 统一批量加载活跃仓库映射 `activeRepoByID`、分支覆盖策略、文档/修订/漂移/快照/活跃任务/模块索引及预构建 `rowsByScope map[scopeKey]RepoScopeCoverageVO`；
+  - `resolveModuleScope(el, user)` 先校验 `el.RepoID` 与 `activeRepoByID` 判定 `bound` / `unbound` / `repo_inactive`；命中 `rowsByScope` 时**值拷贝独立 `RepoScopeCoverageVO` 并回填当前 `el` 元数据**（防多模块同 Scope 污染）；未命中时（如 `ignored` 或未刷新扫描绑定目录）实时调用 `buildSingleScopeRow` 兜底构造，整仓模块（`normSub == ""`）写权限严格遵循仓库级权限，子目录模块遵循 `repoLevelWrite || (el.OwnerID != nil && *el.OwnerID == user.ID)`，且严格执行 `!canWrite && d.Status != "approved"` 草稿过滤。
+
+### 12.3 前端 TypeScript 强类型与纯函数契约 (`frontend/src/types/` & `frontend/src/utils/`)
+
+```typescript
+// frontend/src/types/domain.ts (ADR-09 增量)
+export type ArchBindingFilter = '' | 'all' | 'bound' | 'unbound' | 'unbound_repo';
+export type ArchModuleBindingStatus = 'bound' | 'unbound' | 'repo_inactive';
+
+export interface ArchSubsystemOptionVO {
+  id: number;
+  identifier: string;
+  name_cn: string;
+  name_en: string;
+  module_count?: number;
+  scope_count: number;
+}
+
+export interface ArchTreeSummaryVO {
+  total_modules: number;
+  bound_modules: number;
+  covered_modules: number;
+  approved_docs: number;
+  draft_docs: number;
+  drifted_docs: number;
+  unassigned_repo_count: number;
+}
+
+export interface ArchTreeStatsVO {
+  module_count: number;
+  bound_module_count: number;
+  covered_module_count: number;
+  approved_doc_count: number;
+  draft_doc_count: number;
+  drifted_doc_count: number;
+  blocked_doc_count: number;
+}
+
+export interface ArchTreeNodeVO {
+  id: number;
+  identifier: string;
+  name_cn: string;
+  name_en: string;
+  type: 'subsystem' | 'group' | 'module' | string;
+  parent_id: number | null;
+  owner_id: number | null;
+  owner_name: string;
+  repo_id: number | null;
+  subdirectory: string;
+  description: string;
+  binding_status?: ArchModuleBindingStatus;
+  scope?: RepoScopeCoverageVO | null;
+  stats: ArchTreeStatsVO;
+  /** @deprecated 由 scope 替代，固定返回 [] */
+  scopes: RepoScopeCoverageVO[];
+  children: ArchTreeNodeVO[];
+}
+
+export interface ArchTreeResponse {
+  summary: ArchTreeSummaryVO;
+  subsystems: ArchSubsystemOptionVO[];
+  nodes: ArchTreeNodeVO[];
+  /** @deprecated 由 /repos?arch_binding=unbound_repo 承接，固定返回 [] */
+  unassigned_scopes: RepoScopeCoverageVO[];
+}
+```
+
+```typescript
+// frontend/src/utils/urlQuery.ts (ADR-09 增量)
+export interface StudioNavState {
+  from?: string;
+  fromLabel?: string;
+}
+
+export interface SafeStudioBackTarget {
+  path: string;
+  label: string;
+}
+
+export interface RepoFilterFlags {
+  advancedFilterCount: number;
+  hasActiveFilters: boolean;
+}
+
+// 仅允许跳回模块内预设安全列表路径；缺省或非法来源安全回落至 /arch-tree（嵌入态 /archdoc/arch-tree）
+export function resolveSafeStudioBackTarget(
+  state: unknown,
+  isEmbedded: boolean,
+): SafeStudioBackTarget;
+
+// 将视图模式（'' / 'all' / 'unbound_repo'）与用户主动筛选解耦；仅保留显式 subsystemId / scopeType / bound / unbound 计数
+export function computeRepoFilterFlags(filter: RepoFilterState): RepoFilterFlags;
+// 同步修订 serializeRepoFilterParams：archBinding === 'all' 时显式保留 arch_binding=all；'' 或 'unbound_repo' 时省略
+
+// frontend/src/utils/archTreeUtils.ts（纯 TypeScript，零 React/JSX 依赖，由 OverviewMicroPills.tsx 重导出 buildArchTreeMicroPills）
+export interface FlattenedArchTreeRow {
+  node: ArchTreeNodeVO;
+  depth: number;
+  hasChildren: boolean;
+  isExpanded: boolean;
+  rowKey: string; // module:${node.id} 或 node:${node.id}
+}
+
+export function flattenArchTreeRows(
+  nodes: readonly ArchTreeNodeVO[],
+  expandedNodeIds: ReadonlySet<number>,
+): FlattenedArchTreeRow[];
+
+export function collectArchTreeExpandableIds(
+  nodes: readonly ArchTreeNodeVO[],
+  depthLimit?: number,
+): number[];
+
+export function computeDefaultExpandedArchTreeIds(
+  nodes: readonly ArchTreeNodeVO[],
+  totalModules: number,
+  hasActiveFilters: boolean,
+  threshold?: number, // 默认 50：<= 50 全展开，> 50 仅展第 1 层，筛选态全展开
+): number[];
+
+export function buildArchTreeMicroPills(
+  summary: ArchTreeSummaryVO,
+  activeStatus: string,
+  onToggleStatus: (nextStatus: 'approved' | 'drifted' | '') => void,
+): MicroStatPillItem[];
 ```

@@ -2,8 +2,8 @@
 
 - **文档编号**：`09-arch-tree-primary-view-and-unassigned-repos.md`
 - **日期**：2026-11-23
-- **状态**：提议中 (Proposed — 已完成代码基线核对与契约细化，待架构组评审)
-- **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-01`, `F-26`)；[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)；[`01-http-api-contract.md`](../03-api/01-http-api-contract.md)；[`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；[`ADR-01`](./01-microfrontend-and-table-prefix-isolation.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`ADR-07`](./07-single-repo-branch-switch.md)；[`ADR-08`](./08-dual-engine-doc-generation.md)（与 `M14` 文件边界正交，可独立并行/接续演进）
+- **状态**：已冻结设计并完成任务分解 (Accepted — 已完成 SDD 阶段一~三规范更新与 M15 作战卡拆解，待阶段四 TDD 实施)
+- **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`F-01`, `F-26`, `F-36`)；[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)；[`01-http-api-contract.md`](../03-api/01-http-api-contract.md)；[`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；[`01-roadmap.md`](../04-tasks/01-roadmap.md)；[`16-m15-arch-tree-primary-view.md`](../04-tasks/16-m15-arch-tree-primary-view.md)；[`ADR-01`](./01-microfrontend-and-table-prefix-isolation.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`ADR-07`](./07-single-repo-branch-switch.md)；[`ADR-08`](./08-dual-engine-doc-generation.md)（与 `M14` 文件边界正交，可独立并行/接续演进）
 
 ---
 
@@ -337,7 +337,7 @@ type ArchTreeResponse struct {
 
 ## 7. 后续实施路径 (Next Steps)
 
-待架构组评审通过本 ADR（状态变更为 `Accepted`）后，按工作区 SDD + TDD 规范推进落地：
-1. 更新 [`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)、[`01-http-api-contract.md`](../03-api/01-http-api-contract.md) 与 [`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)，落盘冻结的组件树、API DTO 与筛选参数契约；
-2. 更新 [`01-roadmap.md`](../04-tasks/01-roadmap.md) 并拆解 `M15` TDD 作战卡（与 `M14` 文件边界正交）；
-3. 先补充/调整前后端测试用例（`T-ADR09-01` ~ `T-ADR09-11` Red），再实施后端 `GetArchTree` / `ListRepoCoverage` 与前端统一树表及导航动线重构（Green），完成 `T-ADR09-12`（`make lint-arch && make test && TEST_DB_DSN=... make test && make lint && make build && make clean`）全门禁验证后交付。
+本 ADR 已获采纳并完成阶段一~阶段三规范冻结与任务拆解，按工作区 SDD + TDD 规范推进落地：
+1. ✅ 更新 [`01-feature-matrix.md`](../01-features/01-feature-matrix.md) (`v0.9.0`)、[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md) (`v1.4.0`)、[`01-http-api-contract.md`](../03-api/01-http-api-contract.md) (`v1.6.0`) 与 [`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md) (`v1.5.0`)，落盘冻结的组件树、API DTO 与筛选参数契约；
+2. ✅ 更新 [`01-roadmap.md`](../04-tasks/01-roadmap.md) (`v1.6.0`) 并拆解 [`16-m15-arch-tree-primary-view.md`](../04-tasks/16-m15-arch-tree-primary-view.md) `M15` TDD 作战卡（与 `M14` 文件边界正交）；
+3. 📋 阶段四（TDD 实施）：先补充/调整前后端测试用例（`T-ADR09-01` ~ `T-ADR09-11` Red），再实施后端 `GetArchTree` / `ListRepoCoverage` 与前端统一树表及导航动线重构（Green），完成 `T-ADR09-12`（`make lint-arch && make test && TEST_DB_DSN=... make test && cd frontend && npm test && cd .. && make lint && make build && make clean`）全门禁验证后交付。
