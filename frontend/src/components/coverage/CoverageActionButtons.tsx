@@ -15,6 +15,8 @@ export interface CoverageActionButtonsProps {
   row: RepoScopeCoverageVO;
   exporting: boolean;
   approvedCount: number;
+  preferGeneratePrimary?: boolean;
+  hideDisabledExport?: boolean;
   tooltipPlacement?: 'top' | 'bottom';
   onOpenStudio: () => void;
   onTriggerGenerate: () => void;
@@ -36,6 +38,8 @@ export const CoverageActionButtons: React.FC<CoverageActionButtonsProps> = ({
   row,
   exporting,
   approvedCount,
+  preferGeneratePrimary = false,
+  hideDisabledExport = false,
   tooltipPlacement = 'top',
   onOpenStudio,
   onTriggerGenerate,
@@ -106,42 +110,66 @@ export const CoverageActionButtons: React.FC<CoverageActionButtonsProps> = ({
   });
 
   const singleSecondary = secondaryActions.length === 1 ? secondaryActions[0] : null;
+  const shouldHideSingleSecondary = Boolean(
+    hideDisabledExport && singleSecondary?.key === 'export' && singleSecondary.disabled,
+  );
+  const primaryGenerate = Boolean(preferGeneratePrimary && row.can_write);
+
+  const studioButton = (
+    <button
+      key="studio"
+      type="button"
+      className={`code-archdoc-row-btn ${!primaryGenerate ? 'code-archdoc-row-btn--primary' : ''}`}
+      title="进入 Canvas Studio 工作台"
+      onClick={onOpenStudio}
+    >
+      <BookOpen size={14} />
+      <span>工作台</span>
+    </button>
+  );
+
+  const generateButton = (
+    <button
+      key="generate"
+      type="button"
+      className={`code-archdoc-row-btn ${primaryGenerate ? 'code-archdoc-row-btn--primary' : ''}`}
+      disabled={!row.can_write}
+      title={generateTip}
+      onClick={onTriggerGenerate}
+    >
+      <Sparkles size={14} />
+      <span>生成</span>
+    </button>
+  );
 
   return (
     <div className="code-archdoc-row-actions">
-      <button
-        type="button"
-        className="code-archdoc-row-btn code-archdoc-row-btn--primary"
-        title="进入 Canvas Studio 工作台"
-        onClick={onOpenStudio}
-      >
-        <BookOpen size={14} />
-        <span>工作台</span>
-      </button>
-
-      <button
-        type="button"
-        className="code-archdoc-row-btn"
-        disabled={!row.can_write}
-        title={generateTip}
-        onClick={onTriggerGenerate}
-      >
-        <Sparkles size={14} />
-        <span>生成</span>
-      </button>
+      {primaryGenerate ? (
+        <>
+          {generateButton}
+          {studioButton}
+        </>
+      ) : (
+        <>
+          {studioButton}
+          {generateButton}
+        </>
+      )}
 
       {singleSecondary ? (
-        <button
-          type="button"
-          className="code-archdoc-icon-btn"
-          disabled={singleSecondary.disabled}
-          data-tooltip={singleSecondary.title}
-          data-tooltip-pos={tooltipPlacement}
-          aria-label={singleSecondary.title}
-          onClick={singleSecondary.onClick}
-        >
-          {singleSecondary.icon}
-        </button>
+        shouldHideSingleSecondary ? null : (
+          <button
+            type="button"
+            className="code-archdoc-icon-btn"
+            disabled={singleSecondary.disabled}
+            data-tooltip={singleSecondary.title}
+            data-tooltip-pos={tooltipPlacement}
+            aria-label={singleSecondary.title}
+            onClick={singleSecondary.onClick}
+          >
+            {singleSecondary.icon}
+          </button>
+        )
       ) : (
         <div className="code-archdoc-action-menu-wrap" ref={menuContainerRef}>
           <button

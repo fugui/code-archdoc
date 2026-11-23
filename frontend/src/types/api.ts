@@ -70,7 +70,7 @@ export interface ArchTreeQuery {
   status?: RepoStatusFilter;
   scopeType?: RepoScopeFilter;
   subsystemId?: string;
-  archBinding?: ArchBindingFilter;
+  archBinding?: Exclude<ArchBindingFilter, 'unbound_repo'>;
 }
 
 export interface GenerateTaskPayload {

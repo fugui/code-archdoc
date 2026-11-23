@@ -30,6 +30,7 @@ export interface StudioTopBarProps {
   publishing: boolean;
   unpublishing: boolean;
   exporting: boolean;
+  backLabel?: string;
   onBackToRepos: () => void;
   onToggleDrawer: () => void;
   onOpenEvidence?: () => void;
@@ -70,6 +71,7 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   publishing,
   unpublishing,
   exporting,
+  backLabel = '架构文档全景',
   onBackToRepos,
   onToggleDrawer,
   onOpenEvidence,
@@ -114,10 +116,10 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
           type="button"
           className="btn btn-secondary btn-small"
           onClick={onBackToRepos}
-          title="返回仓库与文档覆盖矩阵"
+          title={`返回${backLabel}`}
         >
           <ArrowLeft size={14} />
-          <span>返回列表</span>
+          <span>返回{backLabel}</span>
         </button>
 
         <div className="code-archdoc-studio-breadcrumb">

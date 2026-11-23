@@ -1,76 +1,59 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import {
+  Activity,
   ChevronDown,
   ChevronRight,
   Cpu,
   FileCode,
-  FileQuestion,
   Folder,
   FolderOpen,
   Loader2,
-  User,
 } from 'lucide-react';
 import { EmptyState } from '@code/common';
 import type {
-  ArchTreeNodeVO,
   ArchTreeResponse,
   DocTypeSummaryVO,
   RepoScopeCoverageVO,
 } from '../../types';
-import { formatArchElementTypeLabel } from '../../utils/docTypeUtils';
-import ScopeCoverageTable from './ScopeCoverageTable';
+import { flattenArchTreeRows } from '../../utils/archTreeUtils';
+import { formatArchElementTypeLabel, summarizeScopeDocs } from '../../utils/docTypeUtils';
+import { shortSha } from '../../utils/urlQuery';
+import CoverageActionButtons from './CoverageActionButtons';
+import ScopeDocCoverageCell from './ScopeDocCoverageCell';
+import ScopeDocExpandedGrid from './ScopeDocExpandedGrid';
 
 export interface ArchTreeViewProps {
   data: ArchTreeResponse | null;
   loading: boolean;
   docTypes: DocTypeSummaryVO[];
   focusedDocTypeSlug?: string;
+  expandedNodeIds: Set<number>;
   expandedDocRowKeys: Set<string>;
-  discoveringRepoId?: number | null;
   exportingKey?: string | null;
   hasActiveFilters: boolean;
   onResetFilters: () => void;
+  onToggleNode: (nodeId: number) => void;
   onToggleDocRowExpand: (rowKey: string) => void;
-  onDiscoverModules?: (row: RepoScopeCoverageVO) => void;
-  onOpenModuleGovernance?: (row: RepoScopeCoverageVO) => void;
   onOpenActiveTask: (row: RepoScopeCoverageVO) => void;
   onOpenStudio: (repoId: number, docId?: number, subdirectory?: string) => void;
   onTriggerGenerate: (row: RepoScopeCoverageVO, docTypeSlug?: string) => void;
-  onBatchGenerate?: (row: RepoScopeCoverageVO) => void;
-  onExportZip: (row: RepoScopeCoverageVO) => void;
-}
-
-function collectExpandableNodeIds(nodes: readonly ArchTreeNodeVO[], depthLimit?: number): number[] {
-  const out: number[] = [];
-  const walk = (list: readonly ArchTreeNodeVO[], depth: number) => {
-    for (const node of list) {
-      const hasBody = node.children.length > 0 || node.scopes.length > 0;
-      if (hasBody && (depthLimit === undefined || depth < depthLimit)) {
-        out.push(node.id);
-      }
-      if (node.children.length > 0) {
-        walk(node.children, depth + 1);
-      }
-    }
-  };
-  walk(nodes, 0);
-  return out;
+  onExportZip: (row: RepoScopeCoverageVO, rowKey: string) => void;
 }
 
 function ArchNodeIcon({ type, expanded }: { type: string; expanded: boolean }) {
   switch (type) {
     case 'subsystem':
-      return <Cpu size={16} className="code-archdoc-tree-node-icon--subsystem" />;
+      return <Cpu size={15} className="code-archdoc-tree-node-icon--subsystem" />;
     case 'group':
       return expanded ? (
-        <FolderOpen size={16} className="code-archdoc-tree-node-icon--group" />
+        <FolderOpen size={15} className="code-archdoc-tree-node-icon--group" />
       ) : (
-        <Folder size={16} className="code-archdoc-tree-node-icon--group" />
+        <Folder size={15} className="code-archdoc-tree-node-icon--group" />
       );
     case 'module':
-      return <FileCode size={16} className="code-archdoc-tree-node-icon--module" />;
+      return <FileCode size={15} className="code-archdoc-tree-node-icon--module" />;
     default:
-      return <Folder size={16} className="code-archdoc-tree-node-icon--group" />;
+      return <Folder size={15} className="code-archdoc-tree-node-icon--group" />;
   }
 }
 
@@ -92,72 +75,43 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
   loading,
   docTypes,
   focusedDocTypeSlug,
+  expandedNodeIds,
   expandedDocRowKeys,
-  discoveringRepoId = null,
   exportingKey = null,
   hasActiveFilters,
   onResetFilters,
+  onToggleNode,
   onToggleDocRowExpand,
-  onDiscoverModules,
-  onOpenModuleGovernance,
   onOpenActiveTask,
   onOpenStudio,
   onTriggerGenerate,
-  onBatchGenerate,
   onExportZip,
 }) => {
-  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<number>>(new Set());
-
   const nodes = useMemo(() => data?.nodes ?? [], [data?.nodes]);
-  const unassigned = useMemo(() => data?.unassigned_scopes ?? [], [data?.unassigned_scopes]);
-
-  // 初始加载或筛选开启时默认展开带覆盖内容的层级，便于一眼看全
-  useEffect(() => {
-    if (nodes.length === 0) return;
-    if (hasActiveFilters) {
-      setExpandedNodeIds(new Set(collectExpandableNodeIds(nodes)));
-    } else {
-      setExpandedNodeIds((prev) => {
-        if (prev.size > 0) return prev;
-        return new Set(collectExpandableNodeIds(nodes, 2));
-      });
-    }
-  }, [nodes, hasActiveFilters]);
-
-  const toggleNode = useCallback((id: number) => {
-    setExpandedNodeIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
-
-  const expandAll = () => setExpandedNodeIds(new Set(collectExpandableNodeIds(nodes)));
-  const collapseAll = () => setExpandedNodeIds(new Set());
+  const flattenedRows = useMemo(
+    () => flattenArchTreeRows(nodes, expandedNodeIds),
+    [nodes, expandedNodeIds],
+  );
 
   if (loading && !data) {
     return (
       <div className="code-card code-archdoc-loading">
         <Loader2 size={18} className="code-archdoc-spin" />
-        <span>正在聚合平台架构树与文档覆盖状态...</span>
+        <span>正在聚合平台架构树与功能模块文档覆盖状态...</span>
       </div>
     );
   }
 
-  if (nodes.length === 0 && unassigned.length === 0) {
+  if (nodes.length === 0) {
     return (
       <div className="code-card">
         <EmptyState
           type={hasActiveFilters ? 'search' : 'data'}
-          title={hasActiveFilters ? '未找到匹配的架构元素或关联范围' : '暂无架构元素与仓库范围'}
+          title={hasActiveFilters ? '未找到匹配的架构层级或功能模块' : '暂无平台架构元素'}
           description={
             hasActiveFilters
               ? '请调整搜索词或点击“重置筛选”查看完整架构树'
-              : '请先在平台「架构管理」与「代码仓管理」中维护架构元素和代码仓库'
+              : '请先在平台「架构管理」中维护子系统、功能组与功能模块'
           }
           action={
             hasActiveFilters ? (
@@ -175,192 +129,331 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
     );
   }
 
-  const renderTreeNode = (node: ArchTreeNodeVO, depth: number): React.ReactNode => {
-    const hasBody = node.children.length > 0 || node.scopes.length > 0;
-    const isExpanded = expandedNodeIds.has(node.id);
-    const displayTitle = node.name_cn || node.name_en || node.identifier;
-
-    return (
-      <div
-        key={node.id}
-        className={`code-archdoc-tree-node ${depth === 0 ? 'code-archdoc-tree-node--root' : ''}`}
-      >
-        <div
-          className={`code-archdoc-tree-node-head ${
-            hasBody ? 'code-archdoc-tree-node-head--interactive' : ''
-          }`}
-          onClick={hasBody ? () => toggleNode(node.id) : undefined}
-        >
-          <div className="code-archdoc-tree-node-left">
-            {hasBody ? (
-              <button
-                type="button"
-                className="code-archdoc-tree-toggle"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleNode(node.id);
-                }}
-                aria-label={isExpanded ? `收起 ${displayTitle}` : `展开 ${displayTitle}`}
-                aria-expanded={isExpanded}
-              >
-                {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-              </button>
-            ) : (
-              <span className="code-archdoc-tree-toggle-placeholder" />
-            )}
-
-            <ArchNodeIcon type={node.type} expanded={isExpanded} />
-
-            <span className={`code-badge ${archTypeBadgeClass(node.type)}`}>
-              {formatArchElementTypeLabel(node.type)}
-            </span>
-
-            <span className="code-archdoc-tree-node-title">{displayTitle}</span>
-
-            {node.identifier && (
-              <code className="code-archdoc-mono">{node.identifier}</code>
-            )}
-
-            {node.owner_name && (
-              <span className="code-archdoc-tree-node-owner">
-                <User size={12} />
-                <span>{node.owner_name}</span>
-              </span>
-            )}
-          </div>
-
-          <div className="code-archdoc-tree-node-stats">
-            <span className="code-badge code-badge--muted">
-              范围 {node.stats.covered_scope_count}/{node.stats.scope_count}
-            </span>
-            {node.stats.approved_doc_count > 0 && (
-              <span className="code-badge code-badge--success">
-                已发布 {node.stats.approved_doc_count}
-              </span>
-            )}
-            {node.stats.draft_doc_count > 0 && (
-              <span className="code-badge code-badge--primary">
-                草稿 {node.stats.draft_doc_count}
-              </span>
-            )}
-            {node.stats.drifted_doc_count > 0 && (
-              <span className="code-badge code-badge--warning">
-                漂移 {node.stats.drifted_doc_count}
-              </span>
-            )}
-            {node.stats.blocked_doc_count > 0 && (
-              <span className="code-badge code-badge--danger">
-                阻断 {node.stats.blocked_doc_count}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {hasBody && isExpanded && (
-          <div className="code-archdoc-tree-node-body">
-            {node.scopes.length > 0 && (
-              <div className="code-archdoc-tree-scopes-wrap">
-                <ScopeCoverageTable
-                  rows={node.scopes}
-                  docTypes={docTypes}
-                  focusedDocTypeSlug={focusedDocTypeSlug}
-                  expandedRowKeys={expandedDocRowKeys}
-                  showArchColumn={false}
-                  showSelection={false}
-                  discoveringRepoId={discoveringRepoId}
-                  exportingKey={exportingKey}
-                  compact
-                  onToggleExpandRow={onToggleDocRowExpand}
-                  onDiscoverModules={onDiscoverModules}
-                  onOpenModuleGovernance={onOpenModuleGovernance}
-                  onOpenActiveTask={onOpenActiveTask}
-                  onOpenStudio={onOpenStudio}
-                  onTriggerGenerate={onTriggerGenerate}
-                  onBatchGenerate={onBatchGenerate}
-                  onExportZip={onExportZip}
-                />
-              </div>
-            )}
-
-            {node.children.length > 0 && (
-              <div className="code-archdoc-tree-children">
-                {node.children.map((child) => renderTreeNode(child, depth + 1))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   return (
-    <div className="code-archdoc-tree-wrapper">
-      {nodes.length > 0 && (
-        <div className="code-card code-archdoc-tree-container">
-          <div className="code-archdoc-tree-toolbar">
-            <div className="code-archdoc-tree-legend">
-              <span className="code-archdoc-tree-legend-item">
-                <Cpu size={14} className="code-archdoc-tree-node-icon--subsystem" />
-                <span>子系统</span>
-              </span>
-              <span className="code-archdoc-tree-legend-item">
-                <Folder size={14} className="code-archdoc-tree-node-icon--group" />
-                <span>功能组</span>
-              </span>
-              <span className="code-archdoc-tree-legend-item">
-                <FileCode size={14} className="code-archdoc-tree-node-icon--module" />
-                <span>功能模块</span>
-              </span>
-            </div>
+    <div className="code-card code-archdoc-coverage-table-card">
+      <div className="code-archdoc-coverage-table-wrap">
+        <table className="code-table code-archdoc-tree-table">
+          <thead>
+            <tr>
+              <th>架构层级 / 关联源码</th>
+              <th>负责人与基线</th>
+              <th>文档覆盖（{docTypes.length} 类）</th>
+              <th className="code-archdoc-coverage-actions-col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {flattenedRows.map(({ node, depth, hasChildren, isExpanded, rowKey }, idx) => {
+              const displayTitle = node.name_cn || node.name_en || node.identifier;
+              const indentStyle = { '--tree-depth': depth } as React.CSSProperties;
 
-            <div className="code-archdoc-tree-toolbar-actions">
-              <button type="button" className="code-archdoc-ghost-btn" onClick={expandAll}>
-                全部展开
-              </button>
-              <button type="button" className="code-archdoc-ghost-btn" onClick={collapseAll}>
-                全部收起
-              </button>
-            </div>
-          </div>
+              if (node.type !== 'module') {
+                const rowToneClass =
+                  node.type === 'subsystem'
+                    ? 'code-archdoc-tree-row--subsystem'
+                    : 'code-archdoc-tree-row--group';
+                const totalMods = node.stats.module_count;
+                const coveredMods = node.stats.covered_module_count;
+                const pct = totalMods > 0 ? Math.round((coveredMods / totalMods) * 100) : 0;
 
-          <div className="code-archdoc-tree-list">
-            {nodes.map((root) => renderTreeNode(root, 0))}
-          </div>
-        </div>
-      )}
+                return (
+                  <tr key={rowKey} className={`code-archdoc-tree-row ${rowToneClass}`}>
+                    <td>
+                      <div
+                        className="code-archdoc-tree-indent"
+                        data-has-depth={depth > 0 ? 'true' : undefined}
+                        style={indentStyle}
+                      >
+                        {hasChildren ? (
+                          <button
+                            type="button"
+                            className="code-archdoc-tree-toggle"
+                            onClick={() => onToggleNode(node.id)}
+                            aria-label={
+                              isExpanded ? `收起 ${displayTitle}` : `展开 ${displayTitle}`
+                            }
+                            aria-expanded={isExpanded}
+                          >
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                        ) : (
+                          <span className="code-archdoc-tree-toggle-placeholder" />
+                        )}
 
-      {unassigned.length > 0 && (
-        <div className="code-card code-archdoc-unassigned-card">
-          <div className="code-archdoc-unassigned-head">
-            <div className="code-archdoc-unassigned-title">
-              <FileQuestion size={16} />
-              <span>未归类代码仓与目录 ({unassigned.length})</span>
-            </div>
-            <span className="text-secondary">
-              以下范围尚未在平台「架构管理」关联架构元素或归属子系统
-            </span>
-          </div>
+                        <ArchNodeIcon type={node.type} expanded={isExpanded} />
+                        <span className={`code-badge ${archTypeBadgeClass(node.type)}`}>
+                          {formatArchElementTypeLabel(node.type)}
+                        </span>
+                        <span className="code-archdoc-tree-node-title">{displayTitle}</span>
+                        {node.identifier && (
+                          <code className="code-archdoc-mono">{node.identifier}</code>
+                        )}
+                      </div>
+                    </td>
 
-          <ScopeCoverageTable
-            rows={unassigned}
-            docTypes={docTypes}
-            focusedDocTypeSlug={focusedDocTypeSlug}
-            expandedRowKeys={expandedDocRowKeys}
-            showArchColumn
-            showSelection={false}
-            discoveringRepoId={discoveringRepoId}
-            exportingKey={exportingKey}
-            onToggleExpandRow={onToggleDocRowExpand}
-            onDiscoverModules={onDiscoverModules}
-            onOpenModuleGovernance={onOpenModuleGovernance}
-            onOpenActiveTask={onOpenActiveTask}
-            onOpenStudio={onOpenStudio}
-            onTriggerGenerate={onTriggerGenerate}
-            onBatchGenerate={onBatchGenerate}
-            onExportZip={onExportZip}
-          />
-        </div>
-      )}
+                    <td>
+                      <span className="code-archdoc-owner-name">{node.owner_name || '-'}</span>
+                    </td>
+
+                    <td>
+                      {totalMods === 0 ? (
+                        <span className="text-muted">0 模块</span>
+                      ) : (
+                        <div
+                          className="code-archdoc-tree-agg-cell"
+                          title={`已绑定活跃代码仓 ${node.stats.bound_module_count} / ${totalMods} 个模块`}
+                        >
+                          <span className="code-archdoc-cov-ratio">
+                            模块覆盖 <strong>{coveredMods}</strong>
+                            <span className="text-muted"> / {totalMods}</span>
+                          </span>
+
+                          <div className="code-archdoc-cov-bar-track" aria-hidden="true">
+                            <div
+                              className={`code-archdoc-cov-bar-fill ${
+                                coveredMods === totalMods ? 'code-archdoc-cov-bar-fill--full' : ''
+                              }`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+
+                          {node.stats.approved_doc_count > 0 && (
+                            <span className="code-badge code-badge--success">
+                              已发布 {node.stats.approved_doc_count}
+                            </span>
+                          )}
+                          {node.stats.draft_doc_count > 0 && (
+                            <span className="code-badge code-badge--primary">
+                              草稿 {node.stats.draft_doc_count}
+                            </span>
+                          )}
+                          {node.stats.drifted_doc_count > 0 && (
+                            <span className="code-badge code-badge--warning">
+                              漂移 {node.stats.drifted_doc_count}
+                            </span>
+                          )}
+                          {node.stats.blocked_doc_count > 0 && (
+                            <span className="code-badge code-badge--danger">
+                              阻断 {node.stats.blocked_doc_count}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
+
+                    <td className="code-archdoc-coverage-actions-col">
+                      <span className="code-archdoc-tree-dash">—</span>
+                    </td>
+                  </tr>
+                );
+              }
+
+              const scope = node.scope ?? null;
+              const isBound = node.binding_status === 'bound' && scope !== null;
+              const isRepoInactive = node.binding_status === 'repo_inactive';
+
+              if (!isBound) {
+                return (
+                  <tr
+                    key={rowKey}
+                    className="code-archdoc-tree-row code-archdoc-tree-row--module code-archdoc-tree-row--gap"
+                  >
+                    <td>
+                      <div
+                        className="code-archdoc-tree-indent"
+                        data-has-depth={depth > 0 ? 'true' : undefined}
+                        style={indentStyle}
+                      >
+                        <span className="code-archdoc-tree-toggle-placeholder" />
+                        <div className="code-archdoc-tree-module-body">
+                          <div className="code-archdoc-tree-module-main">
+                            <ArchNodeIcon type="module" expanded={false} />
+                            <span className="code-badge code-badge--success">功能模块</span>
+                            <span className="code-archdoc-tree-node-title">{displayTitle}</span>
+                            {node.identifier && (
+                              <code className="code-archdoc-mono">{node.identifier}</code>
+                            )}
+                          </div>
+                          <div
+                            className={`code-archdoc-tree-status-note ${
+                              isRepoInactive ? 'code-archdoc-tree-status-note--warning' : ''
+                            }`}
+                          >
+                            {isRepoInactive ? '所绑仓库已停用' : '未关联代码仓'}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+
+                    <td>
+                      <span className="code-archdoc-owner-name">{node.owner_name || '-'}</span>
+                    </td>
+
+                    <td>
+                      <span className="code-archdoc-tree-dash">—</span>
+                    </td>
+
+                    <td className="code-archdoc-coverage-actions-col">
+                      <span
+                        className={`code-archdoc-tree-action-muted ${
+                          isRepoInactive ? 'code-archdoc-tree-action-muted--warning' : ''
+                        }`}
+                      >
+                        {isRepoInactive ? '仓库已停用' : '未绑定源码'}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              }
+
+              const docSummary = summarizeScopeDocs(scope, docTypes);
+              const firstDoc = Object.values(scope.doc_statuses ?? {})[0];
+              const expanded = expandedDocRowKeys.has(rowKey);
+
+              return (
+                <React.Fragment key={rowKey}>
+                  <tr
+                    className={`code-archdoc-tree-row code-archdoc-tree-row--module ${
+                      expanded ? 'code-archdoc-coverage-row--expanded' : ''
+                    }`}
+                  >
+                    <td>
+                      <div
+                        className="code-archdoc-tree-indent"
+                        data-has-depth={depth > 0 ? 'true' : undefined}
+                        style={indentStyle}
+                      >
+                        <span className="code-archdoc-tree-toggle-placeholder" />
+                        <div className="code-archdoc-tree-module-body">
+                          <div className="code-archdoc-tree-module-main">
+                            <ArchNodeIcon type="module" expanded={false} />
+                            <span className="code-badge code-badge--success">功能模块</span>
+                            <span className="code-archdoc-tree-node-title">{displayTitle}</span>
+                            {node.identifier && (
+                              <code className="code-archdoc-mono">{node.identifier}</code>
+                            )}
+                            {scope.active_task_id && (
+                              <button
+                                type="button"
+                                className="code-archdoc-coverage-active-task-btn"
+                                onClick={() => onOpenActiveTask(scope)}
+                                title="点击查看正在执行的反推生成任务进度"
+                              >
+                                <Activity size={12} />
+                                <span>任务 #{scope.active_task_id}</span>
+                              </button>
+                            )}
+                            {scope.scope_status === 'missing' && (
+                              <span
+                                className="code-badge code-badge--warning"
+                                title="该子目录在最近提交中已缺失，请前往「未关联代码仓 → 全部代码仓」执行目录迁移"
+                              >
+                                目录已缺失
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="code-archdoc-tree-source-meta">
+                            <span>
+                              {scope.subdirectory
+                                ? `${scope.repo_name} / ${scope.subdirectory}`
+                                : scope.repo_name}
+                            </span>
+                            <span>·</span>
+                            <span
+                              className={`code-archdoc-mono ${
+                                scope.is_branch_overridden
+                                  ? 'code-archdoc-branch-pill--overridden'
+                                  : ''
+                              }`}
+                              title={
+                                scope.is_branch_overridden
+                                  ? `已切换自定义跟踪分支 ${scope.branch}（仓库默认分支：${scope.default_branch || 'master'}）`
+                                  : `正在跟踪仓库默认分支 ${scope.branch || 'master'}`
+                              }
+                            >
+                              {scope.branch || 'master'}
+                              {scope.is_branch_overridden ? ' · 自定义' : ''}
+                            </span>
+                            {typeof scope.effective_files === 'number' &&
+                              scope.effective_files > 0 && (
+                                <span>
+                                  · {scope.effective_files} 文件
+                                  {typeof scope.total_loc === 'number' && scope.total_loc > 0
+                                    ? ` / ${scope.total_loc.toLocaleString()} LOC`
+                                    : ''}
+                                </span>
+                              )}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+
+                    <td>
+                      <div className="code-archdoc-owner-name">
+                        {node.owner_name || scope.owner_name || '-'}
+                      </div>
+                      <div className="code-archdoc-coverage-meta-row">
+                        <span title={scope.latest_commit_sha || '暂无快照'}>
+                          Commit:{' '}
+                          <code className="code-archdoc-mono">
+                            {shortSha(scope.latest_commit_sha)}
+                          </code>
+                        </span>
+                      </div>
+                    </td>
+
+                    <td>
+                      <ScopeDocCoverageCell
+                        row={scope}
+                        docTypes={docTypes}
+                        focusedDocTypeSlug={focusedDocTypeSlug}
+                        expanded={expanded}
+                        onToggleExpand={() => onToggleDocRowExpand(rowKey)}
+                        onOpenStudio={(docId) =>
+                          onOpenStudio(scope.repo_id, docId, scope.subdirectory)
+                        }
+                        onTriggerGenerate={(slug) => onTriggerGenerate(scope, slug)}
+                      />
+                    </td>
+
+                    <td className="code-archdoc-coverage-actions-col">
+                      <CoverageActionButtons
+                        row={scope}
+                        exporting={exportingKey === rowKey}
+                        approvedCount={docSummary.approvedCount}
+                        preferGeneratePrimary={scope.can_write && docSummary.generatedCount === 0}
+                        hideDisabledExport
+                        tooltipPlacement={idx === 0 ? 'bottom' : 'top'}
+                        onOpenStudio={() =>
+                          onOpenStudio(scope.repo_id, firstDoc?.document_id, scope.subdirectory)
+                        }
+                        onTriggerGenerate={() => onTriggerGenerate(scope)}
+                        onExportZip={() => onExportZip(scope, rowKey)}
+                      />
+                    </td>
+                  </tr>
+
+                  {expanded && (
+                    <tr className="code-archdoc-coverage-expanded-row">
+                      <td colSpan={4} className="code-archdoc-coverage-expanded-cell">
+                        <ScopeDocExpandedGrid
+                          row={scope}
+                          docTypes={docTypes}
+                          focusedDocTypeSlug={focusedDocTypeSlug}
+                          onOpenStudio={(docId) =>
+                            onOpenStudio(scope.repo_id, docId, scope.subdirectory)
+                          }
+                          onTriggerGenerate={(slug) => onTriggerGenerate(scope, slug)}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };

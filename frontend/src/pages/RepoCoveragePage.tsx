@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ChevronDown,
   ChevronUp,
@@ -46,6 +46,7 @@ import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildModulePath,
   buildStudioPath,
+  computeRepoFilterFlags,
   parseRepoFilterParams,
   serializeArchTreeFilterParams,
   serializeRepoFilterParams,
@@ -69,6 +70,7 @@ interface ModuleModalState {
 
 export const RepoCoveragePage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isEmbedded } = useModuleUser();
   const { showToast } = useToast();
 
@@ -76,11 +78,18 @@ export const RepoCoveragePage: React.FC = () => {
   const { page, pageSize } = usePagination({ defaultPageSize: DEFAULT_ARCHDOC_PAGE_SIZE });
   const filterState = useMemo(() => parseRepoFilterParams(searchParams), [searchParams]);
 
-  const advancedFilterCount = useMemo(
-    () =>
-      [filterState.subsystemId, filterState.archBinding, filterState.scopeType].filter(Boolean)
-        .length,
-    [filterState.subsystemId, filterState.archBinding, filterState.scopeType],
+  const isAllReposMode =
+    filterState.archBinding === 'all' ||
+    filterState.archBinding === 'bound' ||
+    filterState.archBinding === 'unbound';
+  const isUnboundOnlyMode = !isAllReposMode;
+  const effectiveArchBinding: ArchBindingFilter = isUnboundOnlyMode
+    ? 'unbound_repo'
+    : filterState.archBinding;
+
+  const { advancedFilterCount, hasActiveFilters } = useMemo(
+    () => computeRepoFilterFlags(filterState),
+    [filterState],
   );
 
   const [searchInput, setSearchInput] = useState<string>(filterState.search);
@@ -193,7 +202,7 @@ export const RepoCoveragePage: React.FC = () => {
         status: filterState.status,
         scopeType: filterState.scopeType,
         subsystemId: filterState.subsystemId,
-        archBinding: filterState.archBinding,
+        archBinding: effectiveArchBinding,
       });
       const nextRows = Array.isArray(res.items) ? res.items : [];
       setRows(nextRows);
@@ -225,7 +234,7 @@ export const RepoCoveragePage: React.FC = () => {
         setSubsystems(res.subsystems);
       }
     } catch (err: unknown) {
-      showToast(formatApiError(err, '加载仓库文档覆盖矩阵失败').message, 'error');
+      showToast(formatApiError(err, '加载未关联代码仓列表失败').message, 'error');
     } finally {
       setLoading(false);
     }
@@ -237,7 +246,7 @@ export const RepoCoveragePage: React.FC = () => {
     filterState.status,
     filterState.scopeType,
     filterState.subsystemId,
-    filterState.archBinding,
+    effectiveArchBinding,
     page,
     pageSize,
     selectedRepoId,
@@ -277,7 +286,7 @@ export const RepoCoveragePage: React.FC = () => {
           status: '',
           scopeType: '',
           subsystemId: '',
-          archBinding: '',
+          archBinding: isAllReposMode ? 'all' : '',
         },
         prev,
       ),
@@ -310,9 +319,14 @@ export const RepoCoveragePage: React.FC = () => {
 
   const openStudio = useCallback(
     (repoId: number, docId?: number, subdirectory?: string) => {
-      navigate(buildStudioPath(isEmbedded, repoId, { docId, subdirectory }));
+      navigate(buildStudioPath(isEmbedded, repoId, { docId, subdirectory }), {
+        state: {
+          from: `${location.pathname}${location.search}`,
+          fromLabel: '未关联代码仓',
+        },
+      });
     },
-    [isEmbedded, navigate],
+    [isEmbedded, location.pathname, location.search, navigate],
   );
 
   const openGenerateModal = useCallback(
@@ -453,16 +467,6 @@ export const RepoCoveragePage: React.FC = () => {
     [showToast],
   );
 
-  const hasActiveFilters = Boolean(
-    filterState.search ||
-      filterState.departmentId ||
-      filterState.docType ||
-      filterState.status ||
-      filterState.scopeType ||
-      filterState.subsystemId ||
-      filterState.archBinding,
-  );
-
   // 当前页中存在整仓父行的仓库 ID 集合，以及按仓库聚合的子目录行数
   const repoRowIds = useMemo(
     () => new Set(rows.filter((r) => r.scope_type === 'repo').map((r) => r.repo_id)),
@@ -522,14 +526,14 @@ export const RepoCoveragePage: React.FC = () => {
     <div className="code-archdoc-workspace">
       <div className="code-archdoc-page-header">
         <div>
-          <h1 className="code-archdoc-page-title">仓库文档覆盖</h1>
+          <h1 className="code-archdoc-page-title">未关联代码仓</h1>
           <p className="code-archdoc-page-subtitle">
-            按代码仓库与 Monorepo 子目录追踪设计文档覆盖率、生成进度与定稿状态。
+            展示尚未关联任何架构功能模块的独立或待归类代码仓库，支持直接生成与审校文档；切换至「全部代码仓」可进行模块治理与整仓汇总。
           </p>
         </div>
         <div className="code-archdoc-page-actions">
           <OverviewMicroPills
-            ariaLabel="仓库覆盖快捷摘要"
+            ariaLabel="代码仓覆盖快捷摘要"
             items={buildCoverageMicroPills(summary, filterState.status, (nextStatus) =>
               updateFilter({ status: nextStatus }),
             )}
@@ -541,7 +545,7 @@ export const RepoCoveragePage: React.FC = () => {
             disabled={loading}
           >
             <RefreshCw size={14} className={loading ? 'code-archdoc-spin' : ''} />
-            <span>刷新矩阵</span>
+            <span>刷新列表</span>
           </button>
         </div>
       </div>
@@ -625,34 +629,65 @@ export const RepoCoveragePage: React.FC = () => {
               <span>重置筛选</span>
             </button>
           )}
+
+          <div
+            className="code-archdoc-view-switcher code-archdoc-repo-mode-switcher"
+            role="group"
+            aria-label="代码仓显示范围"
+          >
+            <button
+              type="button"
+              aria-pressed={isUnboundOnlyMode}
+              className={`code-archdoc-view-tab ${
+                isUnboundOnlyMode ? 'code-archdoc-view-tab--active' : ''
+              }`}
+              onClick={() => updateFilter({ archBinding: '', subsystemId: '' })}
+            >
+              仅未关联 (默认)
+            </button>
+            <button
+              type="button"
+              aria-pressed={isAllReposMode}
+              className={`code-archdoc-view-tab ${
+                isAllReposMode ? 'code-archdoc-view-tab--active' : ''
+              }`}
+              onClick={() => updateFilter({ archBinding: 'all' })}
+            >
+              全部代码仓
+            </button>
+          </div>
         </div>
 
         {advancedOpen && (
           <div className="code-archdoc-coverage-advanced-filters">
-            <select
-              className="code-select code-archdoc-coverage-select"
-              value={filterState.subsystemId}
-              onChange={(e) => updateFilter({ subsystemId: e.target.value })}
-              aria-label="按架构子系统筛选"
-            >
-              <option value="">全部子系统</option>
-              {subsystems.map((sub) => (
-                <option key={sub.id} value={String(sub.id)}>
-                  {sub.name_cn || sub.name_en || sub.identifier} ({sub.scope_count})
-                </option>
-              ))}
-            </select>
+            {isAllReposMode && (
+              <>
+                <select
+                  className="code-select code-archdoc-coverage-select"
+                  value={filterState.subsystemId}
+                  onChange={(e) => updateFilter({ subsystemId: e.target.value })}
+                  aria-label="按架构子系统筛选"
+                >
+                  <option value="">全部子系统</option>
+                  {subsystems.map((sub) => (
+                    <option key={sub.id} value={String(sub.id)}>
+                      {sub.name_cn || sub.name_en || sub.identifier} ({sub.scope_count})
+                    </option>
+                  ))}
+                </select>
 
-            <select
-              className="code-select code-archdoc-coverage-select"
-              value={filterState.archBinding}
-              onChange={(e) => updateFilter({ archBinding: e.target.value as ArchBindingFilter })}
-              aria-label="按架构关联状态筛选"
-            >
-              <option value="">全部架构关联</option>
-              <option value="bound">已关联架构元素</option>
-              <option value="unbound">未关联架构元素</option>
-            </select>
+                <select
+                  className="code-select code-archdoc-coverage-select"
+                  value={filterState.archBinding || 'all'}
+                  onChange={(e) => updateFilter({ archBinding: e.target.value as ArchBindingFilter })}
+                  aria-label="按架构关联状态筛选"
+                >
+                  <option value="all">全部架构关联</option>
+                  <option value="bound">已关联架构元素</option>
+                  <option value="unbound">未关联架构元素</option>
+                </select>
+              </>
+            )}
 
             <select
               className="code-select code-archdoc-coverage-select"
@@ -733,7 +768,7 @@ export const RepoCoveragePage: React.FC = () => {
                 inTable
                 colSpan={5}
                 compact
-                title="正在加载仓库覆盖矩阵..."
+                title="正在加载代码仓列表..."
                 description="正在汇总各仓库与子目录的文档状态"
               />
             </tbody>
@@ -754,11 +789,19 @@ export const RepoCoveragePage: React.FC = () => {
                 inTable
                 colSpan={5}
                 type={hasActiveFilters ? 'search' : 'data'}
-                title={hasActiveFilters ? '未找到匹配当前筛选条件的范围' : '暂无可用代码仓库'}
+                title={
+                  hasActiveFilters
+                    ? '未找到匹配当前筛选条件的范围'
+                    : isUnboundOnlyMode
+                      ? '全部活跃代码仓均已关联架构功能模块'
+                      : '暂无可用代码仓库'
+                }
                 description={
                   hasActiveFilters
                     ? '请调整搜索词或点击“重置筛选”查看全部仓库'
-                    : '请先在平台中纳管代码仓库或架构元素'
+                    : isUnboundOnlyMode
+                      ? '当前平台全部活跃代码仓均已纳管至「架构文档全景」，如需模块发现、目录迁移或整仓汇总可切换至「全部代码仓」。'
+                      : '请先在平台中纳管代码仓库或架构元素'
                 }
                 action={
                   hasActiveFilters ? (
@@ -768,6 +811,14 @@ export const RepoCoveragePage: React.FC = () => {
                       onClick={resetFilters}
                     >
                       重置筛选
+                    </button>
+                  ) : isUnboundOnlyMode ? (
+                    <button
+                      type="button"
+                      className="code-archdoc-ghost-btn"
+                      onClick={() => updateFilter({ archBinding: 'all' })}
+                    >
+                      查看全部代码仓
                     </button>
                   ) : undefined
                 }

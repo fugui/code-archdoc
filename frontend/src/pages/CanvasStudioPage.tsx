@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, BookOpen, Loader2, Sparkles } from 'lucide-react';
 import { EmptyState, useConfirm, useToast } from '@code/common';
 import {
@@ -46,6 +46,7 @@ import { formatApiError } from '../utils/errorMessages';
 import {
   buildStudioPath,
   parseEvidenceDeepLinkParams,
+  resolveSafeStudioBackTarget,
   shortSha,
   type EvidenceDeepLinkParams,
 } from '../utils/urlQuery';
@@ -60,9 +61,14 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   evidenceDeepLink = false,
 }) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isEmbedded } = useModuleUser();
   const { showToast } = useToast();
   const confirm = useConfirm();
+  const backTarget = useMemo(
+    () => resolveSafeStudioBackTarget(location.state, isEmbedded),
+    [location.state, isEmbedded],
+  );
 
   const { repoId: rawRepoId, docId: rawDocId } = useParams<{
     repoId?: string;
@@ -236,7 +242,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
 
       setLoadError({
         title: '路由参数缺失',
-        message: '未指定有效的代码仓库或文档编号，请从仓库覆盖矩阵重新进入。',
+        message: '未指定有效的代码仓库或文档编号，请从架构文档全景重新进入。',
       });
     } catch (err: unknown) {
       const formatted = formatApiError(err, '加载工作台文档失败');
@@ -294,15 +300,17 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   );
 
   const handleBackToRepos = () => {
-    navigate(isEmbedded ? '/archdoc/repos' : '/repos');
+    navigate(backTarget.path);
   };
 
   const handleSelectSubdirectory = useCallback(
     (targetSubdir: string) => {
       if (!effectiveRepoId || targetSubdir === effectiveSubdir) return;
-      navigate(buildStudioPath(isEmbedded, effectiveRepoId, { subdirectory: targetSubdir }));
+      navigate(buildStudioPath(isEmbedded, effectiveRepoId, { subdirectory: targetSubdir }), {
+        state: location.state,
+      });
     },
-    [effectiveRepoId, effectiveSubdir, isEmbedded, navigate],
+    [effectiveRepoId, effectiveSubdir, isEmbedded, location.state, navigate],
   );
 
   const handleRefreshStudioModules = useCallback(async () => {
@@ -336,6 +344,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
         docId: targetDocId,
         subdirectory: effectiveSubdir,
       }),
+      { state: location.state },
     );
   };
 
@@ -597,6 +606,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
         publishing={publishing}
         unpublishing={unpublishing}
         exporting={exporting}
+        backLabel={backTarget.label}
         onBackToRepos={handleBackToRepos}
         onToggleDrawer={() => setDrawerOpen((prev) => !prev)}
         onOpenEvidence={() => {
@@ -672,7 +682,7 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
                     className="btn btn-secondary btn-small"
                     onClick={handleBackToRepos}
                   >
-                    返回仓库覆盖矩阵
+                    返回{backTarget.label}
                   </button>
                 }
               />
@@ -832,7 +842,9 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
           void loadStudioData();
         }}
         onOpenStudio={(rId, dId, sub) => {
-          navigate(buildStudioPath(isEmbedded, rId, { docId: dId, subdirectory: sub }));
+          navigate(buildStudioPath(isEmbedded, rId, { docId: dId, subdirectory: sub }), {
+            state: location.state,
+          });
         }}
       />
     </div>

@@ -1,20 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { RefreshCw, RotateCcw } from 'lucide-react';
 import { useDebounce, useToast } from '@code/common';
 import { exportDocumentsZip } from '../api/documents';
 import { getArchTree, listDocTypes } from '../api/repos';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
-import OverviewMicroPills, { buildCoverageMicroPills } from '../components/OverviewMicroPills';
+import OverviewMicroPills, { buildArchTreeMicroPills } from '../components/OverviewMicroPills';
 import ArchTreeView from '../components/coverage/ArchTreeView';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
   ArchTreeResponse,
+  ArchTreeSummaryVO,
   DocTypeSummaryVO,
-  RepoCoverageSummaryVO,
   RepoScopeCoverageVO,
   RepoStatusFilter,
 } from '../types';
+import {
+  collectArchTreeExpandableIds,
+  computeDefaultExpandedArchTreeIds,
+} from '../utils/archTreeUtils';
 import { groupDocTypesByCategory } from '../utils/docTypeUtils';
 import { formatApiError } from '../utils/errorMessages';
 import {
@@ -34,6 +38,7 @@ interface ModalLaunchState {
 
 export const ArchTreeCoveragePage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isEmbedded } = useModuleUser();
   const { showToast } = useToast();
 
@@ -45,14 +50,18 @@ export const ArchTreeCoveragePage: React.FC = () => {
 
   const [docTypes, setDocTypes] = useState<DocTypeSummaryVO[]>([]);
   const [archTreeData, setArchTreeData] = useState<ArchTreeResponse | null>(null);
-  const [summary, setSummary] = useState<RepoCoverageSummaryVO>({
-    total_scopes: 0,
-    covered_scopes: 0,
+  const [summary, setSummary] = useState<ArchTreeSummaryVO>({
+    total_modules: 0,
+    bound_modules: 0,
+    covered_modules: 0,
     approved_docs: 0,
+    draft_docs: 0,
     drifted_docs: 0,
+    unassigned_repo_count: 0,
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [exportingKey, setExportingKey] = useState<string | null>(null);
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<number>>(new Set());
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
 
   const [taskModal, setTaskModal] = useState<ModalLaunchState>({
@@ -90,6 +99,13 @@ export const ArchTreeCoveragePage: React.FC = () => {
 
   const docTypeGroups = useMemo(() => groupDocTypesByCategory(docTypes), [docTypes]);
 
+  const hasActiveFilters = Boolean(
+    filterState.search ||
+      filterState.subsystemId ||
+      filterState.docType ||
+      filterState.status,
+  );
+
   const fetchArchTree = useCallback(async () => {
     setLoading(true);
     try {
@@ -103,6 +119,12 @@ export const ArchTreeCoveragePage: React.FC = () => {
       if (res.summary) {
         setSummary(res.summary);
       }
+      const defaultExpanded = computeDefaultExpandedArchTreeIds(
+        res.nodes ?? [],
+        res.summary?.total_modules ?? 0,
+        hasActiveFilters,
+      );
+      setExpandedNodeIds(new Set(defaultExpanded));
     } catch (err: unknown) {
       showToast(formatApiError(err, '加载架构文档全景失败').message, 'error');
     } finally {
@@ -113,6 +135,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
     filterState.subsystemId,
     filterState.docType,
     filterState.status,
+    hasActiveFilters,
     showToast,
   ]);
 
@@ -133,6 +156,27 @@ export const ArchTreeCoveragePage: React.FC = () => {
     setSearchParams(new URLSearchParams());
   };
 
+  const toggleTreeNode = useCallback((nodeId: number) => {
+    setExpandedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
+
+  const expandAllNodes = useCallback(() => {
+    const nodes = archTreeData?.nodes ?? [];
+    setExpandedNodeIds(new Set(collectArchTreeExpandableIds(nodes)));
+  }, [archTreeData?.nodes]);
+
+  const collapseAllNodes = useCallback(() => {
+    setExpandedNodeIds(new Set());
+  }, []);
+
   const toggleExpandRow = useCallback((rowKey: string) => {
     setExpandedRowKeys((prev) => {
       const next = new Set(prev);
@@ -147,9 +191,14 @@ export const ArchTreeCoveragePage: React.FC = () => {
 
   const openStudio = useCallback(
     (repoId: number, docId?: number, subdirectory?: string) => {
-      navigate(buildStudioPath(isEmbedded, repoId, { docId, subdirectory }));
+      navigate(buildStudioPath(isEmbedded, repoId, { docId, subdirectory }), {
+        state: {
+          from: `${location.pathname}${location.search}`,
+          fromLabel: '架构文档全景',
+        },
+      });
     },
-    [isEmbedded, navigate],
+    [isEmbedded, location.pathname, location.search, navigate],
   );
 
   const openGenerateModal = useCallback(
@@ -180,7 +229,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
   );
 
   const handleExportRowZip = useCallback(
-    async (row: RepoScopeCoverageVO) => {
+    async (row: RepoScopeCoverageVO, rowKey: string) => {
       const approvedDocIds = Object.values(row.doc_statuses ?? {})
         .filter((ds) => ds.status === 'approved')
         .map((ds) => ds.document_id);
@@ -189,7 +238,6 @@ export const ArchTreeCoveragePage: React.FC = () => {
         return;
       }
 
-      const rowKey = `${row.repo_id}:${row.subdirectory}`;
       setExportingKey(rowKey);
       try {
         const filename = await exportDocumentsZip(
@@ -207,12 +255,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
   );
 
   const subsystems = archTreeData?.subsystems ?? [];
-  const hasActiveFilters = Boolean(
-    filterState.search ||
-      filterState.subsystemId ||
-      filterState.docType ||
-      filterState.status,
-  );
+  const hasTreeNodes = (archTreeData?.nodes?.length ?? 0) > 0;
 
   return (
     <div className="code-archdoc-workspace">
@@ -220,13 +263,13 @@ export const ArchTreeCoveragePage: React.FC = () => {
         <div>
           <h1 className="code-archdoc-page-title">架构文档全景</h1>
           <p className="code-archdoc-page-subtitle">
-            按平台「子系统 → 功能组 → 功能模块」层级树聚合浏览架构资产文档覆盖度，一键直达工作台审校与 ZIP 导出。
+            按平台「子系统 → 功能组 → 功能模块」单树表聚合浏览功能模块文档覆盖度，一键直达工作台审校与反推生成。
           </p>
         </div>
         <div className="code-archdoc-page-actions">
           <OverviewMicroPills
             ariaLabel="架构覆盖快捷摘要"
-            items={buildCoverageMicroPills(summary, filterState.status, (nextStatus) =>
+            items={buildArchTreeMicroPills(summary, filterState.status, (nextStatus) =>
               updateFilter({ status: nextStatus }),
             )}
           />
@@ -242,7 +285,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
         </div>
       </div>
 
-      {/* 单行 4 项精简筛选栏 */}
+      {/* 单行筛选栏 + 树节点全部展开/收起控制 */}
       <div className="code-card code-archdoc-coverage-toolbar">
         <div className="code-archdoc-coverage-filters">
           <input
@@ -263,7 +306,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
             <option value="">全部子系统</option>
             {subsystems.map((sub) => (
               <option key={sub.id} value={String(sub.id)}>
-                {sub.name_cn || sub.name_en || sub.identifier} ({sub.scope_count})
+                {sub.name_cn || sub.name_en || sub.identifier} ({sub.module_count ?? sub.scope_count})
               </option>
             ))}
           </select>
@@ -305,26 +348,47 @@ export const ArchTreeCoveragePage: React.FC = () => {
               <span>重置筛选</span>
             </button>
           )}
+
+          <div className="code-archdoc-tree-filter-actions">
+            <button
+              type="button"
+              className="code-archdoc-ghost-btn"
+              onClick={expandAllNodes}
+              disabled={!hasTreeNodes}
+            >
+              全部展开
+            </button>
+            <button
+              type="button"
+              className="code-archdoc-ghost-btn"
+              onClick={collapseAllNodes}
+              disabled={!hasTreeNodes}
+            >
+              全部收起
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* 架构树视图（聚焦查阅 / 审校 / 生成 / 导出） */}
+      {/* 单一 4 列树形表格 */}
       <ArchTreeView
         data={archTreeData}
         loading={loading}
         docTypes={docTypes}
         focusedDocTypeSlug={filterState.docType}
+        expandedNodeIds={expandedNodeIds}
         expandedDocRowKeys={expandedRowKeys}
         exportingKey={exportingKey}
         hasActiveFilters={hasActiveFilters}
         onResetFilters={resetFilters}
+        onToggleNode={toggleTreeNode}
         onToggleDocRowExpand={toggleExpandRow}
         onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
         onOpenStudio={openStudio}
         onTriggerGenerate={(r, slug) =>
           openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
         }
-        onExportZip={(r) => void handleExportRowZip(r)}
+        onExportZip={(r, rowKey) => void handleExportRowZip(r, rowKey)}
       />
 
       <GenerateTaskModal

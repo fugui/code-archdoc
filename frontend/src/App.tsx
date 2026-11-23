@@ -162,7 +162,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               ? '全局概览 · 文档治理与质量度量大盘'
               : isStudio
                 ? 'Canvas Studio 协同审校工作台'
-                : '仓库文档覆盖';
+                : '未关联代码仓';
 
   return (
     <div className="code-archdoc-shell">
@@ -188,22 +188,22 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               <span>全局概览</span>
             </Link>
             <Link
-              to="/repos"
-              className={`code-archdoc-nav-link ${
-                isRepos || isStudio ? 'code-archdoc-nav-link--active' : ''
-              }`}
-            >
-              <FolderGit2 size={17} />
-              <span>仓库文档覆盖</span>
-            </Link>
-            <Link
               to="/arch-tree"
               className={`code-archdoc-nav-link ${
-                isArchTree ? 'code-archdoc-nav-link--active' : ''
+                isArchTree || isStudio ? 'code-archdoc-nav-link--active' : ''
               }`}
             >
               <ListTree size={17} />
               <span>架构文档全景</span>
+            </Link>
+            <Link
+              to="/repos"
+              className={`code-archdoc-nav-link ${
+                isRepos ? 'code-archdoc-nav-link--active' : ''
+              }`}
+            >
+              <FolderGit2 size={17} />
+              <span>未关联代码仓</span>
             </Link>
           </div>
 

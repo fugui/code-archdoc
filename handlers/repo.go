@@ -17,7 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func parseRepoCoverageFilter(c *gin.Context, withPagination bool) (services.RepoCoverageFilter, bool) {
+func parseRepoCoverageFilter(c *gin.Context, withPagination, allowUnboundRepo bool) (services.RepoCoverageFilter, bool) {
 	page := 1
 	pageSize := 25
 	if withPagination {
@@ -62,8 +62,17 @@ func parseRepoCoverageFilter(c *gin.Context, withPagination bool) (services.Repo
 	archBinding := strings.ToLower(strings.TrimSpace(c.Query("arch_binding")))
 	switch archBinding {
 	case "", "all", "bound", "unbound":
+	case services.ArchBindingFilterUnboundRepo:
+		if !allowUnboundRepo {
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "arch_binding 参数仅支持 all | bound | unbound", nil)
+			return services.RepoCoverageFilter{}, false
+		}
 	default:
-		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "arch_binding 参数仅支持 all | bound | unbound", nil)
+		msg := "arch_binding 参数仅支持 all | bound | unbound"
+		if allowUnboundRepo {
+			msg = "arch_binding 参数仅支持 all | bound | unbound | unbound_repo"
+		}
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, msg, nil)
 		return services.RepoCoverageFilter{}, false
 	}
 
@@ -88,7 +97,7 @@ func (h *AppHandlers) ListRepos(c *gin.Context) {
 		return
 	}
 
-	filter, valid := parseRepoCoverageFilter(c, true)
+	filter, valid := parseRepoCoverageFilter(c, true, true)
 	if !valid {
 		return
 	}
@@ -111,7 +120,7 @@ func (h *AppHandlers) GetArchTree(c *gin.Context) {
 		return
 	}
 
-	filter, valid := parseRepoCoverageFilter(c, false)
+	filter, valid := parseRepoCoverageFilter(c, false, false)
 	if !valid {
 		return
 	}

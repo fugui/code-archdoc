@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   BookOpen,
   Eye,
@@ -96,6 +96,7 @@ function formatDuration(startedAt: string | null, finishedAt: string | null): st
 
 export const TaskCenterPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isEmbedded } = useModuleUser();
   const { showToast } = useToast();
   const confirm = useConfirm();
@@ -572,7 +573,7 @@ export const TaskCenterPage: React.FC = () => {
             description={
               hasActiveFilters
                 ? '请放宽任务状态或仓库筛选条件，或点击重置筛选'
-                : '点击右上角「新建生成任务」或在仓库覆盖矩阵触发设计文档反推。'
+                : '点击右上角「新建生成任务」或在架构文档全景触发设计文档反推。'
             }
             action={
               hasActiveFilters ? (
@@ -769,6 +770,12 @@ export const TaskCenterPage: React.FC = () => {
                                       docId: task.target_document_id ?? undefined,
                                       subdirectory: task.subdirectory,
                                     }),
+                                    {
+                                      state: {
+                                        from: `${location.pathname}${location.search}`,
+                                        fromLabel: '反推任务中心',
+                                      },
+                                    },
                                   )
                                 }
                                 title="打开 Canvas Studio 审校产出文档"
@@ -837,7 +844,12 @@ export const TaskCenterPage: React.FC = () => {
           );
         }}
         onOpenStudio={(rId, dId, sub) => {
-          navigate(buildStudioPath(isEmbedded, rId, { docId: dId, subdirectory: sub }));
+          navigate(buildStudioPath(isEmbedded, rId, { docId: dId, subdirectory: sub }), {
+            state: {
+              from: `${location.pathname}${location.search}`,
+              fromLabel: '反推任务中心',
+            },
+          });
         }}
       />
 

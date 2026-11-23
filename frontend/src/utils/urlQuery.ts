@@ -63,7 +63,7 @@ export interface EvidenceDeepLinkParams {
 
 const VALID_STATUS_SET = new Set<string>(['all', 'approved', 'draft', 'drifted', 'missing']);
 const VALID_SCOPE_SET = new Set<string>(['all', 'repo', 'subdir']);
-const VALID_ARCH_BINDING_SET = new Set<string>(['all', 'bound', 'unbound']);
+const VALID_ARCH_BINDING_SET = new Set<string>(['all', 'bound', 'unbound', 'unbound_repo']);
 const VALID_DRIFT_TYPE_SET = new Set<string>(['all', 'code', 'spec', 'both']);
 const VALID_TASK_STATUS_SET = new Set<string>([
   'all',
@@ -196,10 +196,105 @@ export function serializeRepoFilterParams(
   if (nextState.subsystemId.trim()) {
     out.set('subsystem_id', nextState.subsystemId.trim());
   }
-  if (nextState.archBinding && nextState.archBinding !== 'all') {
+  if (nextState.archBinding && nextState.archBinding !== 'unbound_repo') {
     out.set('arch_binding', nextState.archBinding);
   }
   return out;
+}
+
+export interface RepoFilterFlags {
+  advancedFilterCount: number;
+  hasActiveFilters: boolean;
+}
+
+/**
+ * 将视图模式（'' / 'all' / 'unbound_repo'）与用户主动筛选解耦，防止默认模式触发高级筛选展开或折叠失效。
+ */
+export function computeRepoFilterFlags(filter: RepoFilterState): RepoFilterFlags {
+  const isExplicitBindingFilter =
+    filter.archBinding === 'bound' || filter.archBinding === 'unbound';
+  const advancedFilterCount = [
+    filter.subsystemId.trim(),
+    filter.scopeType && filter.scopeType !== 'all' ? filter.scopeType : '',
+    isExplicitBindingFilter ? filter.archBinding : '',
+  ].filter(Boolean).length;
+
+  const hasActiveFilters = Boolean(
+    filter.search.trim() ||
+      filter.departmentId.trim() ||
+      filter.docType.trim() ||
+      (filter.status && filter.status !== 'all') ||
+      advancedFilterCount > 0,
+  );
+
+  return {
+    advancedFilterCount,
+    hasActiveFilters,
+  };
+}
+
+export interface StudioNavState {
+  from?: string;
+  fromLabel?: string;
+}
+
+export interface SafeStudioBackTarget {
+  path: string;
+  label: string;
+}
+
+const SAFE_STUDIO_BACK_RE = /^(?:\/archdoc)?\/(arch-tree|repos|tasks|drift|overview)(\?[^#]*)?$/;
+
+function defaultLabelForRouteSegment(segment: string): string {
+  switch (segment) {
+    case 'repos':
+      return '未关联代码仓';
+    case 'tasks':
+      return '反推任务中心';
+    case 'drift':
+      return '双维漂移雷达';
+    case 'overview':
+      return '全局概览';
+    case 'arch-tree':
+    default:
+      return '架构文档全景';
+  }
+}
+
+/**
+ * 校验并解析 Canvas Studio 返回目标，拦截外域 URL、协议相对路径与危险协议，缺省或非法时回落至架构文档全景。
+ */
+export function resolveSafeStudioBackTarget(
+  state: unknown,
+  isEmbedded: boolean,
+): SafeStudioBackTarget {
+  const fallbackPath = buildModulePath(isEmbedded, '/arch-tree');
+  const fallback: SafeStudioBackTarget = {
+    path: fallbackPath,
+    label: '架构文档全景',
+  };
+
+  if (!state || typeof state !== 'object') {
+    return fallback;
+  }
+
+  const candidate = state as StudioNavState;
+  const rawFrom = typeof candidate.from === 'string' ? candidate.from.trim() : '';
+  if (!rawFrom) {
+    return fallback;
+  }
+
+  const match = SAFE_STUDIO_BACK_RE.exec(rawFrom);
+  if (!match) {
+    return fallback;
+  }
+
+  const routeSegment = match[1];
+  const rawLabel = typeof candidate.fromLabel === 'string' ? candidate.fromLabel.trim() : '';
+  return {
+    path: rawFrom,
+    label: rawLabel || defaultLabelForRouteSegment(routeSegment),
+  };
 }
 
 /**

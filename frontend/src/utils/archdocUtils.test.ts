@@ -5,6 +5,7 @@ import {
   buildModulePath,
   buildOverviewDrilldownPath,
   buildStudioPath,
+  computeRepoFilterFlags,
   formatCoverageRate,
   parseArchTreeFilterParams,
   parseDriftFilterParams,
@@ -13,11 +14,18 @@ import {
   parseLineRange,
   parseRepoFilterParams,
   parseTaskFilterParams,
+  resolveSafeStudioBackTarget,
   serializeArchTreeFilterParams,
   serializeDriftFilterParams,
   serializeRepoFilterParams,
   serializeTaskFilterParams,
 } from './urlQuery.ts';
+import {
+  buildArchTreeMicroPills,
+  collectArchTreeExpandableIds,
+  computeDefaultExpandedArchTreeIds,
+  flattenArchTreeRows,
+} from './archTreeUtils.ts';
 import { ArchdocApiError, formatApiError, formatTaskErrorCode } from './errorMessages.ts';
 import { isSafeLinkHref, parseMarkdownBlocks } from './markdown.ts';
 import {
@@ -614,6 +622,305 @@ describe('全局概览大盘覆盖率计算与下钻路由拼装', () => {
     assert.equal(
       buildOverviewDrilldownPath(true, '/drift', { drift_type: 'code' }),
       '/archdoc/drift?drift_type=code',
+    );
+  });
+});
+
+describe('ADR-09 架构文档全景树表扁平化、默认展开阈值、筛选标志与 Studio 安全返回 (T-ADR09-08 ~ T-ADR09-11)', () => {
+  const sampleTree = [
+    {
+      id: 1,
+      identifier: 'RND_AI',
+      name_cn: 'AI辅助研发子系统',
+      name_en: 'AI R&D',
+      type: 'subsystem',
+      parent_id: null,
+      owner_id: 10,
+      owner_name: '管理员',
+      repo_id: null,
+      subdirectory: '',
+      description: '',
+      stats: {
+        module_count: 3,
+        bound_module_count: 2,
+        covered_module_count: 1,
+        approved_doc_count: 1,
+        draft_doc_count: 1,
+        drifted_doc_count: 0,
+        blocked_doc_count: 0,
+      },
+      scopes: [],
+      children: [
+        {
+          id: 2,
+          identifier: 'BENCH',
+          name_cn: '门户功能组',
+          name_en: 'Bench',
+          type: 'group',
+          parent_id: 1,
+          owner_id: 10,
+          owner_name: '管理员',
+          repo_id: null,
+          subdirectory: '',
+          description: '',
+          stats: {
+            module_count: 2,
+            bound_module_count: 1,
+            covered_module_count: 1,
+            approved_doc_count: 1,
+            draft_doc_count: 0,
+            drifted_doc_count: 0,
+            blocked_doc_count: 0,
+          },
+          scopes: [],
+          children: [
+            {
+              id: 3,
+              identifier: 'BENCH_FRONT',
+              name_cn: '门户前端',
+              name_en: 'Bench Front',
+              type: 'module',
+              parent_id: 2,
+              owner_id: 10,
+              owner_name: '管理员',
+              repo_id: 101,
+              subdirectory: 'frontend',
+              description: '',
+              binding_status: 'bound' as const,
+              scope: null,
+              stats: {
+                module_count: 1,
+                bound_module_count: 1,
+                covered_module_count: 1,
+                approved_doc_count: 1,
+                draft_doc_count: 0,
+                drifted_doc_count: 0,
+                blocked_doc_count: 0,
+              },
+              scopes: [],
+              children: [],
+            },
+            {
+              id: 4,
+              identifier: 'BENCH_AUTH',
+              name_cn: '权限中心',
+              name_en: 'Bench Auth',
+              type: 'module',
+              parent_id: 2,
+              owner_id: 11,
+              owner_name: '张三',
+              repo_id: null,
+              subdirectory: '',
+              description: '',
+              binding_status: 'unbound' as const,
+              scope: null,
+              stats: {
+                module_count: 1,
+                bound_module_count: 0,
+                covered_module_count: 0,
+                approved_doc_count: 0,
+                draft_doc_count: 0,
+                drifted_doc_count: 0,
+                blocked_doc_count: 0,
+              },
+              scopes: [],
+              children: [],
+            },
+          ],
+        },
+        {
+          id: 5,
+          identifier: 'DIRECT_MOD',
+          name_cn: '直挂子系统模块',
+          name_en: 'Direct Mod',
+          type: 'module',
+          parent_id: 1,
+          owner_id: 10,
+          owner_name: '管理员',
+          repo_id: 102,
+          subdirectory: '',
+          description: '',
+          binding_status: 'repo_inactive' as const,
+          scope: null,
+          stats: {
+            module_count: 1,
+            bound_module_count: 0,
+            covered_module_count: 0,
+            approved_doc_count: 0,
+            draft_doc_count: 0,
+            drifted_doc_count: 0,
+            blocked_doc_count: 0,
+          },
+          scopes: [],
+          children: [],
+        },
+      ],
+    },
+  ];
+
+  it('T-ADR09-08: 树表扁平化、跳过功能组直挂层级、rowKey 与默认展开阈值(50)', () => {
+    const expandableAll = collectArchTreeExpandableIds(sampleTree);
+    assert.deepEqual(expandableAll, [1, 2]);
+    assert.deepEqual(collectArchTreeExpandableIds(sampleTree, 1), [1]);
+
+    const collapsed = flattenArchTreeRows(sampleTree, new Set());
+    assert.equal(collapsed.length, 1);
+    assert.equal(collapsed[0].rowKey, 'node:1');
+    assert.equal(collapsed[0].depth, 0);
+    assert.equal(collapsed[0].hasChildren, true);
+    assert.equal(collapsed[0].isExpanded, false);
+
+    const expandedSubsysOnly = flattenArchTreeRows(sampleTree, new Set([1]));
+    assert.deepEqual(
+      expandedSubsysOnly.map((r) => ({ key: r.rowKey, depth: r.depth, hasChildren: r.hasChildren })),
+      [
+        { key: 'node:1', depth: 0, hasChildren: true },
+        { key: 'node:2', depth: 1, hasChildren: true },
+        { key: 'module:5', depth: 1, hasChildren: false },
+      ],
+    );
+
+    const fullyExpanded = flattenArchTreeRows(sampleTree, new Set([1, 2]));
+    assert.deepEqual(
+      fullyExpanded.map((r) => ({ key: r.rowKey, depth: r.depth })),
+      [
+        { key: 'node:1', depth: 0 },
+        { key: 'node:2', depth: 1 },
+        { key: 'module:3', depth: 2 },
+        { key: 'module:4', depth: 2 },
+        { key: 'module:5', depth: 1 },
+      ],
+    );
+
+    assert.deepEqual(computeDefaultExpandedArchTreeIds(sampleTree, 50, false), [1, 2]);
+    assert.deepEqual(computeDefaultExpandedArchTreeIds(sampleTree, 51, false), [1]);
+    assert.deepEqual(computeDefaultExpandedArchTreeIds(sampleTree, 51, true), [1, 2]);
+  });
+
+  it('T-ADR09-09: /repos URL 序列化保留 arch_binding=all、解析 unbound_repo 且防筛选陷阱', () => {
+    const allParams = serializeRepoFilterParams({ archBinding: 'all' });
+    assert.equal(allParams.get('arch_binding'), 'all');
+    assert.equal(parseRepoFilterParams(allParams).archBinding, 'all');
+
+    const defaultParams = serializeRepoFilterParams({ archBinding: '' });
+    assert.equal(defaultParams.get('arch_binding'), null);
+    assert.equal(parseRepoFilterParams(defaultParams).archBinding, '');
+
+    const unboundRepoParam = serializeRepoFilterParams({ archBinding: 'unbound_repo' });
+    assert.equal(unboundRepoParam.get('arch_binding'), null);
+    assert.equal(
+      parseRepoFilterParams(new URLSearchParams('arch_binding=unbound_repo')).archBinding,
+      'unbound_repo',
+    );
+
+    assert.deepEqual(computeRepoFilterFlags(parseRepoFilterParams(new URLSearchParams())), {
+      advancedFilterCount: 0,
+      hasActiveFilters: false,
+    });
+    assert.deepEqual(
+      computeRepoFilterFlags(parseRepoFilterParams(new URLSearchParams('arch_binding=all'))),
+      { advancedFilterCount: 0, hasActiveFilters: false },
+    );
+    assert.deepEqual(
+      computeRepoFilterFlags(parseRepoFilterParams(new URLSearchParams('arch_binding=unbound_repo'))),
+      { advancedFilterCount: 0, hasActiveFilters: false },
+    );
+    assert.deepEqual(
+      computeRepoFilterFlags(
+        parseRepoFilterParams(new URLSearchParams('arch_binding=bound&scope_type=subdir')),
+      ),
+      { advancedFilterCount: 2, hasActiveFilters: true },
+    );
+    assert.deepEqual(
+      computeRepoFilterFlags(parseRepoFilterParams(new URLSearchParams('search=order'))),
+      { advancedFilterCount: 0, hasActiveFilters: true },
+    );
+  });
+
+  it('T-ADR09-10: Studio 来源安全返回白名单校验（拦截开放重定向与 XSS 协议）', () => {
+    assert.deepEqual(resolveSafeStudioBackTarget(null, false), {
+      path: '/arch-tree',
+      label: '架构文档全景',
+    });
+    assert.deepEqual(resolveSafeStudioBackTarget(undefined, true), {
+      path: '/archdoc/arch-tree',
+      label: '架构文档全景',
+    });
+
+    assert.deepEqual(
+      resolveSafeStudioBackTarget(
+        { from: '/repos?page=2&arch_binding=all', fromLabel: '未关联代码仓' },
+        false,
+      ),
+      { path: '/repos?page=2&arch_binding=all', label: '未关联代码仓' },
+    );
+    assert.deepEqual(
+      resolveSafeStudioBackTarget({ from: '/archdoc/tasks?status=failed' }, true),
+      { path: '/archdoc/tasks?status=failed', label: '反推任务中心' },
+    );
+    assert.deepEqual(
+      resolveSafeStudioBackTarget({ from: '/drift?drift_type=code' }, false),
+      { path: '/drift?drift_type=code', label: '双维漂移雷达' },
+    );
+
+    for (const evil of [
+      'https://evil.com/repos',
+      'http://evil.com',
+      '//evil.com/arch-tree',
+      'javascript:alert(1)',
+      '/admin/llm',
+      '/repos#fragment',
+      '',
+    ]) {
+      assert.deepEqual(resolveSafeStudioBackTarget({ from: evil, fromLabel: '恶意' }, false), {
+        path: '/arch-tree',
+        label: '架构文档全景',
+      });
+      assert.deepEqual(resolveSafeStudioBackTarget({ from: evil }, true), {
+        path: '/archdoc/arch-tree',
+        label: '架构文档全景',
+      });
+    }
+  });
+
+  it('T-ADR09-11: buildArchTreeMicroPills 输出与点击切换及 /arch-tree 概览下钻', () => {
+    let toggled: string | null = null;
+    const pills = buildArchTreeMicroPills(
+      {
+        total_modules: 12,
+        bound_modules: 10,
+        covered_modules: 7,
+        approved_docs: 15,
+        draft_docs: 4,
+        drifted_docs: 3,
+        unassigned_repo_count: 2,
+      },
+      'approved',
+      (next) => {
+        toggled = next;
+      },
+    );
+    assert.deepEqual(
+      pills.map((p) => ({ key: p.key, label: p.label, value: p.value, active: Boolean(p.active) })),
+      [
+        { key: 'total_modules', label: '功能模块', value: 12, active: false },
+        { key: 'covered_modules', label: '已覆盖', value: 7, active: false },
+        { key: 'approved_docs', label: '已发布', value: 15, active: true },
+        { key: 'drifted_docs', label: '漂移', value: 3, active: false },
+      ],
+    );
+    pills[2].onClick?.();
+    assert.equal(toggled, '');
+    pills[3].onClick?.();
+    assert.equal(toggled, 'drifted');
+
+    assert.equal(
+      buildOverviewDrilldownPath(false, '/arch-tree', { status: 'approved' }),
+      '/arch-tree?status=approved',
+    );
+    assert.equal(
+      buildOverviewDrilldownPath(true, '/arch-tree', { status: 'drifted' }),
+      '/archdoc/arch-tree?status=drifted',
     );
   });
 });

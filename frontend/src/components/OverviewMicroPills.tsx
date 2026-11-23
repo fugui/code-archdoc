@@ -1,16 +1,12 @@
 import React from 'react';
+import {
+  buildArchTreeMicroPills,
+  type MicroStatPillItem,
+  type MicroStatTone,
+} from '../utils/archTreeUtils';
 
-export type MicroStatTone = 'default' | 'success' | 'warning' | 'purple' | 'info';
-
-export interface MicroStatPillItem {
-  key: string;
-  label: string;
-  value: string | number;
-  tone?: MicroStatTone;
-  active?: boolean;
-  title?: string;
-  onClick?: () => void;
-}
+export type { MicroStatPillItem, MicroStatTone };
+export { buildArchTreeMicroPills };
 
 interface OverviewMicroPillsProps {
   items: MicroStatPillItem[];
@@ -77,7 +73,7 @@ export const OverviewMicroPills: React.FC<OverviewMicroPillsProps> = ({
 export default OverviewMicroPills;
 
 /**
- * 构造「仓库文档覆盖」与「架构文档全景」共享的 4 项极简摘要微标配置。
+ * 构造「未关联代码仓」(/repos) 顶部 4 项极简摘要微标配置。
  */
 export function buildCoverageMicroPills(
   summary: {

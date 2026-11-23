@@ -121,6 +121,10 @@
   flex-shrink: 0;
 }
 
+.code-archdoc-repo-mode-switcher {
+  margin-left: auto;
+}
+
 .code-archdoc-view-tab {
   display: inline-flex;
   align-items: center;
@@ -905,92 +909,52 @@
   transform: translateY(0);
 }
 
-/* ── 架构树视角样式 ── */
-.code-archdoc-tree-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.code-archdoc-tree-container {
-  overflow: visible;
-}
-
-.code-archdoc-tree-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.85rem 1.15rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.code-archdoc-tree-legend {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-  font-size: 0.78rem;
-  color: var(--color-text-secondary);
-}
-
-.code-archdoc-tree-legend-item {
+/* ── 架构文档全景：单一 4 列树形表格样式（全量 --color-* Token） ── */
+.code-archdoc-tree-filter-actions {
   display: inline-flex;
   align-items: center;
-  gap: 0.32rem;
-}
-
-.code-archdoc-tree-toolbar-actions {
-  display: flex;
-  align-items: center;
   gap: 0.45rem;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
-.code-archdoc-tree-list {
-  display: flex;
-  flex-direction: column;
-  padding: 0.75rem 1rem 1rem 1rem;
-  gap: 0.65rem;
+.code-archdoc-tree-table td {
+  vertical-align: middle;
 }
 
-.code-archdoc-tree-node {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
+.code-archdoc-tree-row--subsystem > td {
+  background: var(--color-bg-muted);
+}
+
+.code-archdoc-tree-row--group > td {
   background: var(--color-bg-surface);
 }
 
-.code-archdoc-tree-node--root {
-  box-shadow: var(--shadow-sm);
+.code-archdoc-tree-row--module > td {
+  background: var(--color-bg-surface);
 }
 
-.code-archdoc-tree-node-head {
+.code-archdoc-tree-row--gap > td {
+  background: var(--color-bg-surface);
+}
+
+.code-archdoc-tree-indent {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.72rem 0.9rem;
-  border-radius: var(--radius-md);
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding-left: calc(var(--tree-depth, 0) * 1.35rem);
+  min-width: 240px;
 }
 
-.code-archdoc-tree-node-head--interactive {
-  cursor: pointer;
-  transition: var(--transition-fast);
-}
-
-.code-archdoc-tree-node-head--interactive:hover {
-  background: var(--color-bg-hover);
-}
-
-.code-archdoc-tree-node-left {
-  display: flex;
-  align-items: center;
-  gap: 0.48rem;
-  flex-wrap: wrap;
-  min-width: 0;
+.code-archdoc-tree-indent[data-has-depth='true']::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--tree-depth, 0) * 1.35rem - 0.72rem);
+  top: -0.45rem;
+  bottom: -0.45rem;
+  width: 1px;
+  background: var(--color-border-subtle);
 }
 
 .code-archdoc-tree-toggle {
@@ -1005,6 +969,7 @@
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .code-archdoc-tree-toggle:hover {
@@ -1016,16 +981,19 @@
   width: 22px;
   height: 22px;
   display: inline-block;
+  flex-shrink: 0;
 }
 
 .code-archdoc-tree-node-icon--subsystem {
   color: var(--color-primary);
   flex-shrink: 0;
+  margin-top: 0.15rem;
 }
 
 .code-archdoc-tree-node-icon--group {
   color: var(--color-orange);
   flex-shrink: 0;
+  margin-top: 0.15rem;
 }
 
 .code-archdoc-tree-node-icon--module {
@@ -1034,70 +1002,64 @@
 }
 
 .code-archdoc-tree-node-title {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   font-weight: 600;
   color: var(--color-text-primary);
 }
 
-.code-archdoc-tree-node-owner {
-  display: inline-flex;
+.code-archdoc-tree-module-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.code-archdoc-tree-module-main {
+  display: flex;
   align-items: center;
-  gap: 0.25rem;
-  font-size: 0.75rem;
+  gap: 0.42rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-tree-source-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
   color: var(--color-text-secondary);
 }
 
-.code-archdoc-tree-node-stats {
+.code-archdoc-tree-status-note {
+  font-size: 0.74rem;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.code-archdoc-tree-status-note--warning {
+  color: var(--color-warning);
+}
+
+.code-archdoc-tree-agg-cell {
   display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.code-archdoc-tree-node-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-  padding: 0.35rem 0.9rem 0.9rem 1.75rem;
-  border-top: 1px solid var(--color-border-subtle);
-}
-
-.code-archdoc-tree-scopes-wrap {
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-}
-
-.code-archdoc-tree-children {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  padding-left: 0.75rem;
-  border-left: 2px solid var(--color-border-subtle);
-}
-
-.code-archdoc-unassigned-card {
-  overflow: visible;
-}
-
-.code-archdoc-unassigned-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.85rem 1.15rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-  font-size: 0.8rem;
-}
-
-.code-archdoc-unassigned-title {
-  display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--color-text-primary);
+  flex-wrap: wrap;
+}
+
+.code-archdoc-tree-dash {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+}
+
+.code-archdoc-tree-action-muted {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.code-archdoc-tree-action-muted--warning {
+  color: var(--color-warning);
 }
 
 .code-archdoc-coverage-pagination {

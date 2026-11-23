@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowRight,
   BookOpen,
@@ -159,6 +159,7 @@ const DriftDimensionDetailCard: React.FC<{
 
 export const DriftRadarPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, isEmbedded } = useModuleUser();
   const { showToast } = useToast();
 
@@ -307,6 +308,12 @@ export const DriftRadarPage: React.FC = () => {
           docId: row.document_id,
           subdirectory: row.subdirectory,
         }),
+        {
+          state: {
+            from: `${location.pathname}${location.search}`,
+            fromLabel: '双维漂移雷达',
+          },
+        },
       );
     } catch (err: unknown) {
       showToast(formatApiError(err, '提交增量刷新任务失败').message, 'error');
@@ -588,6 +595,12 @@ export const DriftRadarPage: React.FC = () => {
                                       docId: row.document_id,
                                       subdirectory: row.subdirectory,
                                     }),
+                                    {
+                                      state: {
+                                        from: `${location.pathname}${location.search}`,
+                                        fromLabel: '双维漂移雷达',
+                                      },
+                                    },
                                   )
                                 }
                               >

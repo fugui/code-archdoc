@@ -25,16 +25,16 @@ import {
   getMetricsOverview,
   getMetricsSlotHeatmap,
 } from '../api/metrics';
-import { listDocTypes, listRepos } from '../api/repos';
+import { getArchTree, listDocTypes } from '../api/repos';
 import { listTasks } from '../api/tasks';
 import RevisionTrendChart from '../components/metrics/RevisionTrendChart';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
+  ArchTreeSummaryVO,
   DocTypeRevisionSummaryVO,
   DocTypeSummaryVO,
   DriftSummaryVO,
   MetricsOverviewVO,
-  RepoCoverageSummaryVO,
   RevisionMetricPointVO,
   SlotHeatmapItemVO,
   TaskSummaryVO,
@@ -130,11 +130,14 @@ export const QualityMetricsPage: React.FC = () => {
 
   // 三大宏观态势摘要状态
   const [summaryLoading, setSummaryLoading] = useState<boolean>(true);
-  const [coverageSummary, setCoverageSummary] = useState<RepoCoverageSummaryVO>({
-    total_scopes: 0,
-    covered_scopes: 0,
+  const [coverageSummary, setCoverageSummary] = useState<ArchTreeSummaryVO>({
+    total_modules: 0,
+    bound_modules: 0,
+    covered_modules: 0,
     approved_docs: 0,
+    draft_docs: 0,
     drifted_docs: 0,
+    unassigned_repo_count: 0,
   });
   const [driftSummary, setDriftSummary] = useState<DriftSummaryVO>({
     total_drifted_docs: 0,
@@ -187,13 +190,13 @@ export const QualityMetricsPage: React.FC = () => {
   const loadGlobalSummaries = useCallback(async () => {
     setSummaryLoading(true);
     try {
-      const [repoRes, driftRes, taskRes] = await Promise.allSettled([
-        listRepos({ page: 1, pageSize: 15 }),
+      const [archTreeRes, driftRes, taskRes] = await Promise.allSettled([
+        getArchTree({}),
         getDriftSummary(),
         listTasks({ page: 1, pageSize: 15, topLevelOnly: true }),
       ]);
-      if (repoRes.status === 'fulfilled' && repoRes.value.summary) {
-        setCoverageSummary(repoRes.value.summary);
+      if (archTreeRes.status === 'fulfilled' && archTreeRes.value.summary) {
+        setCoverageSummary(archTreeRes.value.summary);
       }
       if (driftRes.status === 'fulfilled') {
         setDriftSummary(driftRes.value);
@@ -201,7 +204,7 @@ export const QualityMetricsPage: React.FC = () => {
       if (taskRes.status === 'fulfilled' && taskRes.value.summary) {
         setTaskSummary(taskRes.value.summary);
       }
-      const failedCount = [repoRes, driftRes, taskRes].filter(
+      const failedCount = [archTreeRes, driftRes, taskRes].filter(
         (res) => res.status === 'rejected',
       ).length;
       if (failedCount > 0) {
@@ -303,47 +306,47 @@ export const QualityMetricsPage: React.FC = () => {
   };
 
   const coverageRateText = formatCoverageRate(
-    coverageSummary.covered_scopes,
-    coverageSummary.total_scopes,
+    coverageSummary.covered_modules,
+    coverageSummary.total_modules,
   );
 
   const coverageCards: OverviewCardSpec[] = [
     {
-      key: 'total_scopes',
-      label: '纳入范围总数',
-      value: coverageSummary.total_scopes,
-      sub: `总体覆盖率 ${coverageRateText}（整仓与子目录）`,
+      key: 'total_modules',
+      label: '架构功能模块总数',
+      value: coverageSummary.total_modules,
+      sub: `总体覆盖率 ${coverageRateText} · 已绑源码 ${coverageSummary.bound_modules} / ${coverageSummary.total_modules}`,
       icon: <FolderGit2 size={20} />,
       iconTone: 'primary',
-      targetPath: '/repos',
+      targetPath: '/arch-tree',
     },
     {
-      key: 'covered_scopes',
-      label: '已覆盖范围',
-      value: coverageSummary.covered_scopes,
-      sub: '已产出至少 1 篇设计文档的纳管范围',
+      key: 'covered_modules',
+      label: '已覆盖功能模块',
+      value: coverageSummary.covered_modules,
+      sub: '已产出至少 1 篇设计文档的架构功能模块',
       icon: <Layers size={20} />,
       iconTone: 'purple',
       targetPath: '/arch-tree',
     },
     {
       key: 'approved_docs',
-      label: '已发布定稿文档',
+      label: '已发布架构文档',
       value: coverageSummary.approved_docs,
-      sub: '已通过 Verifier 并挂载至门户知识库',
+      sub: '架构功能模块已发布定稿，并挂载至门户知识库',
       icon: <CheckCircle2 size={20} />,
       iconTone: 'success',
-      targetPath: '/repos',
+      targetPath: '/arch-tree',
       query: { status: 'approved' },
     },
     {
       key: 'drifted_docs',
-      label: '存在漂移文档',
+      label: '架构漂移文档',
       value: coverageSummary.drifted_docs,
-      sub: '代码变更或模板规范升级待增量刷新',
+      sub: '架构功能模块待刷新；全平台含独立仓见下方漂移区',
       icon: <AlertTriangle size={20} />,
       iconTone: 'warning',
-      targetPath: '/repos',
+      targetPath: '/arch-tree',
       query: { status: 'drifted' },
     },
   ];
@@ -353,7 +356,7 @@ export const QualityMetricsPage: React.FC = () => {
       key: 'total_drifted',
       label: '待治理漂移文档',
       value: driftSummary.total_drifted_docs,
-      sub: `含双维漂移 ${driftSummary.both_drift_docs} 篇`,
+      sub: `全平台已发布文档（含独立未关联仓）· 双维漂移 ${driftSummary.both_drift_docs} 篇`,
       icon: <AlertTriangle size={20} />,
       iconTone: 'warning',
       targetPath: '/drift',
@@ -474,18 +477,26 @@ export const QualityMetricsPage: React.FC = () => {
           <div className="code-archdoc-overview-section-links">
             <button
               type="button"
-              className="code-archdoc-overview-section-link"
-              onClick={() => navigate(buildModulePath(isEmbedded, '/repos'))}
+              className="code-archdoc-overview-section-link code-archdoc-overview-section-link--primary"
+              onClick={() => navigate(buildModulePath(isEmbedded, '/arch-tree'))}
             >
-              <span>仓库文档覆盖</span>
+              <span>架构文档全景</span>
               <ArrowRight size={13} />
             </button>
             <button
               type="button"
               className="code-archdoc-overview-section-link"
-              onClick={() => navigate(buildModulePath(isEmbedded, '/arch-tree'))}
+              onClick={() => navigate(buildModulePath(isEmbedded, '/repos'))}
             >
-              <span>架构文档全景</span>
+              <span>未关联代码仓</span>
+              {coverageSummary.unassigned_repo_count > 0 && (
+                <span
+                  className="code-archdoc-overview-count-badge"
+                  title={`${coverageSummary.unassigned_repo_count} 个活跃代码仓尚未关联任何架构功能模块`}
+                >
+                  {coverageSummary.unassigned_repo_count}
+                </span>
+              )}
               <ArrowRight size={13} />
             </button>
           </div>

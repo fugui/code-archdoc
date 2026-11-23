@@ -109,7 +109,8 @@ export type ScopeType = 'repo' | 'subdir';
 export type RepoStatusFilter = '' | 'all' | 'approved' | 'draft' | 'drifted' | 'missing';
 export type RepoScopeFilter = '' | 'all' | 'repo' | 'subdir';
 export type CoverageViewMode = 'repo' | 'arch';
-export type ArchBindingFilter = '' | 'all' | 'bound' | 'unbound';
+export type ArchBindingFilter = '' | 'all' | 'bound' | 'unbound' | 'unbound_repo';
+export type ArchModuleBindingStatus = 'bound' | 'unbound' | 'repo_inactive';
 export type ArchElementType = 'subsystem' | 'group' | 'module' | '';
 
 export interface CurrentUserProfile {
@@ -336,12 +337,24 @@ export interface ArchSubsystemOptionVO {
   identifier: string;
   name_cn: string;
   name_en: string;
+  module_count?: number;
   scope_count: number;
 }
 
+export interface ArchTreeSummaryVO {
+  total_modules: number;
+  bound_modules: number;
+  covered_modules: number;
+  approved_docs: number;
+  draft_docs: number;
+  drifted_docs: number;
+  unassigned_repo_count: number;
+}
+
 export interface ArchTreeStatsVO {
-  scope_count: number;
-  covered_scope_count: number;
+  module_count: number;
+  bound_module_count: number;
+  covered_module_count: number;
   approved_doc_count: number;
   draft_doc_count: number;
   drifted_doc_count: number;
@@ -360,15 +373,19 @@ export interface ArchTreeNodeVO {
   repo_id: number | null;
   subdirectory: string;
   description: string;
+  binding_status?: ArchModuleBindingStatus;
+  scope?: RepoScopeCoverageVO | null;
   stats: ArchTreeStatsVO;
+  /** @deprecated 由 scope 替代，固定返回 [] */
   scopes: RepoScopeCoverageVO[];
   children: ArchTreeNodeVO[];
 }
 
 export interface ArchTreeResponse {
-  summary: RepoCoverageSummaryVO;
+  summary: ArchTreeSummaryVO;
   subsystems: ArchSubsystemOptionVO[];
   nodes: ArchTreeNodeVO[];
+  /** @deprecated 由 /repos?arch_binding=unbound_repo 承接，固定返回 [] */
   unassigned_scopes: RepoScopeCoverageVO[];
 }
 
