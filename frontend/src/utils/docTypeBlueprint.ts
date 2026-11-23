@@ -457,6 +457,33 @@ export function decompileToBlueprint(
   };
 }
 
+function cleanStaticMarkdown(markdown: string): string {
+  return normalizeLF(markdown).replace(/^\n+|\n+$/g, '');
+}
+
+function formatSlotTemplateChunk(block: SlotBlueprintBlock): string {
+  const marker = `<!-- slot:${block.slot.slot_id} -->`;
+  if (block.emitHeading) {
+    const hashes = '#'.repeat(block.headingLevel);
+    return `${hashes} ${block.slot.title.trim()}\n${marker}`;
+  }
+  return marker;
+}
+
+function formatHintBlockquote(rawHint: string): string {
+  const normalized = normalizeLF(rawHint).trim();
+  if (normalized === '') {
+    return '';
+  }
+  if (!normalized.includes('\n')) {
+    return `> [写作指引] ${normalized}`;
+  }
+  const quotedLines = normalized
+    .split('\n')
+    .map((line) => (line.trim() === '' ? '>' : `> ${line}`));
+  return ['> [写作指引]', ...quotedLines].join('\n');
+}
+
 /**
  * 将 DocBlueprint 确定性编译为写盘与接口提交所需的 { templateMD, slots }。
  */
@@ -469,7 +496,7 @@ export function compileFromBlueprint(blueprint: DocBlueprint): {
 
   for (const block of blueprint.blocks) {
     if (block.kind === 'static') {
-      const cleaned = normalizeLF(block.markdown).replace(/^\n+|\n+$/g, '');
+      const cleaned = cleanStaticMarkdown(block.markdown);
       if (cleaned !== '') {
         chunks.push(cleaned);
       }
@@ -478,18 +505,46 @@ export function compileFromBlueprint(blueprint: DocBlueprint): {
 
     const slotCopy = cloneSlotDefinition(block.slot);
     slots.push(slotCopy);
-
-    const marker = `<!-- slot:${slotCopy.slot_id} -->`;
-    if (block.emitHeading) {
-      const hashes = '#'.repeat(block.headingLevel);
-      chunks.push(`${hashes} ${slotCopy.title.trim()}\n${marker}`);
-    } else {
-      chunks.push(marker);
-    }
+    chunks.push(formatSlotTemplateChunk(block));
   }
 
   const templateMD = chunks.length > 0 ? `${chunks.join('\n\n')}\n` : '';
   return { templateMD, slots };
+}
+
+export interface BlueprintPreviewOptions {
+  /** 是否在各槽位占位标记下方附加章节写作指引 (instruction_hint) 引用块 */
+  includeHints?: boolean;
+}
+
+/**
+ * 生成供蓝图预览视图展示的模板纯文本。
+ * 当 includeHints 为 true 时仅在预览字符串中添加引用形式提示，不修改蓝图且不影响编译落盘的 template.md。
+ */
+export function formatBlueprintTemplatePreview(
+  blueprint: DocBlueprint,
+  options?: BlueprintPreviewOptions,
+): string {
+  if (!options?.includeHints) {
+    return compileFromBlueprint(blueprint).templateMD;
+  }
+
+  const chunks: string[] = [];
+  for (const block of blueprint.blocks) {
+    if (block.kind === 'static') {
+      const cleaned = cleanStaticMarkdown(block.markdown);
+      if (cleaned !== '') {
+        chunks.push(cleaned);
+      }
+      continue;
+    }
+
+    const baseChunk = formatSlotTemplateChunk(block);
+    const hintBlock = formatHintBlockquote(block.slot.instruction_hint ?? '');
+    chunks.push(hintBlock !== '' ? `${baseChunk}\n${hintBlock}` : baseChunk);
+  }
+
+  return chunks.length > 0 ? `${chunks.join('\n\n')}\n` : '';
 }
 
 function computeFenceForHint(hint: string): string {
@@ -513,7 +568,7 @@ export function serializeBlueprintToDSL(blueprint: DocBlueprint): string {
 
   for (const block of blueprint.blocks) {
     if (block.kind === 'static') {
-      const cleaned = normalizeLF(block.markdown).replace(/^\n+|\n+$/g, '');
+      const cleaned = cleanStaticMarkdown(block.markdown);
       if (cleaned !== '') {
         chunks.push(cleaned);
       }

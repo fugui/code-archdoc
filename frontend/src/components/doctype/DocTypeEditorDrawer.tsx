@@ -45,6 +45,7 @@ import {
   createDefaultBlueprint,
   decompileToBlueprint,
   detectUnconfirmedMissingSlotIds,
+  formatBlueprintTemplatePreview,
   nextBlueprintKey,
   parseDSLToBlueprint,
   serializeBlueprintToDSL,
@@ -113,6 +114,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
   const [drawerWidth, setDrawerWidth] = useState<DrawerWidthPreset>('xl');
   const [mainTab, setMainTab] = useState<EditorMainTab>('blueprint');
   const [blueprintMode, setBlueprintMode] = useState<BlueprintViewMode>('visual');
+  const [previewIncludeHints, setPreviewIncludeHints] = useState<boolean>(true);
 
   // 全局指令面板折叠状态
   const [genPromptOpen, setGenPromptOpen] = useState<boolean>(true);
@@ -163,6 +165,10 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
   }, [loadedDetail]);
 
   const compiledArtifacts = useMemo(() => compileFromBlueprint(blueprint), [blueprint]);
+  const previewTemplateText = useMemo(
+    () => formatBlueprintTemplatePreview(blueprint, { includeHints: previewIncludeHints }),
+    [blueprint, previewIncludeHints],
+  );
   const currentSlots = compiledArtifacts.slots;
 
   const autoUnionFacets = useMemo(
@@ -219,6 +225,7 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
 
     setMainTab(isCreate ? 'policy' : 'blueprint');
     setBlueprintMode('visual');
+    setPreviewIncludeHints(true);
     setGenPromptOpen(true);
     setRefinePromptOpen(false);
     setConfirmedSlotChanges(new Set());
@@ -1138,12 +1145,31 @@ export const DocTypeEditorDrawer: React.FC<DocTypeEditorDrawerProps> = ({
 
               {blueprintMode === 'preview' && (
                 <div className="code-archdoc-blueprint-preview-wrap">
-                  <div className="code-archdoc-field-hint">
-                    只读预览：由当前蓝图实时编译生成，保存时将按此精确骨架写入磁盘{' '}
-                    <code>template.md</code> 并同步 <code>meta.slots[]</code>。
+                  <div className="code-archdoc-blueprint-preview-header">
+                    <div className="code-archdoc-field-hint">
+                      {previewIncludeHints ? (
+                        <>
+                          只读预览：已附带各章节 <code>hint</code> 写作指引便于通读；保存时仅将不含指引的骨架写入磁盘{' '}
+                          <code>template.md</code>，指引保存在 <code>meta.slots[]</code>。
+                        </>
+                      ) : (
+                        <>
+                          只读预览：由当前蓝图实时编译生成，保存时将按此精确骨架写入磁盘{' '}
+                          <code>template.md</code> 并同步 <code>meta.slots[]</code>。
+                        </>
+                      )}
+                    </div>
+                    <label className="code-archdoc-checkbox-label code-archdoc-blueprint-preview-toggle">
+                      <input
+                        type="checkbox"
+                        checked={previewIncludeHints}
+                        onChange={(e) => setPreviewIncludeHints(e.target.checked)}
+                      />
+                      <span>包含章节写作指引 (hint)</span>
+                    </label>
                   </div>
                   <pre className="code-archdoc-blueprint-preview-pre">
-                    {compiledArtifacts.templateMD || '(空模板)'}
+                    {previewTemplateText || '(空模板)'}
                   </pre>
                 </div>
               )}

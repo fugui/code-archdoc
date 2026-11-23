@@ -798,6 +798,23 @@
   gap: 0.5rem;
 }
 
+.code-archdoc-blueprint-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.code-archdoc-blueprint-preview-header .code-archdoc-field-hint {
+  flex: 1 1 240px;
+}
+
+.code-archdoc-blueprint-preview-toggle {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .code-archdoc-blueprint-preview-pre {
   margin: 0;
   padding: 0.9rem;

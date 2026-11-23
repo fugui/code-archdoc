@@ -9,6 +9,7 @@ import {
   computeCanonicalFacetsUnion,
   decompileToBlueprint,
   detectUnconfirmedMissingSlotIds,
+  formatBlueprintTemplatePreview,
   parseDSLToBlueprint,
   serializeBlueprintToDSL,
   shouldDefaultAutoFacetsUnion,
@@ -510,5 +511,123 @@ describe('DocType 蓝图双模编解码与 DSL v1 纯函数 (T-ADR05-01 ~ T-ADR0
       { ...slotsRenamed[0], slot_id: 'core_request_flows' },
     ];
     assert.deepEqual(detectUnconfirmedMissingSlotIds(persisted, slotsRestored), []);
+  });
+
+  it('formatBlueprintTemplatePreview: 支持按开关附带章节写作指引 (hint) 且不污染编译产物', () => {
+    const bp: DocBlueprint = {
+      blocks: [
+        {
+          kind: 'static',
+          key: 'st_title',
+          markdown: '\n# 系统架构与核心链路\n\n',
+        },
+        {
+          kind: 'slot',
+          key: 'sl_single',
+          emitHeading: true,
+          headingLevel: 2,
+          slot: {
+            slot_id: 'overview_boundaries',
+            title: '1. 系统定位与模块分层边界',
+            ownership: 'auto',
+            required: true,
+            ir_facets: ['tree', 'deps'],
+            token_budget: 8000,
+            min_chars: 40,
+            instruction_hint: '  结合目录树与依赖说明系统边界。  ',
+          },
+        },
+        {
+          kind: 'slot',
+          key: 'sl_multi',
+          emitHeading: true,
+          headingLevel: 3,
+          slot: {
+            slot_id: 'runtime_concurrency',
+            title: '2. 运行时并发模型',
+            ownership: 'auto',
+            required: true,
+            ir_facets: ['runtime_primitives'],
+            token_budget: 10000,
+            min_chars: 40,
+            instruction_hint: '第一行：梳理线程池。\r\n\r\n第二行：核实锁粒度与原子操作。',
+          },
+        },
+        {
+          kind: 'slot',
+          key: 'sl_blank_hint',
+          emitHeading: true,
+          headingLevel: 2,
+          slot: {
+            slot_id: 'empty_hint_slot',
+            title: '3. 空白指引章节',
+            ownership: 'auto',
+            required: false,
+            ir_facets: ['tree'],
+            token_budget: 4000,
+            min_chars: 0,
+            instruction_hint: '   \n\t  ',
+          },
+        },
+        {
+          kind: 'slot',
+          key: 'sl_inline',
+          emitHeading: false,
+          headingLevel: 2,
+          slot: {
+            slot_id: 'inline_note',
+            title: '内嵌补充',
+            ownership: 'hybrid',
+            required: true,
+            ir_facets: ['config_keys'],
+            token_budget: 4000,
+            min_chars: 20,
+            instruction_hint: '列出关键运行配置默认值。',
+          },
+        },
+      ],
+    };
+
+    const bpSnapshot = structuredClone(bp);
+    const compiled = compileFromBlueprint(bp);
+
+    // 省略 options 或 includeHints=false 时，与 compileFromBlueprint(bp).templateMD 字节级一致
+    assert.equal(formatBlueprintTemplatePreview(bp), compiled.templateMD);
+    assert.equal(formatBlueprintTemplatePreview(bp, { includeHints: false }), compiled.templateMD);
+    assert.ok(!compiled.templateMD.includes('[写作指引]'));
+
+    // includeHints=true 时在预览文本中展示各章节写作指引
+    const withHints = formatBlueprintTemplatePreview(bp, { includeHints: true });
+    const expected = [
+      '# 系统架构与核心链路',
+      '',
+      '## 1. 系统定位与模块分层边界',
+      '<!-- slot:overview_boundaries -->',
+      '> [写作指引] 结合目录树与依赖说明系统边界。',
+      '',
+      '### 2. 运行时并发模型',
+      '<!-- slot:runtime_concurrency -->',
+      '> [写作指引]',
+      '> 第一行：梳理线程池。',
+      '>',
+      '> 第二行：核实锁粒度与原子操作。',
+      '',
+      '## 3. 空白指引章节',
+      '<!-- slot:empty_hint_slot -->',
+      '',
+      '<!-- slot:inline_note -->',
+      '> [写作指引] 列出关键运行配置默认值。',
+      '',
+    ].join('\n');
+
+    assert.equal(withHints, expected);
+
+    // 空蓝图返回空串
+    assert.equal(formatBlueprintTemplatePreview({ blocks: [] }, { includeHints: true }), '');
+    assert.equal(formatBlueprintTemplatePreview({ blocks: [] }), '');
+
+    // 原 compileFromBlueprint 结果与蓝图对象均未被修改
+    assert.ok(!compileFromBlueprint(bp).templateMD.includes('[写作指引]'));
+    assert.deepEqual(bp, bpSnapshot);
   });
 });
