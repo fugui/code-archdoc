@@ -48,7 +48,8 @@ docs/
 │   ├── 05-doctype-blueprint-dual-mode-editor.md       # ADR-05：文档类型蓝图化双模融合编辑器与 Spec Drift 模板判定精化
 │   ├── 06-document-review-and-refine-studio.md        # ADR-06：Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校工作台架构
 │   ├── 07-single-repo-branch-switch.md                # ADR-07：单仓目标分支切换与远端分支发现架构
-│   └── 08-dual-engine-doc-generation.md               # ADR-08：单文档粒度任务编排、Native 引擎加固与 OpenCode 双引擎文档反推架构
+│   ├── 08-dual-engine-doc-generation.md               # ADR-08：单文档粒度任务编排、Native 引擎加固与 OpenCode 双引擎文档反推架构
+│   └── 09-arch-tree-primary-view-and-unassigned-repos.md # ADR-09：架构文档全景主视图树表化重构与未关联代码仓定位收敛（提议中）
 └── 06-ops/          # 交付、运维与使用指南：双模联调、隔离测试、生产部署与模板配置手册
     ├── 01-verification-and-deployment-guide.md  # 联调验证、自动化回归测试与生产部署操作指南
     └── 02-code-ir-facets-subscription-guide.md  # Code IR 分片订阅 (ir_facets) 原理解析与配置使用指南
