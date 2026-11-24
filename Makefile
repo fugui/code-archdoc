@@ -84,6 +84,7 @@ lint-arch:
 		echo "$$bad_gitsync"; exit 1; \
 	fi; \
 	echo "✅ [ArchGuard Passed] All architectural boundary rules (incl. ADR-04) are clean."
+	node ../code-common/scripts/check-overlay-guard.mjs $(FRONTEND_DIR)/src
 
 # 完整打包构建（前端 dist + 内嵌单二进制）
 build: check-cgo $(BINARY)

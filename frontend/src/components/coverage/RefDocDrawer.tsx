@@ -12,9 +12,8 @@ import {
   Trash2,
   Unlink,
   Upload,
-  X,
 } from 'lucide-react';
-import { EmptyState, useConfirm, useToast } from '@code/common';
+import { Drawer, EmptyState, useConfirm, useToast } from '@code/common';
 import {
   createRefDoc,
   createRefDocBinding,
@@ -402,26 +401,22 @@ export const RefDocDrawer: React.FC<RefDocDrawerProps> = ({
   const inheritedItems = (effectiveData?.items ?? []).filter((it) => it.is_inherited);
 
   return (
-    <div className="code-archdoc-refdoc-overlay" role="dialog" aria-modal="true" aria-label={scopeMeta.title}>
-      <div className="code-archdoc-refdoc-backdrop" onClick={onClose} />
-      <aside className="code-archdoc-refdoc-drawer">
-        <header className="code-archdoc-refdoc-head">
-          <div className="code-archdoc-refdoc-head-title">
-            <BookOpen size={17} />
-            <span>{scopeMeta.title}</span>
-            <span className="code-badge code-badge--primary">
-              {formatRefDocScopeLabel(scopeMeta.scopeLevel)}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="btn btn-text btn-small"
-            onClick={onClose}
-            aria-label="关闭参考文档抽屉"
-          >
-            <X size={16} />
-          </button>
-        </header>
+    <Drawer
+      open={open}
+      onClose={onClose}
+      width="min(640px, 92vw)"
+      destroyOnClose
+      bodyStyle={{ padding: 0, gap: 0 }}
+      title={
+        <div className="code-archdoc-refdoc-head-title">
+          <BookOpen size={17} />
+          <span>{scopeMeta.title}</span>
+          <span className="code-badge code-badge--primary">
+            {formatRefDocScopeLabel(scopeMeta.scopeLevel)}
+          </span>
+        </div>
+      }
+    >
 
         <div className="code-archdoc-refdoc-toolbar">
           {viewMode !== 'list' ? (
@@ -954,8 +949,7 @@ export const RefDocDrawer: React.FC<RefDocDrawerProps> = ({
             ) : null
           )}
         </div>
-      </aside>
-    </div>
+    </Drawer>
   );
 };
 

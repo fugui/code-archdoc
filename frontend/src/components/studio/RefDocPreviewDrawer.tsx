@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, BookOpen, Loader2, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, Loader2 } from 'lucide-react';
+import { Drawer } from '@code/common';
 import { getRefDocDetail } from '../../api/refDocs';
 import type { ReferenceDocDetailVO, RefDocCitationVO } from '../../types';
 import { formatApiError } from '../../utils/errorMessages';
@@ -86,31 +87,26 @@ export const RefDocPreviewDrawer: React.FC<RefDocPreviewDrawerProps> = ({
   })();
 
   return (
-    <div className="code-archdoc-refdoc-overlay" role="dialog" aria-modal="true" aria-label="参考文档快照只读预览">
-      <div className="code-archdoc-refdoc-backdrop" onClick={onClose} />
-      <aside className="code-archdoc-refdoc-drawer">
-        <header className="code-archdoc-refdoc-head">
-          <div className="code-archdoc-refdoc-head-title">
-            <BookOpen size={17} />
-            <span>{detail?.title || target.docTitle || `参考文档 #${target.docId}`}</span>
-            <span className="code-archdoc-mono">v{target.versionNo}</span>
-            {detail && (
-              <span className="code-badge code-badge--muted">
-                {formatRefDocKindLabel(detail.doc_kind)}
-              </span>
-            )}
-          </div>
-          <button
-            type="button"
-            className="btn btn-text btn-small"
-            onClick={onClose}
-            aria-label="关闭参考文档预览"
-          >
-            <X size={16} />
-          </button>
-        </header>
-
-        <div className="code-archdoc-refdoc-body">
+    <Drawer
+      open={open}
+      onClose={onClose}
+      width="min(640px, 92vw)"
+      destroyOnClose
+      bodyStyle={{ padding: 0, gap: 0 }}
+      title={
+        <div className="code-archdoc-refdoc-head-title">
+          <BookOpen size={17} />
+          <span>{detail?.title || target.docTitle || `参考文档 #${target.docId}`}</span>
+          <span className="code-archdoc-mono">v{target.versionNo}</span>
+          {detail && (
+            <span className="code-badge code-badge--muted">
+              {formatRefDocKindLabel(detail.doc_kind)}
+            </span>
+          )}
+        </div>
+      }
+    >
+      <div className="code-archdoc-refdoc-body">
           {target.stale && (
             <div className="code-archdoc-alert code-archdoc-alert--warning">
               <AlertTriangle size={16} />
@@ -166,8 +162,7 @@ export const RefDocPreviewDrawer: React.FC<RefDocPreviewDrawerProps> = ({
             </div>
           ) : null}
         </div>
-      </aside>
-    </div>
+    </Drawer>
   );
 };
 
