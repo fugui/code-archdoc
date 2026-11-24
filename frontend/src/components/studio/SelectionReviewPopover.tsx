@@ -6,9 +6,11 @@ export interface SelectionReviewPopoverProps {
   visible: boolean;
   position: { left: number; top: number };
   quote: string;
-  ownership: SectionOwnership;
+  ownership?: SectionOwnership;
   canWrite: boolean;
-  onAddComment: () => void;
+  showCommentButton?: boolean;
+  canAsk?: boolean;
+  onAddComment?: () => void;
   onQuickRefine: () => void;
   onAskAI: () => void;
   onClose: () => void;
@@ -18,8 +20,10 @@ export const SelectionReviewPopover: React.FC<SelectionReviewPopoverProps> = ({
   visible,
   position,
   quote,
-  ownership,
+  ownership = 'auto',
   canWrite,
+  showCommentButton = true,
+  canAsk,
   onAddComment,
   onQuickRefine,
   onAskAI,
@@ -27,6 +31,7 @@ export const SelectionReviewPopover: React.FC<SelectionReviewPopoverProps> = ({
 }) => {
   if (!visible) return null;
   const isLocked = ownership === 'locked';
+  const effectiveCanAsk = canAsk ?? canWrite;
 
   return (
     <div
@@ -40,7 +45,7 @@ export const SelectionReviewPopover: React.FC<SelectionReviewPopoverProps> = ({
         “{quote.length > 26 ? `${quote.slice(0, 26)}…` : quote}”
       </span>
 
-      {canWrite && (
+      {showCommentButton && canWrite && onAddComment && (
         <button
           type="button"
           className="btn btn-secondary btn-small"
@@ -57,19 +62,19 @@ export const SelectionReviewPopover: React.FC<SelectionReviewPopoverProps> = ({
           type="button"
           className="btn btn-primary btn-small"
           onClick={onQuickRefine}
-          title="针对该选区立刻发起单章节微修"
+          title="针对该选区立刻发起局部精修"
         >
           <Sparkles size={13} />
           <span>立刻精修</span>
         </button>
       )}
 
-      {canWrite && (
+      {effectiveCanAsk && (
         <button
           type="button"
           className="btn btn-secondary btn-small"
           onClick={onAskAI}
-          title="只读追问实现细节与源码依据（支持锁定章节）"
+          title="只读追问文档细节（不修改正文）"
         >
           <HelpCircle size={13} />
           <span>问 AI</span>

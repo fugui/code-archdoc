@@ -100,6 +100,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("[%s] 初始化参考文档服务失败: %v", config.ServiceName, err)
 	}
+	refDocSvc.WithRefineEngine(govStore, llmClient)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
 		WithModuleRepo(moduleStore).
 		WithRefDocRepo(refDocStore)

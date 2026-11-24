@@ -39,6 +39,7 @@ import ArchTreeCoveragePage from './pages/ArchTreeCoveragePage';
 import CanvasStudioPage from './pages/CanvasStudioPage';
 import DriftRadarPage from './pages/DriftRadarPage';
 import QualityMetricsPage from './pages/QualityMetricsPage';
+import RefDocStudioPage from './pages/RefDocStudioPage';
 import RepoCoveragePage from './pages/RepoCoveragePage';
 import TaskCenterPage from './pages/TaskCenterPage';
 import type { CurrentUserProfile } from './types';
@@ -70,6 +71,9 @@ const EmbeddedRoutes: React.FC = () => {
 
       <Route path="/arch-tree" element={<ArchTreeCoveragePage />} />
       <Route path={`${MODULE_BASE_PATH}/arch-tree`} element={<ArchTreeCoveragePage />} />
+
+      <Route path="/ref-docs/:docId/studio" element={<RefDocStudioPage />} />
+      <Route path={`${MODULE_BASE_PATH}/ref-docs/:docId/studio`} element={<RefDocStudioPage />} />
 
       <Route path="/tasks" element={<TaskCenterPage />} />
       <Route path={`${MODULE_BASE_PATH}/tasks`} element={<TaskCenterPage />} />
@@ -140,6 +144,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const isRepos = pathname.startsWith('/repos');
   const isArchTree = pathname.startsWith('/arch-tree');
   const isTasks = pathname.startsWith('/tasks');
+  const isRefDocStudio = /^\/ref-docs\/\d+\/studio(?:\/|$)/.test(pathname);
   const isStudio = pathname.startsWith('/studio') || pathname.startsWith('/docs/');
   const isDrift = pathname.startsWith('/drift');
   const isAdminLLM = pathname.startsWith('/admin/llm');
@@ -153,16 +158,18 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       : isAdminLLM
         ? 'LLM 模型配置'
         : isTasks
-        ? '反推任务中心'
-        : isArchTree
-          ? '架构文档全景'
-          : isDrift
-            ? '章节级双维漂移雷达'
-            : isOverview
-              ? '全局概览 · 文档治理与质量度量大盘'
-              : isStudio
-                ? 'Canvas Studio 协同审校工作台'
-                : '未关联代码仓';
+          ? '反推任务中心'
+          : isArchTree
+            ? '架构文档全景'
+            : isDrift
+              ? '章节级双维漂移雷达'
+              : isOverview
+                ? '全局概览 · 文档治理与质量度量大盘'
+                : isRefDocStudio
+                  ? '架构参考文档精修工作台'
+                  : isStudio
+                    ? 'Canvas Studio 协同审校工作台'
+                    : '未关联代码仓';
 
   return (
     <div className="code-archdoc-shell">
@@ -190,7 +197,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             <Link
               to="/arch-tree"
               className={`code-archdoc-nav-link ${
-                isArchTree || isStudio ? 'code-archdoc-nav-link--active' : ''
+                isArchTree || isStudio || isRefDocStudio ? 'code-archdoc-nav-link--active' : ''
               }`}
             >
               <ListTree size={17} />
@@ -295,6 +302,7 @@ const StandaloneShell: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             <Route path="/overview" element={<QualityMetricsPage />} />
             <Route path="/repos" element={<RepoCoveragePage />} />
             <Route path="/arch-tree" element={<ArchTreeCoveragePage />} />
+            <Route path="/ref-docs/:docId/studio" element={<RefDocStudioPage />} />
             <Route path="/tasks" element={<TaskCenterPage />} />
             <Route path="/drift" element={<DriftRadarPage />} />
             <Route path="/metrics" element={<QualityMetricsPage />} />

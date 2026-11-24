@@ -57,6 +57,16 @@ func ValidateAndParse(markdown string, maxBytes int64, redactAndSave bool, docKi
 	}, nil, nil
 }
 
+// ParseTOC 归一化换行符并执行带围栏状态机、Setext/编号标题与 >250 行分块兜底的目录切片。
+func ParseTOC(markdown string) []HeadingNode {
+	normalized := strings.ReplaceAll(markdown, "\r\n", "\n")
+	if normalized == "" {
+		return nil
+	}
+	lines := strings.Split(normalized, "\n")
+	return parseTOC(lines)
+}
+
 func parseTOC(lines []string) []HeadingNode {
 	if len(lines) == 0 {
 		return nil

@@ -5,9 +5,13 @@ import type {
   PaginatedResponse,
   RefDocBindingPayload,
   RefDocBindingVO,
+  RefDocDiffResponse,
   RefDocListQuery,
+  RefDocVersionsResponse,
   ReferenceDocDetailVO,
   ReferenceDocSummaryVO,
+  RefineRefDocPayload,
+  RefineRefDocResponse,
   UpdateRefDocBindingPayload,
   UpdateRefDocPayload,
 } from '../types';
@@ -23,7 +27,7 @@ export async function listRefDocs(
   if (query.doc_kind?.trim()) qs.set('doc_kind', query.doc_kind.trim());
   if (query.scope_level?.trim()) qs.set('scope_level', query.scope_level.trim());
   if (query.arch_element_id) qs.set('arch_element_id', String(query.arch_element_id));
-  if (query.status && query.status !== 'all') qs.set('status', query.status);
+  if (query.status) qs.set('status', query.status);
 
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return apiRequest<PaginatedResponse<ReferenceDocSummaryVO>>(`/ref-docs${suffix}`);
@@ -58,7 +62,7 @@ export async function createRefDoc(
 ): Promise<ReferenceDocDetailVO> {
   if (file) {
     const formData = new FormData();
-    formData.append('metadata', JSON.stringify(payload));
+    formData.append('payload', JSON.stringify(payload));
     formData.append('file', file);
     return apiRequest<ReferenceDocDetailVO>('/ref-docs', {
       method: 'POST',
@@ -82,7 +86,7 @@ export async function updateRefDoc(
 }
 
 export async function purgeRefDoc(docId: number): Promise<void> {
-  await apiRequest<{ deleted: boolean }>(`/ref-docs/${docId}`, {
+  await apiRequest<{ purged_id: number }>(`/admin/ref-docs/${docId}/purge`, {
     method: 'DELETE',
   });
 }
@@ -103,7 +107,7 @@ export async function updateRefDocBinding(
   payload: UpdateRefDocBindingPayload,
 ): Promise<RefDocBindingVO> {
   return apiRequest<RefDocBindingVO>(`/ref-docs/${docId}/bindings/${bindingId}`, {
-    method: 'PUT',
+    method: 'PATCH',
     bodyData: payload,
   });
 }
@@ -115,4 +119,30 @@ export async function deleteRefDocBinding(
   await apiRequest<{ deleted: boolean }>(`/ref-docs/${docId}/bindings/${bindingId}`, {
     method: 'DELETE',
   });
+}
+
+export async function refineRefDoc(
+  docId: number,
+  payload: RefineRefDocPayload,
+): Promise<RefineRefDocResponse> {
+  return apiRequest<RefineRefDocResponse>(`/ref-docs/${docId}/refine`, {
+    method: 'POST',
+    bodyData: payload,
+  });
+}
+
+export async function listRefDocVersions(docId: number): Promise<RefDocVersionsResponse> {
+  return apiRequest<RefDocVersionsResponse>(`/ref-docs/${docId}/versions`);
+}
+
+export async function getRefDocDiff(
+  docId: number,
+  from?: number,
+  to?: number,
+): Promise<RefDocDiffResponse> {
+  const qs = new URLSearchParams();
+  if (from && from > 0) qs.set('from', String(from));
+  if (to && to > 0) qs.set('to', String(to));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiRequest<RefDocDiffResponse>(`/ref-docs/${docId}/diff${suffix}`);
 }

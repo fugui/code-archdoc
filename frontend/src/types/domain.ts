@@ -1200,3 +1200,76 @@ export interface TaskReferenceDocSnapshotVO {
   estimated_tokens: number;
   is_inherited: boolean;
 }
+
+// ─── ADR-11: 架构参考文档精修工作台（一期轻量方案） ───
+
+export type RefDocRefineScopeType = 'selection' | 'section' | 'full';
+export type RefDocRefineMode = 'revise' | 'ask';
+export type RefDocRefinePresetAction = 'polish' | 'mermaid' | 'refresh_summary';
+
+export interface RefDocRefineGateErrorVO {
+  code: string;
+  message: string;
+}
+
+export interface RefDocGateFindingVO {
+  rule_id: string;
+  matched_mask: string;
+  line_offset: number;
+  severity: 'hard' | 'confirm_required' | string;
+}
+
+export interface RefDocMermaidIssueVO {
+  slot_id: string;
+  block_index: number;
+  diagram_type: string;
+  issue_code: string;
+  severity: 'error' | 'warning' | string;
+  node_count: number;
+  edge_count: number;
+  message: string;
+}
+
+export interface RefDocRefinePreflightVO {
+  can_save: boolean;
+  secret_confirm_required: boolean;
+  secret_issues: RefDocGateFindingVO[];
+  mermaid_issues: RefDocMermaidIssueVO[];
+  gate_error?: RefDocRefineGateErrorVO;
+}
+
+export interface RefineRefDocResponse {
+  answer_md: string;
+  mode: RefDocRefineMode;
+  scope_type: RefDocRefineScopeType;
+  target_section_id?: string;
+  original_fragment: string;
+  proposed_fragment: string;
+  proposed_full_markdown: string;
+  unified_diff: string;
+  preflight: RefDocRefinePreflightVO;
+  suggested_summary_md?: string;
+  suggested_declared_terms?: string[];
+}
+
+export interface RefDocVersionItemVO {
+  version_no: number;
+  byte_size: number;
+  is_current: boolean;
+  file_exists: boolean;
+}
+
+export interface RefDocVersionsResponse {
+  doc_id: number;
+  current_version: number;
+  versions: RefDocVersionItemVO[];
+}
+
+export interface RefDocDiffResponse {
+  doc_id: number;
+  from_version: number;
+  to_version: number;
+  unified_diff: string;
+  added_lines: number;
+  removed_lines: number;
+}

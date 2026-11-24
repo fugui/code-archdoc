@@ -643,6 +643,13 @@ export function buildStudioPath(
 }
 
 /**
+ * 生成兼顾独立态与门户嵌入态的参考文档精修工作台路由路径。
+ */
+export function buildRefDocStudioPath(isEmbedded: boolean, docId: number): string {
+  return buildModulePath(isEmbedded, `/ref-docs/${docId}/studio`);
+}
+
+/**
  * 格式化时间字符串（中文 24 小时制）
  */
 export function formatDateTime(iso: string | null | undefined): string {

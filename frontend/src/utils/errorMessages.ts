@@ -6,6 +6,7 @@ export interface FormattedApiError {
   code: string;
   status: number;
   currentRevisionNo?: number;
+  currentVersion?: number;
   verifierReport?: VerifierReport;
   retryAfterSeconds?: number;
 }
@@ -74,6 +75,7 @@ function extractNumberDetail(details: Record<string, unknown> | undefined, key: 
 export function formatApiError(err: unknown, fallback = '操作失败，请稍后重试'): FormattedApiError {
   if (err instanceof ArchdocApiError) {
     const currentRevisionNo = extractNumberDetail(err.details, 'current_revision_no');
+    const currentVersion = extractNumberDetail(err.details, 'current_version');
     const verifierReport = extractVerifierReport(err.details);
     const retryAfterSeconds = extractNumberDetail(err.details, 'retry_after_seconds');
 
@@ -229,13 +231,19 @@ export function formatApiError(err: unknown, fallback = '操作失败，请稍�
           code: err.code,
           status: err.status,
         };
-      case 'VERSION_CONFLICT':
+      case 'VERSION_CONFLICT': {
+        const verHint =
+          currentVersion !== undefined
+            ? `服务端参考文档已更新至 v${currentVersion}`
+            : '服务端参考文档已更新至新版本';
         return {
           title: '参考文档版本冲突',
-          message: err.rawMessage || '服务端参考文档已更新至新版本，请刷新最新内容后再保存。',
+          message: err.rawMessage || `${verHint}，请对比最新内容后再合并保存。`,
           code: err.code,
           status: err.status,
+          currentVersion,
         };
+      }
       case 'ALREADY_BOUND':
         return {
           title: '作用域重复绑定',

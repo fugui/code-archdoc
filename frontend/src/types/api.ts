@@ -9,6 +9,9 @@ import type {
   GenEngine,
   ModuleDigestSourceConfig,
   ModuleDiscoveryStrategy,
+  RefDocRefineMode,
+  RefDocRefinePresetAction,
+  RefDocRefineScopeType,
   RepoScopeFilter,
   RepoStatusFilter,
   ReviewCategory,
@@ -367,6 +370,22 @@ export interface EffectiveRefDocsQuery {
   repo_id?: number;
   subdirectory?: string;
   doc_type_slug?: string;
+}
+
+export interface RefineRefDocSelectionPayload {
+  start_line: number;
+  end_line: number;
+  quote_text?: string;
+}
+
+export interface RefineRefDocPayload {
+  scope_type: RefDocRefineScopeType;
+  mode: RefDocRefineMode;
+  preset_action?: RefDocRefinePresetAction;
+  prompt: string;
+  section_id?: string;
+  selection?: RefineRefDocSelectionPayload;
+  draft_content_md?: string;
 }
 
 export interface MetricsOverviewQuery {

@@ -14,6 +14,7 @@ import (
 
 	"code-archdoc/config"
 	"code-archdoc/models"
+	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/verifier"
@@ -253,9 +254,18 @@ type RefDocService struct {
 	refDocRepo ReferenceDocRepo
 	masterRepo SharedMasterRepo
 	rbacSvc    *RBACService
+	govRepo    GovernanceRepo
+	llmClient  *llm.Client
 	refDocsDir string
 	maxBytes   int64
 	docLocks   sync.Map // docID(uint) -> *sync.Mutex
+}
+
+// WithRefineEngine 注入无状态 AI 精修提案所需的模型配置仓储与 LLM 客户端（M17 / ADR-11）。
+func (s *RefDocService) WithRefineEngine(govRepo GovernanceRepo, llmClient *llm.Client) *RefDocService {
+	s.govRepo = govRepo
+	s.llmClient = llmClient
+	return s
 }
 
 func NewRefDocService(

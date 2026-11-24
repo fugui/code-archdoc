@@ -4,6 +4,7 @@ import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildModulePath,
   buildOverviewDrilldownPath,
+  buildRefDocStudioPath,
   buildStudioPath,
   computeRepoFilterFlags,
   formatCoverageRate,
@@ -53,6 +54,15 @@ import {
   formatRefDocTokenBadge,
   groupEffectiveRefDocsByScope,
 } from './refDocUtils.ts';
+import {
+  classifyRefDocDiffLine,
+  computeAbsoluteSelectionLines,
+  hasUnsavedRefDocDraft,
+  mergeRefDocRefineProposal,
+  parseLocalRefDocTOC,
+  replaceLinesInDraft,
+  splitRefDocIntoDisplaySections,
+} from './refDocStudioUtils.ts';
 
 describe('URL Search Params 分页与筛选序列化/反序列化 (Verification Checklist §3.2.1)', () => {
   it('默认回退 page=1、pageSize=25 且正确解析全部筛选参数', () => {
@@ -1058,5 +1068,144 @@ describe('架构参考文档纯函数工具 (T-ADR10-15)', () => {
       assert.equal(formatted.code, code);
       assert.ok(formatted.title.length > 0 && formatted.message.length > 0);
     }
+  });
+});
+
+describe('ADR-11 参考文档精修工作台纯函数工具 (T-ADR11-07 ~ T-ADR11-08)', () => {
+  it('T-ADR11-07: 动态 TOC、__preamble__ 导言零丢失、行替换、选区绝对行号映射、路由与 VERSION_CONFLICT 提取', () => {
+    // 1. 围栏代码块内 # 不误判；<=30 行前置导言自动补齐 __preamble__
+    const md = [
+      '这是文档前置导言第一行。',
+      '前置导言第二行。',
+      '',
+      '# 1. 系统边界',
+      '边界内容第一行。',
+      '```bash',
+      '# 围栏内注释不应成为标题',
+      'echo ok',
+      '```',
+      '## 1.1 核心流程',
+      '流程第一行。',
+      '流程第二行。',
+    ].join('\n');
+
+    const toc = parseLocalRefDocTOC(md);
+    assert.equal(toc.length, 2);
+    assert.equal(toc[0].title, '1. 系统边界');
+    assert.equal(toc[0].start_line, 4);
+    assert.equal(toc[1].title, '1.1 核心流程');
+    assert.equal(toc[1].start_line, 10);
+
+    const display = splitRefDocIntoDisplaySections(md, toc);
+    assert.equal(display.length, 3);
+    assert.equal(display[0].section_id, '__preamble__');
+    assert.equal(display[0].is_preamble, true);
+    assert.equal(display[0].start_line, 1);
+    assert.equal(display[0].end_line, 3);
+    assert.match(display[0].markdown, /前置导言第二行/);
+    assert.equal(display[1].start_line, 4);
+    assert.equal(display[2].start_line, 10);
+    assert.equal(display.map((s) => s.markdown).join('\n'), md);
+
+    // 2. >250 行大节自动切分
+    const bigLines = ['## 大章节'];
+    for (let i = 1; i <= 280; i += 1) {
+      bigLines.push(`第 ${i} 行正文。`);
+      if (i % 30 === 0) bigLines.push('');
+    }
+    const bigTOC = parseLocalRefDocTOC(bigLines.join('\n'));
+    assert.ok(bigTOC.length >= 2);
+    assert.equal(bigTOC[1].is_chunk, true);
+    assert.match(bigTOC[1].section_id, /^sec-chunk-/);
+
+    // 3. replaceLinesInDraft 仅改动目标行区间
+    const updated = replaceLinesInDraft(md, 10, 12, '## 1.1 核心流程\n全新流程。');
+    const updatedLines = updated.split('\n');
+    assert.equal(updatedLines[0], '这是文档前置导言第一行。');
+    assert.equal(updatedLines[9], '## 1.1 核心流程');
+    assert.equal(updatedLines[10], '全新流程。');
+    assert.equal(updatedLines.length, 11);
+
+    // 4. computeAbsoluteSelectionLines 相对行号偏置映射
+    assert.deepEqual(computeAbsoluteSelectionLines(10, 2, 3, 12), { startLine: 11, endLine: 12 });
+    assert.deepEqual(computeAbsoluteSelectionLines(10, undefined, undefined, 12), {
+      startLine: 10,
+      endLine: 12,
+    });
+    assert.deepEqual(computeAbsoluteSelectionLines(10, 5, 99, 12), { startLine: 12, endLine: 12 });
+
+    // 5. buildRefDocStudioPath 与 409 VERSION_CONFLICT currentVersion 提取
+    assert.equal(buildRefDocStudioPath(false, 42), '/ref-docs/42/studio');
+    assert.equal(buildRefDocStudioPath(true, 42), '/archdoc/ref-docs/42/studio');
+
+    const conflictErr = formatApiError(
+      new ArchdocApiError(409, {
+        code: 'VERSION_CONFLICT',
+        details: { current_version: 5 },
+      }),
+    );
+    assert.equal(conflictErr.code, 'VERSION_CONFLICT');
+    assert.equal(conflictErr.currentVersion, 5);
+    assert.match(conflictErr.message, /v5/);
+  });
+
+  it('T-ADR11-08: 草稿脏状态判定、AI 提案合并与 Unified Diff 行分类', () => {
+    assert.equal(hasUnsavedRefDocDraft('# A\r\nline1', '# A\nline1'), false);
+    assert.equal(hasUnsavedRefDocDraft('# A\nline1', '# A\nline2'), true);
+
+    const draft = '# 标题\n旧正文';
+    assert.equal(
+      mergeRefDocRefineProposal(draft, {
+        answer_md: '已精修',
+        mode: 'revise',
+        scope_type: 'section',
+        original_fragment: '旧正文',
+        proposed_fragment: '新正文',
+        proposed_full_markdown: '# 标题\n新正文',
+        unified_diff: '@@ -2 +2 @@\n-旧正文\n+新正文',
+        preflight: {
+          can_save: true,
+          secret_confirm_required: false,
+          secret_issues: [],
+          mermaid_issues: [],
+        },
+      }),
+      '# 标题\n新正文',
+    );
+
+    // ask 与 refresh_summary（空 proposed_fragment）不修改草稿
+    assert.equal(
+      mergeRefDocRefineProposal(draft, {
+        answer_md: '仅提炼摘要',
+        mode: 'revise',
+        scope_type: 'full',
+        original_fragment: draft,
+        proposed_fragment: '',
+        proposed_full_markdown: draft,
+        unified_diff: '',
+        preflight: {
+          can_save: true,
+          secret_confirm_required: false,
+          secret_issues: [],
+          mermaid_issues: [],
+        },
+        suggested_summary_md: '新摘要',
+      }),
+      draft,
+    );
+
+    assert.equal(
+      classifyRefDocDiffLine('@@ -1,2 +1,2 @@'),
+      'code-archdoc-diff-line code-archdoc-diff-line--hunk',
+    );
+    assert.equal(
+      classifyRefDocDiffLine('+新增行'),
+      'code-archdoc-diff-line code-archdoc-diff-line--add',
+    );
+    assert.equal(
+      classifyRefDocDiffLine('-删除行'),
+      'code-archdoc-diff-line code-archdoc-diff-line--del',
+    );
+    assert.equal(classifyRefDocDiffLine(' 上下文行'), 'code-archdoc-diff-line');
   });
 });

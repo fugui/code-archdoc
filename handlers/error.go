@@ -23,7 +23,7 @@ const (
 	ErrCodeRemoteBranchFetchFailed = "REMOTE_BRANCH_FETCH_FAILED"
 	ErrCodeInternalError           = "INTERNAL_ERROR"
 
-	// ADR-10 架构参考文档错误码
+	// ADR-10 / ADR-11 架构参考文档错误码
 	ErrCodeHomeBindingProtected  = "HOME_BINDING_PROTECTED"
 	ErrCodeVersionConflict       = "VERSION_CONFLICT"
 	ErrCodeAlreadyBound          = "ALREADY_BOUND"
@@ -31,6 +31,7 @@ const (
 	ErrCodeInlineBase64Image     = "INLINE_BASE64_IMAGE"
 	ErrCodeSecretDetected        = "SECRET_DETECTED"
 	ErrCodeSecretConfirmRequired = "SECRET_CONFIRM_REQUIRED"
+	ErrCodeTokenBudgetExceeded   = "TOKEN_BUDGET_EXCEEDED"
 )
 
 // WriteError 输出统一机器可读错误响应（向后兼容 error 字段并附带 code 与可选 details）。

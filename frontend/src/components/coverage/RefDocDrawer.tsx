@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   Archive,
   BookOpen,
   Edit3,
+  ExternalLink,
   FilePlus2,
   Link2,
   Loader2,
@@ -14,6 +16,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { Drawer, EmptyState, useConfirm, useToast } from '@code/common';
+import { useModuleUser } from '../../context/ModuleUserContext';
 import {
   createRefDoc,
   createRefDocBinding,
@@ -41,6 +44,7 @@ import {
   formatRefDocSummaryStaleHint,
   formatRefDocTokenBadge,
 } from '../../utils/refDocUtils';
+import { buildRefDocStudioPath } from '../../utils/urlQuery';
 import SectionMarkdownRenderer from '../studio/SectionMarkdownRenderer';
 
 export type RefDocDrawerTarget =
@@ -74,6 +78,9 @@ export const RefDocDrawer: React.FC<RefDocDrawerProps> = ({
 }) => {
   const { showToast } = useToast();
   const confirm = useConfirm();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { isEmbedded } = useModuleUser();
 
   const [viewMode, setViewMode] = useState<DrawerViewMode>('list');
   const [loading, setLoading] = useState<boolean>(false);
@@ -834,35 +841,64 @@ export const RefDocDrawer: React.FC<RefDocDrawerProps> = ({
                       </span>
                     </div>
                   )}
-                  {detailDoc.can_edit && !editing && (
+                  {!editing && (
                     <div className="code-archdoc-refdoc-detail-actions">
                       <button
                         type="button"
-                        className="code-archdoc-ghost-btn"
-                        onClick={() => setEditing(true)}
+                        className={
+                          detailDoc.can_edit
+                            ? 'btn btn-primary btn-small'
+                            : 'btn btn-secondary btn-small'
+                        }
+                        onClick={() => {
+                          onClose();
+                          navigate(buildRefDocStudioPath(isEmbedded, detailDoc.id), {
+                            state: {
+                              from: `${location.pathname}${location.search}`,
+                              fromLabel: '架构文档全景',
+                            },
+                          });
+                        }}
                       >
-                        <Edit3 size={13} />
-                        <span>编辑 / 发新版</span>
+                        <ExternalLink size={13} />
+                        <span>{detailDoc.can_edit ? '进入工作台精修' : '工作台浏览'}</span>
                       </button>
-                      <button
-                        type="button"
-                        className="code-archdoc-ghost-btn"
-                        disabled={submitting}
-                        onClick={() => void handleToggleStatus(detailDoc)}
-                      >
-                        {detailDoc.status === 'active' ? <Archive size={13} /> : <RotateCcw size={13} />}
-                        <span>{detailDoc.status === 'active' ? '归档' : '恢复活跃'}</span>
-                      </button>
-                      {detailDoc.status === 'archived' && (
-                        <button
-                          type="button"
-                          className="code-archdoc-ghost-btn code-archdoc-ghost-btn--danger"
-                          disabled={submitting}
-                          onClick={() => void handlePurge(detailDoc)}
-                        >
-                          <Trash2 size={13} />
-                          <span>永久清理</span>
-                        </button>
+
+                      {detailDoc.can_edit && (
+                        <>
+                          <button
+                            type="button"
+                            className="code-archdoc-ghost-btn"
+                            onClick={() => setEditing(true)}
+                          >
+                            <Edit3 size={13} />
+                            <span>快速编辑</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="code-archdoc-ghost-btn"
+                            disabled={submitting}
+                            onClick={() => void handleToggleStatus(detailDoc)}
+                          >
+                            {detailDoc.status === 'active' ? (
+                              <Archive size={13} />
+                            ) : (
+                              <RotateCcw size={13} />
+                            )}
+                            <span>{detailDoc.status === 'active' ? '归档' : '恢复活跃'}</span>
+                          </button>
+                          {detailDoc.status === 'archived' && (
+                            <button
+                              type="button"
+                              className="code-archdoc-ghost-btn code-archdoc-ghost-btn--danger"
+                              disabled={submitting}
+                              onClick={() => void handlePurge(detailDoc)}
+                            >
+                              <Trash2 size={13} />
+                              <span>永久清理</span>
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   )}

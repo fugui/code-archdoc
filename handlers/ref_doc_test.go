@@ -64,6 +64,8 @@ func setupRefDocTestEnv(t *testing.T) *refDocTestEnv {
 	if err != nil {
 		t.Fatalf("NewRefDocService 失败: %v", err)
 	}
+	llmClient := llm.NewClientWithOptions(&http.Client{Timeout: 10 * time.Second}, 10*time.Millisecond)
+	refDocSvc.WithRefineEngine(govStore, llmClient)
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
 		WithModuleRepo(moduleStore).
 		WithRefDocRepo(refDocStore)
@@ -858,4 +860,476 @@ func TestRefDocTaskExcludeAndArchElementValidation_T_ADR10_06(t *testing.T) {
 		t.Fatalf("增量刷新排除 docA 后应仅剩 docB(%d)，实际 %+v", docB.ID, irRes.ReferenceDocs)
 	}
 	_ = waitTaskDone(t, env.db, irRes.ID)
+}
+
+func TestRefDocRefinePermissionsPreflightAndUsageLog_T_ADR11_03(t *testing.T) {
+	env := setupRefDocTestEnv(t)
+	dept := models.Department{Name: "精修平台部"}
+	if err := env.db.Create(&dept).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := createTestUser(t, env.db, "refine_owner", "归属架构师", []string{"user"}, &dept.ID)
+	reader := createTestUser(t, env.db, "refine_reader", "只读访客", []string{"user"}, &dept.ID)
+	ownerTok := issueTestToken(t, owner)
+	readerTok := issueTestToken(t, reader)
+
+	sub := models.ArchitectureElement{Identifier: "refine-sub", NameCn: "精修子系统", Type: "subsystem", OwnerID: &owner.ID}
+	if err := env.db.Create(&sub).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	cw := doRefDocJSONReq(env.router, http.MethodPost, "/api/ref-docs", ownerTok, map[string]any{
+		"title":      "订单域架构参考",
+		"doc_kind":   "arch_design",
+		"content_md": "# 总体设计\n\n## 1. 核心组件\n采用订单网关。\n\n## 2. 边界说明\n禁止跨库写。\n",
+		"initial_binding": map[string]any{
+			"scope_level":         "subsystem",
+			"arch_element_id":     sub.ID,
+			"inherit_to_children": true,
+		},
+	})
+	if cw.Code != http.StatusCreated {
+		t.Fatalf("创建参考文档失败: %d %s", cw.Code, cw.Body.String())
+	}
+	var doc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(cw.Body.Bytes(), &doc)
+
+	// 1. 非归属方发起 revise 返回 403
+	forbW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), readerTok, map[string]any{
+		"scope_type": "section",
+		"mode":       "revise",
+		"section_id": "sec-2",
+		"prompt":     "越权精修",
+	})
+	if forbW.Code != http.StatusForbidden {
+		t.Fatalf("非归属用户 revise 期望 403，实际 %d: %s", forbW.Code, forbW.Body.String())
+	}
+
+	// 2. 未配置 LLM 返回 400 INVALID_PARAM
+	noLLMW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type": "section",
+		"mode":       "revise",
+		"section_id": "sec-2",
+		"prompt":     "润色核心组件",
+	})
+	if noLLMW.Code != http.StatusBadRequest || !strings.Contains(noLLMW.Body.String(), handlers.ErrCodeInvalidParam) {
+		t.Fatalf("未配置 LLM 期望 400 INVALID_PARAM，实际 %d: %s", noLLMW.Code, noLLMW.Body.String())
+	}
+
+	// 3. 挂载 Mock LLM（同时统计请求次数）
+	llmCalls := 0
+	mockMode := "planned_symbol"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmCalls++
+		w.Header().Set("Content-Type", "application/json")
+		var reply string
+		switch mockMode {
+		case "planned_symbol":
+			reply = `{"answer_md":"已引入规划态 FutureOrderHub 网关描述。","revised_markdown":"## 1. 核心组件\n采用 FutureOrderHub 与 RiskCenter 协同。"}`
+		case "hard_secret_and_bad_mermaid":
+			reply = `{"answer_md":"包含硬凭据与残缺 Mermaid。","revised_markdown":"## 1. 核心组件\napi_key: \"sk-1234567890abcdefghij\"\n\n` + "```mermaid" + `\nflowchart LR\nsubgraph S1\nA --> B\n` + "```" + `"}`
+		case "soft_secret":
+			reply = `{"answer_md":"包含配置示例密钥。","revised_markdown":"## 1. 核心组件\n` + "```yaml" + `\npassword: \"demo_example_pass\"\n` + "```" + `"}`
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "mock-refine-model",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": reply}},
+			},
+			"usage": map[string]any{"prompt_tokens": 120, "completion_tokens": 45},
+		})
+	}))
+	defer srv.Close()
+
+	llmCfg := models.LLMConfig{
+		Name:             "Refine-Mock-Model",
+		BaseURL:          srv.URL,
+		ModelName:        "mock-refine-model",
+		APIKey:           "sk-mock-refine-0001",
+		APIKeyMasked:     "sk-****0001",
+		TimeoutSeconds:   10,
+		MaxTokensPerTask: 8000, // effective full limit = max(8000/2, 4000) = 4000
+		MaxFilesPerTask:  1000,
+		IsActive:         true,
+		IsDefault:        true,
+	}
+	if err := env.db.Create(&llmCfg).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. 超限 full 请求返回 422 TOKEN_BUDGET_EXCEEDED 且 0 次 LLM 请求
+	hugeDraft := "# 超大文档\n" + strings.Repeat("FutureOrderHub coordinates multi-region ledger consistency. ", 450)
+	budgetW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type":       "full",
+		"mode":             "revise",
+		"preset_action":    "polish",
+		"draft_content_md": hugeDraft,
+	})
+	if budgetW.Code != http.StatusUnprocessableEntity || !strings.Contains(budgetW.Body.String(), handlers.ErrCodeTokenBudgetExceeded) {
+		t.Fatalf("超限 full 期望 422 TOKEN_BUDGET_EXCEEDED，实际 %d: %s", budgetW.Code, budgetW.Body.String())
+	}
+	if llmCalls != 0 {
+		t.Fatalf("预算熔断后不应触发 LLM 请求，实际调用次数=%d", llmCalls)
+	}
+
+	// 5. 含规划态外部类名提案通过预检（豁免 RunSymbolGate）并记录 archdoc_llm_usage_logs
+	okW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type": "section",
+		"mode":       "revise",
+		"section_id": "sec-2",
+		"prompt":     "补充规划态网关名称",
+	})
+	if okW.Code != http.StatusOK {
+		t.Fatalf("正常精修期望 200，实际 %d: %s", okW.Code, okW.Body.String())
+	}
+	var okResp services.RefineRefDocResponse
+	_ = json.Unmarshal(okW.Body.Bytes(), &okResp)
+	if !okResp.Preflight.CanSave || !strings.Contains(okResp.ProposedFullMarkdown, "FutureOrderHub") {
+		t.Fatalf("规划态外部符号应豁免 RunSymbolGate 并通过预检: %+v", okResp)
+	}
+
+	// 6. 硬凭据 + 非法 Mermaid 在同轮预检同时检出且 can_save=false
+	mockMode = "hard_secret_and_bad_mermaid"
+	badW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type": "section",
+		"mode":       "revise",
+		"section_id": "sec-2",
+		"prompt":     "补全配置与流程图",
+	})
+	if badW.Code != http.StatusOK {
+		t.Fatalf("预检拦截应在 200 提案 preflight 中汇报，实际 %d: %s", badW.Code, badW.Body.String())
+	}
+	var badResp services.RefineRefDocResponse
+	_ = json.Unmarshal(badW.Body.Bytes(), &badResp)
+	if badResp.Preflight.CanSave || badResp.Preflight.GateError == nil || badResp.Preflight.GateError.Code != handlers.ErrCodeSecretDetected {
+		t.Fatalf("期望硬凭据标记 gate_error.code=SECRET_DETECTED 且 can_save=false，实际: %+v", badResp.Preflight)
+	}
+	if len(badResp.Preflight.SecretIssues) == 0 || len(badResp.Preflight.MermaidIssues) == 0 {
+		t.Fatalf("ValidateAndParse 与 RunMermaidGate 必须独立跑完并同时返回问题明细: %+v", badResp.Preflight)
+	}
+
+	// 7. 软高熵示例标记 secret_confirm_required=true 且 can_save=true
+	mockMode = "soft_secret"
+	softW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type": "section",
+		"mode":       "revise",
+		"section_id": "sec-2",
+		"prompt":     "给出配置样例",
+	})
+	var softResp services.RefineRefDocResponse
+	_ = json.Unmarshal(softW.Body.Bytes(), &softResp)
+	if !softResp.Preflight.CanSave || !softResp.Preflight.SecretConfirmRequired || len(softResp.Preflight.SecretIssues) == 0 {
+		t.Fatalf("软凭据期望 secret_confirm_required=true 且 can_save=true: %+v", softResp.Preflight)
+	}
+
+	// 8. 核查 archdoc_llm_usage_logs 记账流水
+	var logs []models.LLMUsageLog
+	if err := env.db.Where("slot_id = ?", fmt.Sprintf("ref_doc:%d", doc.ID)).Find(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 3 {
+		t.Fatalf("期望记录 3 条 ref_doc 用量日志，实际 %d", len(logs))
+	}
+	if logs[0].TaskID != nil || logs[0].DocumentID != nil || logs[0].Stage != "ref_doc_refine" || logs[0].Engine != models.EngineNative {
+		t.Fatalf("用量日志字段异常: %+v", logs[0])
+	}
+}
+
+func TestRefDocRefineDraftDynamicTOCAndReadOnlyAsk_T_ADR11_04(t *testing.T) {
+	env := setupRefDocTestEnv(t)
+	dept := models.Department{Name: "动态TOC部门"}
+	_ = env.db.Create(&dept).Error
+	owner := createTestUser(t, env.db, "dyn_owner", "作者", []string{"user"}, &dept.ID)
+	reader := createTestUser(t, env.db, "dyn_reader", "只读", []string{"user"}, &dept.ID)
+	ownerTok := issueTestToken(t, owner)
+	readerTok := issueTestToken(t, reader)
+
+	sub := models.ArchitectureElement{Identifier: "dyn-sub", NameCn: "动态子系统", Type: "subsystem", OwnerID: &owner.ID}
+	_ = env.db.Create(&sub).Error
+
+	cw := doRefDocJSONReq(env.router, http.MethodPost, "/api/ref-docs", ownerTok, map[string]any{
+		"title":           "动态草稿测试",
+		"content_md":      "# 标题\n\n## 1. 第一节\n磁盘第一行。\n\n## 2. 第二节\n磁盘第二节正文。",
+		"initial_binding": map[string]any{"scope_level": "subsystem", "arch_element_id": sub.ID, "inherit_to_children": true},
+	})
+	var doc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(cw.Body.Bytes(), &doc)
+
+	var seenPrompts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 1 {
+			seenPrompts = append(seenPrompts, req.Messages[1].Content)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": `{"answer_md":"已按动态草稿或磁盘版处理。","revised_markdown":"## 2. 第二节\n精修后的草稿第二节。"}`}},
+			},
+			"usage": map[string]any{"prompt_tokens": 40, "completion_tokens": 18},
+		})
+	}))
+	defer srv.Close()
+
+	_ = env.db.Create(&models.LLMConfig{
+		Name: "Dyn-Mock", BaseURL: srv.URL, ModelName: "mock-dyn", APIKey: "sk-mock", APIKeyMasked: "sk-****",
+		TimeoutSeconds: 10, MaxTokensPerTask: 64000, MaxFilesPerTask: 1000, IsActive: true, IsDefault: true,
+	}).Error
+
+	// 1. 归属方传入在顶部新增 5 行的未保存草稿 draft_content_md，精修 sec-3（原 sec-2 下移）
+	draftWithExtraLines := "# 标题\n草稿新增第1行\n草稿新增第2行\n\n## 1. 第一节\n磁盘第一行。\n\n## 1.5 草稿新增小节\n插入小节。\n\n## 2. 第二节\n磁盘第二节正文。"
+	rw := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type":       "section",
+		"mode":             "revise",
+		"section_id":       "sec-4", // 动态解析第 4 节即 "## 2. 第二节"
+		"prompt":           "精修第二节",
+		"draft_content_md": draftWithExtraLines,
+	})
+	if rw.Code != http.StatusOK {
+		t.Fatalf("动态草稿精修失败: %d %s", rw.Code, rw.Body.String())
+	}
+	var revResp services.RefineRefDocResponse
+	_ = json.Unmarshal(rw.Body.Bytes(), &revResp)
+	if !strings.Contains(revResp.ProposedFullMarkdown, "## 1.5 草稿新增小节") || !strings.Contains(revResp.ProposedFullMarkdown, "精修后的草稿第二节。") {
+		t.Fatalf("未基于动态草稿 TOC 精确替换目标节: %s", revResp.ProposedFullMarkdown)
+	}
+
+	// 2. 只读用户发起 mode="ask" 携带任意 draft_content_md 时必须被服务端忽略，仅使用磁盘版
+	askW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), readerTok, map[string]any{
+		"scope_type":       "full",
+		"mode":             "ask",
+		"prompt":           "总结全文核心内容",
+		"draft_content_md": "# 伪造私密文本\nINJECTED_SECRET_DRAFT_PAYLOAD_XYZ",
+	})
+	if askW.Code != http.StatusOK {
+		t.Fatalf("只读用户 ask 期望 200，实际 %d: %s", askW.Code, askW.Body.String())
+	}
+	if len(seenPrompts) < 2 {
+		t.Fatalf("期望捕获 2 次 LLM 请求")
+	}
+	askPrompt := seenPrompts[1]
+	if strings.Contains(askPrompt, "INJECTED_SECRET_DRAFT_PAYLOAD_XYZ") {
+		t.Fatalf("只读用户 ask 必须忽略 draft_content_md，但检测到草稿泄露进 Prompt: %s", askPrompt)
+	}
+	if !strings.Contains(askPrompt, "磁盘第二节正文") {
+		t.Fatalf("只读用户 ask 应基于磁盘已落盘版作答: %s", askPrompt)
+	}
+
+	var askLog models.LLMUsageLog
+	if err := env.db.Where("slot_id = ? AND stage = ?", fmt.Sprintf("ref_doc:%d", doc.ID), "ref_doc_ask").First(&askLog).Error; err != nil {
+		t.Fatalf("未记录 ref_doc_ask 用量日志: %v", err)
+	}
+}
+
+func TestRefDocRefreshSummaryAndOptimisticLock_T_ADR11_05(t *testing.T) {
+	env := setupRefDocTestEnv(t)
+	dept := models.Department{Name: "摘要乐观锁部门"}
+	_ = env.db.Create(&dept).Error
+	owner := createTestUser(t, env.db, "sum_owner", "作者", []string{"user"}, &dept.ID)
+	ownerTok := issueTestToken(t, owner)
+
+	repo := models.Repository{DepartmentID: dept.ID, Name: "trade-doc-repo", URL: "git@git.internal:core/trade-doc.git", OwnerID: owner.ID, Branch: "master", IsActive: true}
+	_ = env.db.Create(&repo).Error
+	cw := doRefDocJSONReq(env.router, http.MethodPost, "/api/ref-docs", ownerTok, map[string]any{
+		"title":           "交易域规范",
+		"summary_md":      "手工初始摘要 v1",
+		"content_md":      "# 交易域\n初始正文 v1。",
+		"initial_binding": map[string]any{"scope_level": "repo", "repo_id": repo.ID, "inherit_to_children": true},
+	})
+	if cw.Code != http.StatusCreated {
+		t.Fatalf("创建参考文档失败: %d %s", cw.Code, cw.Body.String())
+	}
+	var doc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(cw.Body.Bytes(), &doc)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": `{"answer_md":"已提炼 v2 摘要与术语","revised_markdown":"SHOULD_BE_IGNORED","suggested_summary_md":"交易域 v2 幂等与账务一致摘要。","suggested_declared_terms":["OrderGateway","LedgerCore"]}`}},
+			},
+			"usage": map[string]any{"prompt_tokens": 60, "completion_tokens": 25},
+		})
+	}))
+	defer srv.Close()
+	_ = env.db.Create(&models.LLMConfig{
+		Name: "Sum-Mock", BaseURL: srv.URL, ModelName: "mock-sum", APIKey: "sk-mock", APIKeyMasked: "sk-****",
+		TimeoutSeconds: 10, MaxTokensPerTask: 64000, MaxFilesPerTask: 1000, IsActive: true, IsDefault: true,
+	}).Error
+
+	// 1. 先采纳正文 PUT 升版至 v2.md（因原摘要是 manual，summary_stale 变为 true）
+	putBodyW := doRefDocJSONReq(env.router, http.MethodPut, fmt.Sprintf("/api/ref-docs/%d", doc.ID), ownerTok, map[string]any{
+		"expected_version": 1,
+		"content_md":       "# 交易域\n新增 OrderGateway 与 LedgerCore 约束 v2。",
+	})
+	if putBodyW.Code != http.StatusOK {
+		t.Fatalf("PUT 升版 v2 失败: %d %s", putBodyW.Code, putBodyW.Body.String())
+	}
+	var v2Doc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(putBodyW.Body.Bytes(), &v2Doc)
+	if v2Doc.CurrentVersion != 2 || !v2Doc.SummaryStale {
+		t.Fatalf("期望升版至 v2 且 summary_stale=true，实际 version=%d stale=%v", v2Doc.CurrentVersion, v2Doc.SummaryStale)
+	}
+
+	// 2. 用过期 expected_version=1 调用 PUT 返回 409 VERSION_CONFLICT 且带 details.current_version=2
+	conflictW := doRefDocJSONReq(env.router, http.MethodPut, fmt.Sprintf("/api/ref-docs/%d", doc.ID), ownerTok, map[string]any{
+		"expected_version": 1,
+		"summary_md":       "过期提交",
+	})
+	if conflictW.Code != http.StatusConflict || !strings.Contains(conflictW.Body.String(), handlers.ErrCodeVersionConflict) {
+		t.Fatalf("过期版本期望 409 VERSION_CONFLICT，实际 %d: %s", conflictW.Code, conflictW.Body.String())
+	}
+	var errPayload struct {
+		Details map[string]any `json:"details"`
+	}
+	_ = json.Unmarshal(conflictW.Body.Bytes(), &errPayload)
+	if curVer, ok := errPayload.Details["current_version"].(float64); !ok || int(curVer) != 2 {
+		t.Fatalf("409 响应应携带 details.current_version=2，实际: %+v", errPayload.Details)
+	}
+
+	// 3. 调用 refresh_summary：非破坏性语义（不改正文、不产 Diff）
+	refSumW := doRefDocJSONReq(env.router, http.MethodPost, fmt.Sprintf("/api/ref-docs/%d/refine", doc.ID), ownerTok, map[string]any{
+		"scope_type":    "full",
+		"mode":          "revise",
+		"preset_action": "refresh_summary",
+	})
+	if refSumW.Code != http.StatusOK {
+		t.Fatalf("refresh_summary 失败: %d %s", refSumW.Code, refSumW.Body.String())
+	}
+	var sumResp services.RefineRefDocResponse
+	_ = json.Unmarshal(refSumW.Body.Bytes(), &sumResp)
+	if sumResp.ProposedFragment != "" || sumResp.UnifiedDiff != "" || !strings.Contains(sumResp.ProposedFullMarkdown, "v2") {
+		t.Fatalf("refresh_summary 不得修改正文或生成 Diff: %+v", sumResp)
+	}
+	if sumResp.SuggestedSummaryMD == "" || len(sumResp.SuggestedDeclaredTerms) != 2 {
+		t.Fatalf("refresh_summary 应返回建议摘要与术语: %+v", sumResp)
+	}
+
+	// 4. 仅提交 summary_md + declared_terms 消除 summary_stale 且版本号保持 2 不变
+	adoptSumW := doRefDocJSONReq(env.router, http.MethodPut, fmt.Sprintf("/api/ref-docs/%d", doc.ID), ownerTok, map[string]any{
+		"expected_version": 2,
+		"summary_md":       sumResp.SuggestedSummaryMD,
+		"declared_terms":   sumResp.SuggestedDeclaredTerms,
+	})
+	if adoptSumW.Code != http.StatusOK {
+		t.Fatalf("仅采纳摘要术语失败: %d %s", adoptSumW.Code, adoptSumW.Body.String())
+	}
+	var afterSumDoc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(adoptSumW.Body.Bytes(), &afterSumDoc)
+	if afterSumDoc.CurrentVersion != 2 || afterSumDoc.SummaryStale || len(afterSumDoc.DeclaredTerms) != 2 {
+		t.Fatalf("采纳摘要术语应消除 summary_stale 且保持 version=2，实际: version=%d stale=%v terms=%v",
+			afterSumDoc.CurrentVersion, afterSumDoc.SummaryStale, afterSumDoc.DeclaredTerms)
+	}
+}
+
+func TestRefDocVersionsDiffAndRollForwardRestore_T_ADR11_06(t *testing.T) {
+	env := setupRefDocTestEnv(t)
+	dept := models.Department{Name: "版本历史部"}
+	_ = env.db.Create(&dept).Error
+	owner := createTestUser(t, env.db, "ver_owner", "作者", []string{"user"}, &dept.ID)
+	ownerTok := issueTestToken(t, owner)
+
+	repo := models.Repository{DepartmentID: dept.ID, Name: "ver-repo", URL: "git@git.internal:core/ver.git", OwnerID: owner.ID, Branch: "master", IsActive: true}
+	_ = env.db.Create(&repo).Error
+
+	v1MD := "# 架构基线\n第一版说明。\n保留公共段落。"
+	v2MD := "# 架构基线\n第二版新增缓存说明。\n保留公共段落。"
+	v3MD := "# 架构基线\n第三版引入异步队列。\n新增削峰填谷。\n保留公共段落。"
+
+	cw := doRefDocJSONReq(env.router, http.MethodPost, "/api/ref-docs", ownerTok, map[string]any{
+		"title":           "版本演进测试",
+		"content_md":      v1MD,
+		"initial_binding": map[string]any{"scope_level": "repo", "repo_id": repo.ID},
+	})
+	var doc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(cw.Body.Bytes(), &doc)
+
+	// 升版至 v2、v3
+	for idx, md := range []string{v2MD, v3MD} {
+		uw := doRefDocJSONReq(env.router, http.MethodPut, fmt.Sprintf("/api/ref-docs/%d", doc.ID), ownerTok, map[string]any{
+			"expected_version": idx + 1,
+			"content_md":       md,
+		})
+		if uw.Code != http.StatusOK {
+			t.Fatalf("升级至 v%d 失败: %d %s", idx+2, uw.Code, uw.Body.String())
+		}
+	}
+
+	// 1. GET /versions 倒序返回 [3, 2, 1]
+	verW := doRefDocJSONReq(env.router, http.MethodGet, fmt.Sprintf("/api/ref-docs/%d/versions", doc.ID), ownerTok, nil)
+	if verW.Code != http.StatusOK {
+		t.Fatalf("GET /versions 失败: %d %s", verW.Code, verW.Body.String())
+	}
+	var verResp services.RefDocVersionsResponse
+	_ = json.Unmarshal(verW.Body.Bytes(), &verResp)
+	if verResp.CurrentVersion != 3 || len(verResp.Versions) != 3 {
+		t.Fatalf("版本列表数量或当前版本不符: %+v", verResp)
+	}
+	if verResp.Versions[0].VersionNo != 3 || !verResp.Versions[0].IsCurrent || !verResp.Versions[0].FileExists ||
+		verResp.Versions[1].VersionNo != 2 || verResp.Versions[2].VersionNo != 1 {
+		t.Fatalf("版本倒序或标记异常: %+v", verResp.Versions)
+	}
+
+	// 2. GET /diff?from=1&to=3 返回准确增删行与 unified_diff
+	diffW := doRefDocJSONReq(env.router, http.MethodGet, fmt.Sprintf("/api/ref-docs/%d/diff?from=1&to=3", doc.ID), ownerTok, nil)
+	if diffW.Code != http.StatusOK {
+		t.Fatalf("GET /diff 失败: %d %s", diffW.Code, diffW.Body.String())
+	}
+	var diffResp services.RefDocDiffResponse
+	_ = json.Unmarshal(diffW.Body.Bytes(), &diffResp)
+	if diffResp.FromVersion != 1 || diffResp.ToVersion != 3 || diffResp.AddedLines != 2 || diffResp.RemovedLines != 1 || !strings.Contains(diffResp.UnifiedDiff, "+第三版引入异步队列。") {
+		t.Fatalf("双版本 Diff 结果异常: %+v", diffResp)
+	}
+
+	// 越界版本号返回 400
+	badDiffW := doRefDocJSONReq(env.router, http.MethodGet, fmt.Sprintf("/api/ref-docs/%d/diff?from=99&to=3", doc.ID), ownerTok, nil)
+	if badDiffW.Code != http.StatusBadRequest {
+		t.Fatalf("越界版本期望 400，实际 %d: %s", badDiffW.Code, badDiffW.Body.String())
+	}
+
+	// 3. 模拟删除磁盘 v2.md -> /versions 显式标 file_exists=false，/diff?from=2&to=3 返 404
+	v2Path := filepath.Join(env.refDocsDir, fmt.Sprintf("%d", doc.ID), "v2.md")
+	if err := os.Remove(v2Path); err != nil {
+		t.Fatalf("模拟删除 v2.md 失败: %v", err)
+	}
+	verAfterDelW := doRefDocJSONReq(env.router, http.MethodGet, fmt.Sprintf("/api/ref-docs/%d/versions", doc.ID), ownerTok, nil)
+	if verAfterDelW.Code != http.StatusOK {
+		t.Fatalf("缺文件后 /versions 不应崩溃，实际 %d", verAfterDelW.Code)
+	}
+	var verAfterDel services.RefDocVersionsResponse
+	_ = json.Unmarshal(verAfterDelW.Body.Bytes(), &verAfterDel)
+	if verAfterDel.Versions[1].FileExists {
+		t.Fatalf("缺失的 v2.md 应标记 file_exists=false: %+v", verAfterDel.Versions[1])
+	}
+
+	missingDiffW := doRefDocJSONReq(env.router, http.MethodGet, fmt.Sprintf("/api/ref-docs/%d/diff?from=2&to=3", doc.ID), ownerTok, nil)
+	if missingDiffW.Code != http.StatusNotFound {
+		t.Fatalf("缺失版本 Diff 期望 404，实际 %d: %s", missingDiffW.Code, missingDiffW.Body.String())
+	}
+
+	// 4. 不可变前滚恢复：读取 v1 正文以 expected_version=3 提交 PUT 生成 v4.md，v1 与 v3 保持不可变
+	getV1W := doRefDocJSONReq(env.router, http.MethodGet, fmt.Sprintf("/api/ref-docs/%d?version=1", doc.ID), ownerTok, nil)
+	var v1Detail services.ReferenceDocDetailVO
+	_ = json.Unmarshal(getV1W.Body.Bytes(), &v1Detail)
+
+	restoreW := doRefDocJSONReq(env.router, http.MethodPut, fmt.Sprintf("/api/ref-docs/%d", doc.ID), ownerTok, map[string]any{
+		"expected_version": 3,
+		"content_md":       v1Detail.ContentMD,
+	})
+	if restoreW.Code != http.StatusOK {
+		t.Fatalf("前滚恢复 v1 为 v4 失败: %d %s", restoreW.Code, restoreW.Body.String())
+	}
+	var v4Doc services.ReferenceDocDetailVO
+	_ = json.Unmarshal(restoreW.Body.Bytes(), &v4Doc)
+	if v4Doc.CurrentVersion != 4 || v4Doc.ContentMD != v1MD {
+		t.Fatalf("期望前滚生成 v4 且正文等于 v1，实际 version=%d md=%q", v4Doc.CurrentVersion, v4Doc.ContentMD)
+	}
+	v1Bytes, _ := os.ReadFile(filepath.Join(env.refDocsDir, fmt.Sprintf("%d", doc.ID), "v1.md"))
+	v3Bytes, _ := os.ReadFile(filepath.Join(env.refDocsDir, fmt.Sprintf("%d", doc.ID), "v3.md"))
+	if string(v1Bytes) != v1MD || string(v3Bytes) != v3MD {
+		t.Fatalf("前滚恢复不得覆盖历史版本磁盘文件 v1.md / v3.md")
+	}
 }

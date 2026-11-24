@@ -46,9 +46,16 @@ func parseRefDocIDParam(c *gin.Context, param string) (uint, bool) {
 func writeRefDocServiceError(c *gin.Context, action string, err error) {
 	var gateErr *services.RefDocGateError
 	var verErr *services.RefDocVersionConflictError
+	var budgetErr *services.RefDocTokenBudgetExceededError
 	switch {
 	case errors.As(err, &gateErr) && gateErr.Failure != nil:
 		WriteError(c, gateErr.Failure.HTTPStatus, gateErr.Failure.Code, gateErr.Failure.Message, gateErr.Failure.Details)
+	case errors.As(err, &budgetErr):
+		WriteError(c, http.StatusUnprocessableEntity, ErrCodeTokenBudgetExceeded, budgetErr.Error(), gin.H{
+			"estimated_tokens":       budgetErr.EstimatedTokens,
+			"max_full_refine_tokens": budgetErr.MaxFullRefineTokens,
+			"suggested_scope":        "section",
+		})
 	case errors.As(err, &verErr):
 		WriteError(c, http.StatusConflict, ErrCodeVersionConflict, verErr.Error(), gin.H{
 			"current_version": verErr.CurrentVersion,
@@ -61,6 +68,8 @@ func writeRefDocServiceError(c *gin.Context, action string, err error) {
 		WriteError(c, http.StatusBadRequest, ErrCodeHomeBindingProtected, err.Error(), nil)
 	case errors.Is(err, sandbox.ErrInvalidSubdir):
 		WriteError(c, http.StatusBadRequest, ErrCodeInvalidSubdir, err.Error(), nil)
+	case errors.Is(err, services.ErrChatLLMNotConfigured):
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, err.Error(), nil)
 	case errors.Is(err, services.ErrInvalidRefDocParam), errors.Is(err, services.ErrRefDocArchivedReadOnly):
 		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, err.Error(), nil)
 	case errors.Is(err, services.ErrRefDocForbidden):
@@ -430,4 +439,87 @@ func (h *AppHandlers) PurgeRefDoc(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, gin.H{"purged_id": docID})
+}
+
+// RefineRefDoc 执行参考文档无状态 AI 精修提案或问答（POST /api/ref-docs/:id/refine）。
+func (h *AppHandlers) RefineRefDoc(c *gin.Context) {
+	user, ok := CurrentUserFromContext(c)
+	if !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+	docID, ok := parseRefDocIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req services.RefineRefDocRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "请求体 JSON 格式非法", nil)
+		return
+	}
+
+	resp, err := h.refDocSvc.RefineRefDoc(c.Request.Context(), docID, req, user)
+	if err != nil {
+		writeRefDocServiceError(c, "参考文档 AI 精修", err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// ListRefDocVersions 倒序枚举参考文档历史与当前磁盘版本状态（GET /api/ref-docs/:id/versions）。
+func (h *AppHandlers) ListRefDocVersions(c *gin.Context) {
+	if _, ok := CurrentUserFromContext(c); !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+	docID, ok := parseRefDocIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	resp, err := h.refDocSvc.ListRefDocVersions(c.Request.Context(), docID)
+	if err != nil {
+		writeRefDocServiceError(c, "获取参考文档版本列表", err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// GetRefDocDiff 计算任意两版本参考文档的 Unified Diff（GET /api/ref-docs/:id/diff）。
+func (h *AppHandlers) GetRefDocDiff(c *gin.Context) {
+	if _, ok := CurrentUserFromContext(c); !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+	docID, ok := parseRefDocIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	fromVer := 0
+	if raw := strings.TrimSpace(c.Query("from")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "from 参数必须为正整数", nil)
+			return
+		}
+		fromVer = v
+	}
+
+	toVer := 0
+	if raw := strings.TrimSpace(c.Query("to")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "to 参数必须为正整数", nil)
+			return
+		}
+		toVer = v
+	}
+
+	resp, err := h.refDocSvc.DiffRefDocVersions(c.Request.Context(), docID, fromVer, toVer)
+	if err != nil {
+		writeRefDocServiceError(c, "计算参考文档版本差异", err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
