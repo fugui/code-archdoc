@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.6.0 (ADR-04 ~ ADR-10 Frozen Contract)
+- **文档版本**：v1.7.0 (ADR-04 ~ ADR-11 Frozen Contract)
 - **编制日期**：2026-11-24
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.5.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.7.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.5.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.8.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md) ~ [`ADR-11`](../05-adr/11-ref-doc-refine-studio.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -1398,4 +1398,298 @@ export function groupEffectiveRefDocsByScope(docs: readonly EffectiveRefDocVO[])
 export function buildExcludedRefDocIds(docs: readonly EffectiveRefDocVO[], checkedDocIds: ReadonlySet<number>): number[];
 export function formatRefDocSummaryStaleHint(summaryForVersion: number, currentVersion: number): string;
 export function formatRefCitationBadgeLabel(citation: RefDocCitationVO): string;
+```
+
+---
+
+## 14. ADR-11 契约增量（`M17`：零新增表声明、`pkg/refdoc` 精修契约、Service DTO 与前端强类型契约）
+
+### 14.1 零数据库结构变更声明与 `LLMUsageLog` 复用契约
+
+`M17`（`ADR-11` 一期轻量方案）严格保持 `ADR-10` 冻结的 **22 张 `archdoc_*` 自有表与既有列结构 100% 不变，零新增表、零表字段变更、共享表零 DDL**：
+- **无状态精修**：AI 精修会话与提案在前端内存中流转，采纳后复用 `PUT /api/ref-docs/:id` 原子升版；
+- **LLM 用量记账复用**：`POST /api/ref-docs/:id/refine` 复用既有 `archdoc_llm_usage_logs`（`models.LLMUsageLog`）：
+  - `TaskID = nil`、`DocumentID = nil`；
+  - `RepoID = *doc.OwnerRepoID`（若归属范围为 `system`/`subsystem`/`group`/未绑仓模块则写 `0`）；
+  - `SlotID = fmt.Sprintf("ref_doc:%d", doc.ID)`；
+  - `Engine = models.EngineNative`（`"native"`）；
+  - `Stage = "ref_doc_refine"`（`revise`）或 `"ref_doc_ask"`（`ask`），长度严格 `<= 32` 字符（匹配 `varchar(32)`）。
+
+### 14.2 `pkg/refdoc/` 纯领域包增量契约（严格叶包零 `pkg/llm` / `pkg/drift` / DB 依赖）
+
+1. **`pkg/refdoc/parser.go` 导出**：
+   ```go
+   // ParseTOC 归一化换行符并执行带围栏状态机、Setext/编号标题与 >250 行分块兜底的目录切片。
+   func ParseTOC(markdown string) []HeadingNode
+   ```
+2. **`pkg/refdoc/refine.go`（新建，仅允许导入 Go 标准库与 `pkg/security`）**：
+   ```go
+   package refdoc
+
+   const (
+   	RefineScopeSelection = "selection"
+   	RefineScopeSection   = "section"
+   	RefineScopeFull      = "full"
+
+   	RefineModeRevise = "revise"
+   	RefineModeAsk    = "ask"
+
+   	RefinePresetPolish         = "polish"
+   	RefinePresetMermaid        = "mermaid"
+   	RefinePresetRefreshSummary = "refresh_summary"
+
+   	DefaultFullRefineMaxTokens     = 16000
+   	DefaultSummaryExtractMaxTokens = 24000
+   )
+
+   // RefinePromptMessage 零依赖纯消息结构（与 pkg/llm.Message 字段同构，由 services 层映射转换）。
+   type RefinePromptMessage struct {
+   	Role    string `json:"role"`    // system | user
+   	Content string `json:"content"`
+   }
+
+   type RefineSelectionRange struct {
+   	StartLine int    `json:"start_line"`
+   	EndLine   int    `json:"end_line"`
+   	QuoteText string `json:"quote_text,omitempty"`
+   }
+
+   type RefinePromptInput struct {
+   	Title           string
+   	DocKind         string
+   	TOC             []HeadingNode
+   	FullMarkdown    string
+   	ScopeType       string                // selection | section | full
+   	Mode            string                // revise | ask
+   	PresetAction    string                // "" | polish | mermaid | refresh_summary
+   	UserPrompt      string
+   	TargetSection   *HeadingNode
+   	TargetFragment  string
+   	Selection       *RefineSelectionRange
+   	CurrentTerms    []string
+   	MaxContextBytes int64
+   }
+
+   type RefineLLMOutput struct {
+   	AnswerMD               string   `json:"answer_md"`
+   	RevisedMarkdown        string   `json:"revised_markdown"`
+   	SuggestedSummaryMD     string   `json:"suggested_summary_md,omitempty"`
+   	SuggestedDeclaredTerms []string `json:"suggested_declared_terms,omitempty"`
+   }
+
+   // CheckFullRefineBudget 评估 full 模式重写正文是否超出单轮安全上下文上限。
+   func CheckFullRefineBudget(markdown string, maxTokens int) (estimatedTokens int, effectiveLimit int, exceeded bool)
+
+   // BuildRefinePrompt 构造带 128-bit 随机 nonce 数据栅栏 (<untrusted_ref_doc nonce="...">) 的提示词消息。
+   // 当 preset_action=="refresh_summary" 且全文超过 DefaultSummaryExtractMaxTokens 时自动按 TOC + 各节首段浓缩上下文。
+   func BuildRefinePrompt(in RefinePromptInput) (messages []RefinePromptMessage, nonce string, err error)
+
+   // ParseRefineLLMOutput 兼容纯 JSON、```json 围栏及纯文本兜底解析 LLM 精修响应。
+   func ParseRefineLLMOutput(rawContent string, mode string, presetAction string) (*RefineLLMOutput, error)
+
+   // ApplyLineRangeReplacement 先归一化 \r\n -> \n，再对 1-based 闭区间 [startLine, endLine] 执行精准行替换，非目标行保持字节级不变。
+   func ApplyLineRangeReplacement(fullMarkdown string, startLine, endLine int, replacement string) (string, error)
+   ```
+
+### 14.3 `services/` 领域 DTO 与装配契约 (`services/ref_doc_service.go` & `services/ref_doc_refine_service.go`)
+
+```go
+// services/ref_doc_service.go 扩展可选注入方法（仅 RefineRefDoc 需要 LLM 与 UsageLog，Versions/Diff 零 LLM 依赖）
+func (s *RefDocService) WithRefineEngine(govRepo GovernanceRepo, llmClient *llm.Client) *RefDocService
+
+// services/ref_doc_refine_service.go — ADR-11 增量请求与视图 DTO
+type RefDocRefineSelection struct {
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	QuoteText string `json:"quote_text,omitempty"`
+}
+
+type RefineRefDocRequest struct {
+	ScopeType      string                 `json:"scope_type"`                 // selection | section | full
+	Mode           string                 `json:"mode"`                       // revise | ask
+	PresetAction   string                 `json:"preset_action,omitempty"`    // polish | mermaid | refresh_summary
+	Prompt         string                 `json:"prompt"`
+	SectionID      string                 `json:"section_id,omitempty"`
+	Selection      *RefDocRefineSelection `json:"selection,omitempty"`
+	DraftContentMD string                 `json:"draft_content_md,omitempty"`
+}
+
+type RefDocRefineGateError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type RefDocRefinePreflight struct {
+	CanSave               bool                   `json:"can_save"`
+	SecretConfirmRequired bool                   `json:"secret_confirm_required"`
+	SecretIssues          []refdoc.GateFinding   `json:"secret_issues"`
+	MermaidIssues         []verifier.MermaidIssue `json:"mermaid_issues"`
+	GateError             *RefDocRefineGateError `json:"gate_error,omitempty"`
+}
+
+type RefineRefDocResponse struct {
+	AnswerMD               string                `json:"answer_md"`
+	Mode                   string                `json:"mode"`
+	ScopeType              string                `json:"scope_type"`
+	TargetSectionID        string                `json:"target_section_id,omitempty"`
+	OriginalFragment       string                `json:"original_fragment"`
+	ProposedFragment       string                `json:"proposed_fragment"`
+	ProposedFullMarkdown   string                `json:"proposed_full_markdown"`
+	UnifiedDiff            string                `json:"unified_diff"`
+	Preflight              RefDocRefinePreflight `json:"preflight"`
+	SuggestedSummaryMD     string                `json:"suggested_summary_md,omitempty"`
+	SuggestedDeclaredTerms []string              `json:"suggested_declared_terms,omitempty"`
+}
+
+type RefDocVersionItemVO struct {
+	VersionNo  int   `json:"version_no"`
+	ByteSize   int64 `json:"byte_size"`
+	IsCurrent  bool  `json:"is_current"`
+	FileExists bool  `json:"file_exists"`
+}
+
+type RefDocVersionsResponse struct {
+	DocID          uint                  `json:"doc_id"`
+	CurrentVersion int                   `json:"current_version"`
+	Versions       []RefDocVersionItemVO `json:"versions"`
+}
+
+type RefDocDiffResponse struct {
+	DocID        uint   `json:"doc_id"`
+	FromVersion  int    `json:"from_version"`
+	ToVersion    int    `json:"to_version"`
+	UnifiedDiff  string `json:"unified_diff"`
+	AddedLines   int    `json:"added_lines"`
+	RemovedLines int    `json:"removed_lines"`
+}
+
+// RefDocTokenBudgetExceededError 对应 HTTP 422 TOKEN_BUDGET_EXCEEDED。
+type RefDocTokenBudgetExceededError struct {
+	EstimatedTokens     int
+	MaxFullRefineTokens int
+}
+```
+
+### 14.4 前端 TypeScript 强类型与纯函数契约 (`frontend/src/types/` & `utils/refDocStudioUtils.ts`)
+
+```typescript
+// frontend/src/types/domain.ts (ADR-11 增量)
+export type RefDocRefineScopeType = 'selection' | 'section' | 'full';
+export type RefDocRefineMode = 'revise' | 'ask';
+export type RefDocRefinePresetAction = 'polish' | 'mermaid' | 'refresh_summary';
+
+export interface RefDocRefineGateErrorVO {
+  code: string;
+  message: string;
+}
+
+export interface RefDocGateFindingVO {
+  rule_id: string;
+  matched_mask: string;
+  line_offset: number;
+  severity: 'hard' | 'confirm_required' | string;
+}
+
+export interface RefDocMermaidIssueVO {
+  slot_id: string;
+  block_index: number;
+  diagram_type: string;
+  issue_code: string;
+  severity: 'error' | 'warning' | string;
+  node_count: number;
+  edge_count: number;
+  message: string;
+}
+
+export interface RefDocRefinePreflightVO {
+  can_save: boolean;
+  secret_confirm_required: boolean;
+  secret_issues: RefDocGateFindingVO[];
+  mermaid_issues: RefDocMermaidIssueVO[];
+  gate_error?: RefDocRefineGateErrorVO;
+}
+
+export interface RefineRefDocResponse {
+  answer_md: string;
+  mode: RefDocRefineMode;
+  scope_type: RefDocRefineScopeType;
+  target_section_id?: string;
+  original_fragment: string;
+  proposed_fragment: string;
+  proposed_full_markdown: string;
+  unified_diff: string;
+  preflight: RefDocRefinePreflightVO;
+  suggested_summary_md?: string;
+  suggested_declared_terms?: string[];
+}
+
+export interface RefDocVersionItemVO {
+  version_no: number;
+  byte_size: number;
+  is_current: boolean;
+  file_exists: boolean;
+}
+
+export interface RefDocVersionsResponse {
+  doc_id: number;
+  current_version: number;
+  versions: RefDocVersionItemVO[];
+}
+
+export interface RefDocDiffResponse {
+  doc_id: number;
+  from_version: number;
+  to_version: number;
+  unified_diff: string;
+  added_lines: number;
+  removed_lines: number;
+}
+
+// frontend/src/types/api.ts (ADR-11 增量)
+export interface RefineRefDocSelectionPayload {
+  start_line: number;
+  end_line: number;
+  quote_text?: string;
+}
+
+export interface RefineRefDocPayload {
+  scope_type: RefDocRefineScopeType;
+  mode: RefDocRefineMode;
+  preset_action?: RefDocRefinePresetAction;
+  prompt: string;
+  section_id?: string;
+  selection?: RefineRefDocSelectionPayload;
+  draft_content_md?: string;
+}
+
+// frontend/src/utils/urlQuery.ts (ADR-11 增量)
+export function buildRefDocStudioPath(isEmbedded: boolean, docId: number): string;
+
+// frontend/src/utils/errorMessages.ts (ADR-11 增量)
+// FormattedApiError 新增可选字段：currentVersion?: number（解析 details.current_version）
+
+// frontend/src/utils/refDocStudioUtils.ts（纯 TypeScript，零 React/JSX 依赖，node --test 直接运行）
+export interface RefDocDisplaySection {
+  section_id: string;
+  title: string;
+  level: number;
+  start_line: number;
+  end_line: number;
+  markdown: string;
+  is_preamble?: boolean;
+  is_chunk?: boolean;
+}
+
+export function parseLocalRefDocTOC(markdown: string): RefDocHeadingNode[];
+export function splitRefDocIntoDisplaySections(markdown: string, toc: readonly RefDocHeadingNode[]): RefDocDisplaySection[];
+export function replaceLinesInDraft(fullMarkdown: string, startLine: number, endLine: number, replacement: string): string;
+export function computeAbsoluteSelectionLines(
+  sectionStartLine: number,
+  relStartLine: number | undefined,
+  relEndLine: number | undefined,
+  sectionEndLine: number,
+): { startLine: number; endLine: number };
+export function hasUnsavedRefDocDraft(savedContent: string, draftContent: string): boolean;
+export function mergeRefDocRefineProposal(currentDraft: string, proposal: RefineRefDocResponse): string;
+export function classifyRefDocDiffLine(line: string): string;
 ```

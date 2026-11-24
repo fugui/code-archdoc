@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.7.0 (ADR-10 演进：新增 9 个参考文档与绑定管理接口至 79 Endpoints，新增 7 个机器可读错误码，扩展架构树/生成/任务/文档/Chat 契约)
+- **文档版本**：v1.8.0 (ADR-11 演进：新增 3 个参考文档精修与版本历史接口至 82 Endpoints，新增 `TOKEN_BUDGET_EXCEEDED` 422 映射，核查对齐 `refDocs.ts`)
 - **编制日期**：2026-11-24
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.10.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) (v1.2.0) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.5.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.11.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) (v1.3.0) ~ [`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md) (v1.6.0) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.5.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-11`](../05-adr/11-ref-doc-refine-studio.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -77,6 +77,7 @@
 | `422` | `SECRET_DETECTED` | 参考文档命中硬阻断凭据（`pem_private_key` / `token_prefix` / `url_credential`），不可通过 `redact_and_save` 绕过，`details: {"findings": [...]}` |
 | `422` | `SECRET_CONFIRM_REQUIRED` | 参考文档未命中硬凭据但命中可确认脱敏项（`key_blacklist` / `high_entropy`）且未传入 `redact_and_save=true`，`details: {"findings": [...]}` |
 | `422` | `VERIFIER_BLOCKED` | 发布时目标修订未通过 Verifier 硬门禁（如命中明文凭据泄漏 `blocker_count > 0`），`details: {"verifier_report": {...}}`（`SC-04`） |
+| `422` | `TOKEN_BUDGET_EXCEEDED` | 参考文档 `POST /api/ref-docs/:id/refine` `full` 模式超出安全上下文预算上限（`ADR-11`），`details: {"estimated_tokens": 22500, "max_full_refine_tokens": 16000, "suggested_scope": "section"}`（生成任务预算超限则写入任务 `error_code`） |
 | `429` | `QUEUE_FULL` | 调度队列或单用户并发达到上限，`details: {"retry_after_seconds": 10}` |
 | `502` | `REMOTE_BRANCH_FETCH_FAILED` | 查询或校验 Git 远端分支失败（远端不可达、超时或鉴权异常，输出已脱敏） |
 | `500` | `INTERNAL_ERROR` | 服务端内部未预期异常（严禁泄露明文 `APIKey` 或底层密码） |
@@ -1496,3 +1497,99 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
 5. **`GET /api/documents/:id/chat/sessions` 与 SSE `proposal_item` (`ScopeWrite`)**：
    - `ChatContextRefVO` 新增可选 `ref_docs?: TaskReferenceDocSnapshotVO[]`；
    - `ChatProposalItemVO` 新增可选 `ref_citations?: RefDocCitationVO[]`。
+
+---
+
+## 11. ADR-11 增量接口契约（`M17`，新增 3 Endpoints，总计 82 Endpoints）
+
+### 11.1 新增接口清单
+
+| # | 方法 | 路由路径 | 鉴权级别 | 里程碑 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| 80 | `POST` | `/api/ref-docs/:id/refine` | `RefDocOwnerWrite` (`revise`)<br>`JWT` (`ask`) | M17 | 无状态 AI 精修提案或问答，含草稿动态 `ParseTOC`、专属双门禁预检与 `LLMUsageLog` 记账 | - *(无持久化写库，采纳走 `PUT`)* |
+| 81 | `GET` | `/api/ref-docs/:id/versions` | `JWT` | M17 | 倒序枚举 `current_version..1` 历史版本列表（含字节数与磁盘存在性状态） | - |
+| 82 | `GET` | `/api/ref-docs/:id/diff` | `JWT` | M17 | 计算任意两历史/当前磁盘版本间标准 `unified_diff` 与增删行数 | - |
+
+### 11.2 新增接口详细 Schema 契约
+
+1. **`POST /api/ref-docs/:id/refine`（`RefDocOwnerWrite` for `revise`; `JWT` for `ask`）**：
+   - **请求体 (`application/json`)**：
+     ```json
+     {
+       "scope_type": "section",
+       "mode": "revise",
+       "preset_action": "mermaid",
+       "prompt": "将下单状态流转文字补充为 Mermaid 状态图",
+       "section_id": "sec-2",
+       "selection": {
+         "start_line": 42,
+         "end_line": 58,
+         "quote_text": "订单创建后进入待支付状态..."
+       },
+       "draft_content_md": "# 订单域设计\n..."
+     }
+     ```
+   - **参数与安全校验规则**：
+     - `mode`：`revise`（默认）| `ask`；非法值返 `400 INVALID_PARAM`；`revise` 校验 `checkDocOwnerWritePermission`，非归属方返 `403 FORBIDDEN`。
+     - `scope_type`：`selection` | `section` | `full`；`section` 模式必填 `section_id` 且须在动态解析的 `TOC` 中存在（当首个标题 `start_line > 1` 时兼容前端合成导言标识 `section_id == "__preamble__"`，对应 `1 .. toc[0].start_line - 1`）；`selection` 模式必填 `selection.start_line`/`end_line`（`1 <= start_line <= end_line <= line_count`）。
+     - `preset_action`：`""` | `polish` | `mermaid` | `refresh_summary`；传入合法 `preset_action` 时 `prompt` 可为空（后端补齐默认中文指令），两者皆空返 `400 INVALID_PARAM`。
+     - `draft_content_md`：当 `mode == "ask"` 且 `!canEdit`（只读用户）时**强制忽略**并仅读取磁盘 `v<current_version>.md`；当 `canEdit` 且传入非空草稿时校验 UTF-8 与 `<= maxBytes`（超限返 `413 PAYLOAD_TOO_LARGE`），并以 `refdoc.ParseTOC` 动态重算 TOC。
+     - `full` 模式预算熔断：当 `scope_type == "full"`、`mode == "revise"` 且 `preset_action != "refresh_summary"` 时，若正文 Token 超过上限 `min(max(llmCfg.MaxTokensPerTask/2, 4000), 16000)`，直接返 **`422 TOKEN_BUDGET_EXCEEDED`**（`details: {"estimated_tokens": ..., "max_full_refine_tokens": ..., "suggested_scope": "section"}`，0 次 LLM 请求）。
+     - 未配置可用 LLM 模型时返 `400 INVALID_PARAM`（复用 `ErrChatLLMNotConfigured`）。
+   - **响应 (`200 OK`)**：
+     ```json
+     {
+       "answer_md": "已补充订单状态机 Mermaid 图并保持原有边界说明不变。",
+       "mode": "revise",
+       "scope_type": "section",
+       "target_section_id": "sec-2",
+       "original_fragment": "## 状态流转\n...",
+       "proposed_fragment": "## 状态流转\n```mermaid\nstateDiagram-v2\n...\n```",
+       "proposed_full_markdown": "# 订单域设计\n...",
+       "unified_diff": "@@ -40,4 +40,12 @@\n...",
+       "preflight": {
+         "can_save": true,
+         "secret_confirm_required": false,
+         "secret_issues": [],
+         "mermaid_issues": []
+       },
+       "suggested_summary_md": "订单域核心状态流转与幂等设计规范...",
+       "suggested_declared_terms": ["OrderGateway", "RiskCenter"]
+     }
+     ```
+     - **`refresh_summary` 专属语义**：`proposed_fragment` 与 `unified_diff` 为 `""`，`proposed_full_markdown` 等于 `baseMD`，仅产出 `answer_md`、`suggested_summary_md` 与 `suggested_declared_terms`。
+     - **`preflight` 预检语义**：`ValidateAndParse`（豁免 `RunSymbolGate`）与 `RunMermaidGate` 独立跑完；命中 `SECRET_DETECTED` / `INLINE_BASE64_IMAGE` / `PAYLOAD_TOO_LARGE` 或 Mermaid `severity == "error"` 时 `can_save = false`（附 `gate_error`）；仅命中 `SECRET_CONFIRM_REQUIRED` 或 `mermaid_complexity_warning` 时 `can_save = true`（`secret_confirm_required = true`）。
+2. **`GET /api/ref-docs/:id/versions`（`JWT`）**：
+   - **响应 (`200 OK`)**：按 `version_no DESC` 返回 `current_version .. 1`：
+     ```json
+     {
+       "doc_id": 12,
+       "current_version": 3,
+       "versions": [
+         { "version_no": 3, "byte_size": 4820, "is_current": true, "file_exists": true },
+         { "version_no": 2, "byte_size": 4510, "is_current": false, "file_exists": true },
+         { "version_no": 1, "byte_size": 3980, "is_current": false, "file_exists": false }
+       ]
+     }
+     ```
+3. **`GET /api/ref-docs/:id/diff`（`JWT`）**：
+   - **Query 参数**：`to`（可选 int，默认 `current_version`）、`from`（可选 int，默认 `max(1, to - 1)`）；任一参数 `<= 0`、非数字或 `> current_version` 返 `400 INVALID_PARAM`；任一磁盘版本文件缺失返 `404 NOT_FOUND`。
+   - **响应 (`200 OK`)**：
+     ```json
+     {
+       "doc_id": 12,
+       "from_version": 1,
+       "to_version": 3,
+       "unified_diff": "@@ -10,3 +10,5 @@\n...",
+       "added_lines": 5,
+       "removed_lines": 2
+     }
+     ```
+
+### 11.3 既有前端 `frontend/src/api/refDocs.ts` 契约对齐核查记录
+
+经对标 `handlers/router.go` 与 `handlers/ref_doc.go`，同步冻结以下 4 处既有接口契约对齐（随 `M17` 纳入 `T-ADR11-09` 回归验证）：
+1. `listRefDocs`：`query.status === 'all'` 必须透传 `status=all`（避免后端默认按 `active` 过滤隐藏已归档文档）；
+2. `createRefDoc`（multipart）：表单元信息字段键名统一为 `payload`（匹配 `c.PostForm("payload")`）；
+3. `purgeRefDoc`：请求路径为 `DELETE /admin/ref-docs/${docId}/purge`，响应类型为 `{ purged_id: number }`；
+4. `updateRefDocBinding`：HTTP 方法统一为 `PATCH /ref-docs/${docId}/bindings/${bindingId}`。

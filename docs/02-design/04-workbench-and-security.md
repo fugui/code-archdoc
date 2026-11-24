@@ -1,10 +1,10 @@
 # Canvas Studio 微前端工作台、双轨修订与 RBAC 审计设计
 
 - **文档编号**：`04-workbench-and-security.md`
-- **文档版本**：v1.5.0 (ADR-10 架构树参考文档管理抽屉、生成前可见控制、Studio 独立引用溯源与归属作用域 RBAC)
+- **文档版本**：v1.6.0 (ADR-11 架构参考文档精修工作台 `RefDocStudioPage`、无状态 AI 精修管线与版本前滚恢复)
 - **编制日期**：2026-11-24
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `F-36`, `F-37`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `SC-23`, `SC-24`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md), [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
+- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `F-36`, `F-37`, `F-38`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `SC-23`, `SC-24`, `SC-25`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md), [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md), [`ADR-11`](../05-adr/11-ref-doc-refine-studio.md)
 
 ---
 
@@ -13,7 +13,7 @@
 ### 1.1 Module Federation 联邦契约（`./App` 与 `./menu`）
 
 - **构建契约**：`frontend/vite.config.ts` 保持 `name: 'archdoc'`、`base: '/archdoc/'`、`filename: 'remoteEntry.js'`，共享 `react`、`react-dom`、`react-router-dom`。
-- **`./menu` 侧边栏导出（3 组 8 项，[`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md) 一期保持零菜单膨胀，参考文档入口原位嵌入 `/arch-tree`）**：
+- **`./menu` 侧边栏导出（3 组 8 项，[`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md) / [`ADR-11`](../05-adr/11-ref-doc-refine-studio.md) 一期保持零菜单膨胀，参考文档管理入口原位嵌入 `/arch-tree` 并直达 `/ref-docs/:docId/studio`）**：
   - **文档全景（全员可见）**：
     - `/overview`（全局概览：架构功能模块覆盖态势、全平台双维漂移健康度、反推生产任务态势与生成质量度量大盘）
     - `/arch-tree`（**架构文档全景**，日常文档消费与生产唯一主入口，`M15` 升级为单一 4 列树形表格）
@@ -25,13 +25,14 @@
     - `/admin/llm`（LLM 模型配置，`W1`）
     - `/admin/doc-types`（`DocType` 文档类型管理，`W2`）
     - `/admin/ops`（运行与存储运维，`W2`）
-- **`./App` 内部路由表（双模同时兼容相对子路径与 `/archdoc/*` 完整前缀；独立调试态 `StandaloneShell` 中 `/studio` 与 `/docs/*` 默认高亮「架构文档全景」，`topbarTitle` 兜底文案为 `'未关联代码仓'`）**：
+- **`./App` 内部路由表（双模同时兼容相对子路径与 `/archdoc/*` 完整前缀；独立调试态 `StandaloneShell` 中同步注册 `/ref-docs/:docId/studio`，其中 `/studio`、`/docs/*` 与 `/ref-docs/*/studio` 默认高亮「架构文档全景」，`isRefDocStudio` 顶栏标题为 `'架构参考文档精修工作台'`，`topbarTitle` 兜底文案为 `'未关联代码仓'`）**：
 
 | 路由路径（嵌入态均含 `/archdoc` 前缀兼容） | 视图组件 | 波次 | 角色访问边界 |
 | :--- | :--- | :---: | :--- |
 | `/` → 重定向至 `/overview` | `QualityMetricsPage` | W1/W2 | 登录全员 |
 | `/overview` & `/metrics`（兼容路由） | `QualityMetricsPage`（全局概览大盘：架构模块覆盖态势 + 全平台漂移雷达汇总 + 任务态势 + 质量度量与修订纵向对比） | W2 | 登录全员 |
 | `/arch-tree` | `ArchTreeCoveragePage`（架构文档全景主视图：单一 4 列树形表格，Header 保留模块级极简微标） | W2 / M15 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
+| `/ref-docs/:docId/studio` | `RefDocStudioPage`（架构参考文档三栏轻量精修工作台，`ADR-11`；`./menu` 不增加一级菜单） | M17 | 登录全员可浏览大纲、版本历史 Diff 及对已落盘版 `ask` 问答；`can_edit`（`RefDocOwnerWrite`）可执行编辑、`revise` AI 精修与版本保存 |
 | `/repos` | `RepoCoveragePage`（未关联代码仓：默认 `unbound_repo` 仓库级未关联列表，可切「全部代码仓」承接目录治理与整仓 Roll-up；兼容 `/repos?view=arch` 重定向至 `/arch-tree`） | W1 / M15 | 登录全员（生成按钮按负责人 RBAC 动态启禁） |
 | `/tasks` | `TaskCenterPage`（反推任务中心，Header 保留极简状态微标） | W1 | 登录全员 |
 | `/studio/:repoId` & `/studio/:repoId/docs/:docId` | `CanvasStudioPage`（双栏协同审校工作台） | W1 / W2 | 全员只读已发布；负责人可查看/编辑草稿 |
@@ -77,7 +78,7 @@ ArchTreeCoveragePage（日常唯一主入口，/arch-tree，M15 树表化重构 
 │           ├── UnboundModuleRow（副行斜体弱化「未关联代码仓」，操作列「未绑定源码」，仍可挂载模块级参考文档）
 │           └── InactiveRepoModuleRow（副行告警弱化「所绑仓库已停用」，操作列「仓库已停用」）
 ├── RefDocDrawer（ADR-10 右侧抽屉，按目标作用域 system / subsystem / group / module 打开）
-│   ├── SectionA_DirectBindings（新建上传 .md 或粘贴 Markdown [含 markitdown/pandoc 转换引导与 422 SECRET_CONFIRM_REQUIRED 脱敏确认开关] / 搜索关联已有文档 / 编辑新版本 [带 expected_version 乐观锁与 summary_stale 提示] / 切换 inherit_to_children 与 doc_type_slugs / 归档与解绑；非归属节点明确展示归属来源标签并仅开放消费配置与解绑）
+│   ├── SectionA_DirectBindings（新建上传 .md 或粘贴 Markdown [含 markitdown/pandoc 转换引导与 422 SECRET_CONFIRM_REQUIRED 脱敏确认开关] / 搜索关联已有文档 / 详情页头部「进入工作台精修 / 工作台浏览」直达 `/ref-docs/:docId/studio` [ADR-11：置于 `can_edit` 判断之外，只读用户亦可浏览] / 编辑新版本 [带 expected_version 乐观锁与 summary_stale 提示] / 切换 inherit_to_children 与 doc_type_slugs / 归档与解绑；非归属节点明确展示归属来源标签并仅开放消费配置与解绑）
 │   └── SectionB_InheritedPreview（按 全系统 → 子系统 → 功能组 分组只读预览生效摘要、目录与预估 Token）
 └── GenerateTaskModal（支持 ADR-07 切分支刷新、ADR-08 双引擎/拆单监控与 ADR-10 EffectiveRefDocsSection 分层预览及临时排除 exclude_ref_doc_ids）
 
@@ -196,6 +197,45 @@ AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
     └── DrawerFooterStatusBar (实时展示蓝图校验状态、源码模式既有 persistedSlotIds 变更风险预警徽标，切换/保存前强制弹出 useConfirm 风险确认门禁)
 ```
 
+### 2.5 架构参考文档精修工作台 (`RefDocStudioPage`，`F-38` / `ADR-11`)
+
+- **页面定位与复用/隔离红线**：
+  - 独立挂载于 `/ref-docs/:docId/studio`（不增设 `frontend/src/menu.ts` 一级菜单），从 `RefDocDrawer` 详情页跳转时携带 `{ state: { from: currentPathWithSearch, fromLabel: '架构文档全景' } }`，返回复用 `resolveSafeStudioBackTarget`；
+  - 复用 `SectionMarkdownRenderer`、`SelectionReviewPopover`（向后兼容扩展 `showCommentButton?: boolean`、`canAsk?: boolean`、`ownership?: SectionOwnership`、`onAddComment?: () => void`，仅展示「AI 精修 / 问 AI」且向只读用户开放「问 AI」）与 Studio 三栏 CSS 布局变量及 Diff 行高亮样式；
+  - **严格禁止耦合** `DocumentDetailVO`、`SectionVO`、`ReviewCommentVO`、`Ownership`、`OrphanSectionsZone`、`EvidenceSourceTab` 或 `ChatService`。
+
+```text
+RefDocStudioPage (/ref-docs/:docId/studio, F-38 / ADR-11)
+├── RefDocStudioTopBar
+│   ├── SafeBackButton (resolveSafeStudioBackTarget，默认回 /arch-tree)
+│   ├── TitleAndMetaBadges (文档标题 | doc_kind 徽章 | owner_scope_label | v<N> 版本徽章 | summary_stale 警告 | 估算 Token)
+│   ├── DraftStatusIndicator (仅当 hasUnsavedRefDocDraft==true 时显示「未保存草稿 · 含本地改动」+ 一键保存 / 放弃改动)
+│   └── PrimaryActions (导入 .md 文件 | 全文分栏编辑 | 保存发布新版 v<N+1> [带 expected_version])
+├── ThreeColumnWorkspace (复用 Studio 三段式 CSS 网格变量，100% --color-* Token)
+│   ├── LeftMetaAndOutlinePanel
+│   │   ├── DynamicTOCOutline (消费 parseLocalRefDocTOC(draftMD) + splitRefDocIntoDisplaySections，含 <=30 行前置导言 __preamble__，点击平滑定位章节)
+│   │   ├── RefDocMetadataCard (完整编辑 title / doc_kind / description[<=500] / summary_md[附 summary_stale 滞后提示] / declared_terms)
+│   │   └── RefDocBindingsPanel (展示 bindings[]，标识 is_home 主归属；对 can_manage_binding 行支持 PATCH 修改 inherit_to_children 与 doc_type_slugs)
+│   ├── CenterRefDocCanvas
+│   │   ├── FullDocSplitEditorModal/Mode (全文分栏编辑、本地 .md 文件导入 UTF-8 预览载入草稿)
+│   │   ├── SelectionReviewPopover (划词触发：经 computeAbsoluteSelectionLines 将节内相对行号映射为文档全局 1-based 绝对行号，一键带入右栏 selection 上下文)
+│   │   └── RefDocSectionCardList (按切分后的显示章节渲染，含 __preamble__ 导言卡)
+│   │       ├── SectionHeader (标题、level、start_line..end_line、编辑本节 | AI 精修本节)
+│   │       ├── SectionMarkdownRenderer (Markdown + Mermaid 渲染与行号 block 标记)
+│   │       └── RefDocSplitEditor (独立新建组件：复用 SectionMarkdownRenderer 与 .code-archdoc-inline-editor* 样式，分栏/源码/预览，单节回写 replaceLinesInDraft 精准更新内存草稿)
+│   └── RightRefDocAssistantDrawer (双 Tab)
+│       ├── Tab 1: AI 精修提案 (纯内存会话列表，零数据库表)
+│       │   ├── ScopeSelector (选区 selection | 本节 section | 全文 full) & ModeSwitch (修订提案 revise | 只读问答 ask)
+│       │   ├── PresetQuickActions ([润色与结构规范化 polish] | [补全 Mermaid 流程图 mermaid] | [提炼摘要与术语 refresh_summary])
+│       │   ├── ProposalDiffCard (展示 answer_md、红绿 Unified Diff [复用 DiffProposalCard 样式]、专属双门禁 Preflight 状态 [secret_issues + mermaid_issues]、suggested_summary_md/terms)
+│       │   └── ProposalAdoptBar ([直接采纳并保存新版(可勾同步摘要术语/高熵脱敏)] | [仅采纳摘要与术语(不升正文版)] | [回填至草稿微调] | [忽略丢弃])
+│       └── Tab 2: 版本历史与 Diff (RefDocVersionHistoryPanel)
+│           ├── VersionSelectorList (GET /versions：version_no DESC、字节大小、is_current、file_exists 缺失告警)
+│           ├── VersionUnifiedDiffView (GET /diff?from=A&to=B：任意两版本行级 Diff 与增删计数)
+│           └── RollForwardRestoreAction (「恢复此版本 vK 为新版」：拉取 vK 正文预览确认后，以当前 expected_version 走 PUT 生成 v<N+1>.md，v1..vN 不可变)
+└── RefDocConflictMergeModal (触发 409 VERSION_CONFLICT 时弹出：绝不丢失本地草稿与内存提案，拉取服务端最新 v<latest> 对照合并后重试保存)
+```
+
 ---
 
 ## 3. 章节级双轨修订状态流与 SSE 精修协议（`F-09`）
@@ -235,6 +275,53 @@ AdminDocTypesPage (F-03 / F-32, W2 & M11, ADR-05)
 - **采纳与拒绝**：
   - 点击汇总卡「采纳所选提案」或画布「立即采纳本节」：调用 `POST /api/documents/:id/chat/messages/:msg_id/apply`（携带 `base_revision_no` 与所选 `{item_id, override_markdown}`），单事务合并生成 1 个不可变 `Revision` 并计入 `F-26` 指标（旧 `messages/:msg_id/accept` 委托至此）；
   - 点击单项「拒绝本节」或整组拒绝：分别调用 `POST /api/documents/:id/chat/proposal-items/:item_id/reject` 或 `messages/:msg_id/reject`，仅置提案 `rejected` 并把关联 `proposed` 批注自动回退为 `open`，文档零变更。
+
+### 3.3 参考文档无状态 AI 精修管线、专属预检与不可变前滚恢复（`F-38` / `ADR-11`）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 架构师 / 只读用户
+    participant Studio as RefDocStudioPage (内存态)
+    participant API as handlers.RefDoc (RBAC+Audit)
+    participant Svc as services.RefDocService (Refine)
+    participant Pure as pkg/refdoc & pkg/drift & verifier
+    participant LLM as pkg/llm (Native Endpoint)
+
+    User->>Studio: 划词(绝对行号)/选节/全文 + 选 mode/preset_action + 触发 AI
+    Studio->>API: POST /api/ref-docs/:id/refine (含可选 draft_content_md)
+    API->>Svc: 校验权限 (revise 需 RefDocOwnerWrite；ask 允许 JWT 但非归属忽略草稿)
+    Svc->>Pure: ParseTOC(baseMD) 动态解析目录 + CheckFullRefineBudget (超限返 422)
+    Svc->>Pure: BuildRefinePrompt(nonce 数据栅栏 + 上下文)
+    Svc->>LLM: ChatCompletion(ResolveLLMEndpoint) + 记录 archdoc_llm_usage_logs
+    LLM-->>Svc: 返回文本或结构化 JSON (answer_md / revised_markdown / suggested_summary_md / suggested_declared_terms)
+    Svc->>Pure: ApplyLineRangeReplacement + drift.ComputeUnifiedDiff(baseMD, proposedFullMD)
+    Svc->>Pure: 独立双门禁预检: refdoc.ValidateAndParse + verifier.RunMermaidGate (豁免 RunSymbolGate)
+    Svc-->>Studio: 返回提案 + unified_diff + preflight + 建议摘要术语
+
+    alt 采纳提案 / 单独采纳摘要术语 / 前滚恢复 vK
+        User->>Studio: 确认保存 (携带 expected_version = current_version)
+        Studio->>API: PUT /api/ref-docs/:id
+        alt 服务端版本已前进 (409 VERSION_CONFLICT)
+            API-->>Studio: 409 { current_version }
+            Studio->>User: 保留本地草稿与提案，弹出 RefDocConflictMergeModal 对照合并
+        else 乐观锁通过
+            API->>Svc: 持 doc_id 锁先原子写 v<N+1>.md (正文变化时) -> 后 DB 条件更新 -> 写审计
+            API-->>Studio: 200 OK (历史 v1..vN.md 保持不可变)
+        end
+    end
+```
+
+1. **草稿上下文安全与动态 TOC 不变量**：
+   - 当 `mode == "ask"` 且 `!canEdit` 时，服务端**强制忽略**请求体 `draft_content_md`，仅以磁盘 `v<current_version>.md` 为唯一上下文，防止未授权用户将 `/refine` 用作任意文本免费 LLM 代理；
+   - 当 `canEdit == true` 且传入非空 `draft_content_md` 时，先校验 UTF-8 与 `<= maxBytes`（超限返 `413 PAYLOAD_TOO_LARGE`），并以 `refdoc.ParseTOC(baseMD)` 动态解析草稿 TOC 定位 `section_id` 边界，彻底避免草稿增删行后按旧 `doc.TOCJSON` 替换错位。
+2. **快捷动作 `preset_action` 与 `refresh_summary` 非破坏性规则**：
+   - 支持 `polish`（润色与结构规范化）、`mermaid`（补全合法 Mermaid 流程图/时序图）、`refresh_summary`（提炼 L0 摘要与领域术语）；若 `prompt` 为空且 `preset_action` 合法，后端自动注入默认中文指令；两者均为空返 `400 INVALID_PARAM`；
+   - `refresh_summary` 专用于更新摘要与术语，**不改写文档正文**（`proposed_fragment = ""`、`proposed_full_markdown = baseMD`、`unified_diff = ""`），豁免 `full` 重写预算拦截（超 `24000 Tokens` 时按 TOC + 各节首段拼装浓缩上下文），采纳时可仅提交 `summary_md` + `declared_terms` 消除 `summary_stale` 而不触发正文升版。
+3. **专属双门禁预检（豁免 `RunSymbolGate`）**：
+   - `ValidateAndParse` 与 `verifier.RunMermaidGate` **必须独立执行完两项检查**（命中凭据仍返回 Mermaid 问题）：`SECRET_DETECTED` / `INLINE_BASE64_IMAGE` / `PAYLOAD_TOO_LARGE` 或 Mermaid `severity == "error"` 置 `can_save = false`；仅命中 `SECRET_CONFIRM_REQUIRED` 或 `mermaid_complexity_warning` 时 `can_save = true`，前端在采纳框允许勾选 `redact_and_save = true`。
+4. **LLM 用量观测零新表复用**：
+   - 复用 `archdoc_llm_usage_logs` 落库每次调用（`TaskID = nil`、`DocumentID = nil`、`RepoID = *doc.OwnerRepoID` 或 `0`、`SlotID = fmt.Sprintf("ref_doc:%d", doc.ID)`、`Engine = "native"`、`Stage = "ref_doc_refine"` 或 `"ref_doc_ask"`）。
 
 ---
 
@@ -326,7 +413,10 @@ func (s *RBACService) CheckArchScopeWritePermission(
   1. `POST /api/ref-docs` 校验 `initial_binding` 写权限，并将该作用域固化为 `ReferenceDoc.OwnerScopeKey`（对应 `ReferenceDocBinding.IsHome = true`）；
   2. `PUT /api/ref-docs/:id`（更新正文/元信息/归档/恢复）仅校验 **`doc.OwnerScopeKey`** 写权限（或管理员；若原归属架构节点已在共享表 `architecture_elements` 中被物理删除，自动回退为管理员或 `doc.CreatedBy`），**绝不受后续其他消费绑定影响**，且当消费绑定数为 0 时绝不发生空集恒真越权；
   3. 跨节点消费绑定（`POST/PATCH/DELETE .../bindings`）仅校验操作方对**目标消费节点**的写权限；`active` 状态下禁止直接 `DELETE` `is_home == true` 的主绑定（返回 `400 HOME_BINDING_PROTECTED`，引导归档或由同时具备新旧作用域写权的用户转移归属）；
-  4. **管理员应急物理清除（`DELETE /api/admin/ref-docs/:id/purge`）**：仅 `super_admin` / `archdoc_admin` 可调用，彻底物理删除 `<RefDocsDir>/<doc_id>/` 下全部历史版本 `.md` 文件及数据库主表/绑定记录。
+  4. **管理员应急物理清除（`DELETE /api/admin/ref-docs/:id/purge`）**：仅 `super_admin` / `archdoc_admin` 可调用，彻底物理删除 `<RefDocsDir>/<doc_id>/` 下全部历史版本 `.md` 文件及数据库主表/绑定记录；
+  5. **参考文档精修工作台端点权限边界（`ADR-11`）**：
+     - `POST /api/ref-docs/:id/refine`：`mode == "revise"` 严格要求 **`RefDocOwnerWrite`**（非归属方返回 `403 FORBIDDEN`）；`mode == "ask"` 开放至 **`JWT`** 登录用户，但 `!canEdit` 只读用户携带 `draft_content_md` 时强制忽略草稿，仅允许基于服务端已落盘正文问答；
+     - `GET /api/ref-docs/:id/versions` 与 `GET /api/ref-docs/:id/diff`：与 `GET /api/ref-docs/:id` 对齐，面向 **`JWT`** 登录全员只读开放。
 
 ### 4.3 全量写操作 `commonAudit` 字段级 Diff 审计埋点清单
 

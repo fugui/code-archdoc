@@ -1,25 +1,25 @@
 # 代码设计文档反推 (`code-archdoc`) 系统总体架构、跨模块协同与包分层治理
 
 - **文档编号**：`01-system-architecture.md`
-- **文档版本**：v1.2.0 (ADR-10 架构参考文档与双引擎上下文引用包边界对齐)
+- **文档版本**：v1.3.0 (ADR-11 参考文档精修工作台叶包边界与无状态精修引擎对齐)
 - **编制日期**：2026-11-24
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.10.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.11.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-11`](../05-adr/11-ref-doc-refine-studio.md)
 
 ---
 
 ## 0. 设计总览与专篇索引
 
-本阶段设计采用「**5 篇高内聚设计专篇 + 关键选型 ADR**」结构，全面覆盖阶段一基线（`KA-01`~`KA-07`、`D-01`~`D-04`、`W1`/`W2` P0 特性、`ADR-04`~`ADR-10` 演进特性与 `SC-01`~`SC-24`）：
+本阶段设计采用「**5 篇高内聚设计专篇 + 关键选型 ADR**」结构，全面覆盖阶段一基线（`KA-01`~`KA-07`、`D-01`~`D-04`、`W1`/`W2` P0 特性、`ADR-04`~`ADR-11` 演进特性与 `SC-01`~`SC-25`）：
 
 | 专篇 / ADR | 路径 | 核心职责 |
 | :--- | :--- | :--- |
 | **【总览篇】** | [`01-system-architecture.md`](./01-system-architecture.md)（本篇） | 双模微前端拓扑、运行时五层架构、项目群协同（`D-01`~`D-04`）、Go 包依赖与 `make lint-arch`、三大端到端时序图、`W1`/`W2` 波次切分与 P1 扩展钩子 |
 | **【核心引擎篇】** | [`02-extraction-and-generation-engine.md`](./02-extraction-and-generation-engine.md) | Git 沙箱与三层降噪、Code IR 多语言 SPI、L2 编排熔断、OpenCode 双引擎、Verifier 四重门禁、资源调度（`F-27`）与架构参考文档分层切片/隔离注入（`ADR-10`） |
 | **【领域治理篇】** | [`03-doctype-drift-and-publishing.md`](./03-doctype-drift-and-publishing.md) | `DocType` 目录 SSOT 注册表与 5 类内置槽位规划、`slot_id` 锁定与孤立章节、`publish_dir` 原子落盘/撤回/导出、`F-25` 巡检与 `F-12` 双维漂移算法、`F-26` 评测与度量 |
-| **【应用与安全篇】** | [`04-workbench-and-security.md`](./04-workbench-and-security.md) | `./App` & `./menu` 联邦契约、四大工作台 React 组件分层树、手工直编 + SSE Chat 双轨修订协议、三层与归属作用域 RBAC 权限决策引擎与 `commonAudit` 审计清单 |
+| **【应用与安全篇】** | [`04-workbench-and-security.md`](./04-workbench-and-security.md) | `./App` & `./menu` 联邦契约、五大工作台 React 组件分层树（含 `RefDocStudioPage`）、手工直编 + SSE Chat + 无状态参考文档精修管线、三层与归属作用域 RBAC 权限决策引擎与 `commonAudit` 审计清单 |
 | **【数据模型篇】** | [`05-database-schema.md`](./05-database-schema.md) | 共享主数据只读契约、完整 Mermaid ER 图、全量 22 张 `archdoc_*` GORM Struct 建模字典、迁移/加密与 `testdb` 物理隔离约束 |
-| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md) | 微前端与表前缀隔离、Code IR 存储、`publish_dir` 挂载、Monorepo 发现/切片/汇总、蓝图双模编辑器、审阅精修台、单仓分支切换、单文档拆单与 OpenCode 双引擎、架构全景主视图、架构树参考文档与双引擎上下文引用 |
+| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-11`](../05-adr/11-ref-doc-refine-studio.md) | 微前端与表前缀隔离、Code IR 存储、`publish_dir` 挂载、Monorepo 发现/切片/汇总、蓝图双模编辑器、审阅精修台、单仓分支切换、单文档拆单与 OpenCode 双引擎、架构全景主视图、架构树参考文档与双引擎上下文引用、架构参考文档精修工作台（一期轻量） |
 
 ---
 
@@ -97,7 +97,7 @@ flowchart LR
 flowchart TB
     L1["1. HTTP / SSE 接入层 (handlers/)<br/>Gin 路由绑定 | JWT 鉴权 | 三层 RBAC 守卫 | SSE 流式推流 | commonAudit 审计埋点"]
     L2["2. 领域编排与调度层 (services/)<br/>TaskScheduler (双优先级队列/并发限流) | GenerationOrchestrator | RevisionService |<br/>PublishService | DriftOrchestrator | RemoteHeadPoller (F-25) | ResourceReaper (F-27) | QualityMetricsService"]
-    L3["3. 纯领域引擎与算法层 (pkg/)<br/>pkg/sandbox (路径安全与降噪) | pkg/codeir (L1 多语言 SPI & 脱敏) | pkg/doctype (目录 SSOT 注册表) | pkg/refdoc (参考文档切片/凭据门禁/摘要摘录) |<br/>pkg/llm (OpenAI Compatible 客户端 & Prompt 编排) | pkg/opencode (只读 OpenCode CLI 双模式桥接与事件解析) | pkg/verifier (四重门禁) | pkg/publisher (原子渲染与导出) | pkg/drift (双维定位)"]
+    L3["3. 纯领域引擎与算法层 (pkg/)<br/>pkg/sandbox (路径安全与降噪) | pkg/codeir (L1 多语言 SPI & 脱敏) | pkg/doctype (目录 SSOT 注册表) | pkg/refdoc (参考文档切片/凭据门禁/无状态精修Prompt与行合成) |<br/>pkg/llm (OpenAI Compatible 客户端 & Prompt 编排) | pkg/opencode (只读 OpenCode CLI 双模式桥接与事件解析) | pkg/verifier (四重门禁) | pkg/publisher (原子渲染与导出) | pkg/drift (双维定位)"]
     L4["4. 共享基础设施与外部适配层<br/>code-common/backend/gitsync (D-04) | code-common/backend/auth & audit & server |<br/>pkg/security (AES-256-GCM 密钥封装) | models/ (GORM 仓储实现)"]
     L5["5. 受控本地文件系统 & 共享 PostgreSQL 持久化层<br/>LocalFS: sandbox_dir / ir_cache / doc_types / ref_docs / publish_dir | PG: 只读公共表 + 22 张 archdoc_* 表"]
 
@@ -242,7 +242,7 @@ code-archdoc/
     ├── codeir/                      # Canonical Code IR 模型、FacetStore 接口、LanguageExtractor SPI、通用与 Proto 提取器
     │   └── treesitter/              # CGO 隔离包：tree-sitter C/C++ (W1) 与 Java/Python (W2) 语法树解析器
     ├── doctype/                     # DocType 目录 SSOT 解析、meta.json 校验、未知字段保留、有序聚合哈希与原子写盘
-    ├── refdoc/                      # 架构参考文档纯领域引擎（ATX/Setext/编号切片、无标题分块、分级凭据检验、单源 Token 估算、非工具槽位摘录）
+    ├── refdoc/                      # 架构参考文档纯领域引擎（ATX/Setext/编号切片、无标题分块、分级凭据检验、单源 Token 估算、非工具槽位摘录、无状态精修 Prompt/行区间替换与预算评估）
     ├── llm/                         # OpenAI Compatible HTTP/SSE 客户端、三层超时重试、Prompt 注入隔离、结构化裁剪与 KV Cache 编排器
     ├── opencode/                    # 只读 OpenCode CLI 双模式配置桥接、进程组强杀、8MB JSONL 事件解析与 --session 续跑（零 DB/Gin 耦合）
     ├── verifier/                    # 四重确定性校验管线（符号/路径、槽位完备度、Mermaid 语法与上限、凭据拦截）与独立 RefDocCitation 对齐
@@ -263,7 +263,7 @@ code-archdoc/
 
 > **依赖倒置与 `pkg/*` 内部 DAG 约束**：
 > - `services/` 内部定义仓储接口（如 `SnapshotRepo`、`DocTypeRepo`、`DocumentRepo`、`TaskRepo`、`DriftRepo`、`ReferenceDocRepo`），由 `models/` 下的 `*Store` 结构体实现并在 `main.go` 组合根注入；`pkg/*` 仅定义纯 Go 接口（如 `codeir.FacetStore`、`llm.ChatClient`），彻底杜绝在引擎内部出现 `models.DB` 全局单例访问。
-> - **`pkg/*` 内部严格保持无环 DAG（`ADR-10`）**：`pkg/llm`、`pkg/opencode` 与 `pkg/verifier` 可单向依赖 `pkg/refdoc`；`pkg/refdoc` 仅允许依赖 `pkg/security` 与 `pkg/sandbox`（用于路径安全与分级凭据检测），**严禁导入 `pkg/llm`**。全链路统一 Token 估算公式（`ceil(ascii/3.5 + nonASCII/1.5)`）在叶包 `pkg/refdoc.EstimateTextTokens` 单源定义，由 `pkg/llm.EstimateTextTokens` 直接委托复用，从根源杜绝 `pkg/llm <-> pkg/refdoc` 循环依赖。
+> - **`pkg/*` 内部严格保持无环 DAG（`ADR-10` / `ADR-11`）**：`pkg/llm`、`pkg/opencode` 与 `pkg/verifier` 可单向依赖 `pkg/refdoc`；`pkg/refdoc`（含新增 `pkg/refdoc/refine.go`）仅允许依赖 Go 标准库、`pkg/security` 与 `pkg/sandbox`（用于路径安全与分级凭据检测），**严禁导入 `pkg/llm` 或 `pkg/drift`**。全链路统一 Token 估算公式（`ceil(ascii/3.5 + nonASCII/1.5)`）在叶包 `pkg/refdoc.EstimateTextTokens` 单源定义，由 `pkg/llm.EstimateTextTokens` 直接委托复用；参考文档精修 `unified_diff` 计算在 `services/ref_doc_refine_service.go` 编排层直接复用 `pkg/drift.ComputeUnifiedDiff`，从根源杜绝循环依赖与算法复制粘贴。
 
 ### 4.3 `make lint-arch` 静态防腐门禁规则（NFR-1）
 
