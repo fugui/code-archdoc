@@ -1,25 +1,25 @@
 # 代码设计文档反推 (`code-archdoc`) 系统总体架构、跨模块协同与包分层治理
 
 - **文档编号**：`01-system-architecture.md`
-- **文档版本**：v1.1.0 (ADR-04 ~ ADR-08 演进对齐)
-- **编制日期**：2026-11-22
+- **文档版本**：v1.2.0 (ADR-10 架构参考文档与双引擎上下文引用包边界对齐)
+- **编制日期**：2026-11-24
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.8.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.10.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
 
 ---
 
 ## 0. 设计总览与专篇索引
 
-本阶段设计采用「**5 篇高内聚设计专篇 + 3 篇关键选型 ADR**」结构，全面覆盖阶段一基线（`KA-01`~`KA-07`、`D-01`~`D-04`、`W1`/`W2` P0 特性与 `SC-01`~`SC-13`）：
+本阶段设计采用「**5 篇高内聚设计专篇 + 关键选型 ADR**」结构，全面覆盖阶段一基线（`KA-01`~`KA-07`、`D-01`~`D-04`、`W1`/`W2` P0 特性、`ADR-04`~`ADR-10` 演进特性与 `SC-01`~`SC-24`）：
 
 | 专篇 / ADR | 路径 | 核心职责 |
 | :--- | :--- | :--- |
 | **【总览篇】** | [`01-system-architecture.md`](./01-system-architecture.md)（本篇） | 双模微前端拓扑、运行时五层架构、项目群协同（`D-01`~`D-04`）、Go 包依赖与 `make lint-arch`、三大端到端时序图、`W1`/`W2` 波次切分与 P1 扩展钩子 |
-| **【核心引擎篇】** | [`02-extraction-and-generation-engine.md`](./02-extraction-and-generation-engine.md) | Git 沙箱与三层降噪、Canonical Code IR Schema 与多语言 SPI、L2 分层摘要/预算熔断/Prompt 安全与缓存优化、状态机、Verifier 四重门禁、LRU 回收与调度（`F-27`） |
+| **【核心引擎篇】** | [`02-extraction-and-generation-engine.md`](./02-extraction-and-generation-engine.md) | Git 沙箱与三层降噪、Code IR 多语言 SPI、L2 编排熔断、OpenCode 双引擎、Verifier 四重门禁、资源调度（`F-27`）与架构参考文档分层切片/隔离注入（`ADR-10`） |
 | **【领域治理篇】** | [`03-doctype-drift-and-publishing.md`](./03-doctype-drift-and-publishing.md) | `DocType` 目录 SSOT 注册表与 5 类内置槽位规划、`slot_id` 锁定与孤立章节、`publish_dir` 原子落盘/撤回/导出、`F-25` 巡检与 `F-12` 双维漂移算法、`F-26` 评测与度量 |
-| **【应用与安全篇】** | [`04-workbench-and-security.md`](./04-workbench-and-security.md) | `./App` & `./menu` 联邦契约、四大工作台 React 组件分层树、手工直编 + SSE Chat 双轨修订协议、三层 RBAC 权限决策引擎与 `commonAudit` 审计清单 |
-| **【数据模型篇】** | [`05-database-schema.md`](./05-database-schema.md) | 共享主数据只读契约、完整 Mermaid ER 图、全量 20 张 `archdoc_*` GORM Struct 建模字典、迁移/加密与 `testdb` 物理隔离约束 |
-| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md) | 微前端与表前缀隔离、Code IR 存储、`publish_dir` 挂载、Monorepo 发现/切片/汇总、蓝图双模编辑器、审阅精修台、单仓分支切换、单文档拆单与 OpenCode 双引擎 |
+| **【应用与安全篇】** | [`04-workbench-and-security.md`](./04-workbench-and-security.md) | `./App` & `./menu` 联邦契约、四大工作台 React 组件分层树、手工直编 + SSE Chat 双轨修订协议、三层与归属作用域 RBAC 权限决策引擎与 `commonAudit` 审计清单 |
+| **【数据模型篇】** | [`05-database-schema.md`](./05-database-schema.md) | 共享主数据只读契约、完整 Mermaid ER 图、全量 22 张 `archdoc_*` GORM Struct 建模字典、迁移/加密与 `testdb` 物理隔离约束 |
+| **关键选型 ADR** | [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md) | 微前端与表前缀隔离、Code IR 存储、`publish_dir` 挂载、Monorepo 发现/切片/汇总、蓝图双模编辑器、审阅精修台、单仓分支切换、单文档拆单与 OpenCode 双引擎、架构全景主视图、架构树参考文档与双引擎上下文引用 |
 
 ---
 
@@ -49,6 +49,7 @@ flowchart LR
     subgraph LocalStorage["宿主机受控本地存储 (data_dir)"]
         PublishDir["publish_dir/<br/>已发布 Markdown (原子落盘)"]
         DocTypesDir["doc_types/<br/>DocType 唯一事实源"]
+        RefDocsDir["ref_docs/<br/>参考文档不可变版本 (v1..vN.md)"]
         SandboxIR["sandbox_dir/ & ir_cache/<br/>Git 沙箱与压缩 Code IR 分片"]
     end
 
@@ -70,6 +71,7 @@ flowchart LR
     CoreEngine --> LLMAPI
     CoreEngine --> PublishDir
     CoreEngine --> DocTypesDir
+    CoreEngine --> RefDocsDir
     CoreEngine --> SandboxIR
     DevDocs -.->|"D-01 符号链接只读挂载<br/>docs.path/archdoc -> publish_dir"| PublishDir
 ```
@@ -95,9 +97,9 @@ flowchart LR
 flowchart TB
     L1["1. HTTP / SSE 接入层 (handlers/)<br/>Gin 路由绑定 | JWT 鉴权 | 三层 RBAC 守卫 | SSE 流式推流 | commonAudit 审计埋点"]
     L2["2. 领域编排与调度层 (services/)<br/>TaskScheduler (双优先级队列/并发限流) | GenerationOrchestrator | RevisionService |<br/>PublishService | DriftOrchestrator | RemoteHeadPoller (F-25) | ResourceReaper (F-27) | QualityMetricsService"]
-    L3["3. 纯领域引擎与算法层 (pkg/)<br/>pkg/sandbox (路径安全与降噪) | pkg/codeir (L1 多语言 SPI & 脱敏) | pkg/doctype (目录 SSOT 注册表) |<br/>pkg/llm (OpenAI Compatible 客户端 & Prompt 编排) | pkg/opencode (只读 OpenCode CLI 双模式桥接与事件解析) | pkg/verifier (四重门禁) | pkg/publisher (原子渲染与导出) | pkg/drift (双维定位)"]
+    L3["3. 纯领域引擎与算法层 (pkg/)<br/>pkg/sandbox (路径安全与降噪) | pkg/codeir (L1 多语言 SPI & 脱敏) | pkg/doctype (目录 SSOT 注册表) | pkg/refdoc (参考文档切片/凭据门禁/摘要摘录) |<br/>pkg/llm (OpenAI Compatible 客户端 & Prompt 编排) | pkg/opencode (只读 OpenCode CLI 双模式桥接与事件解析) | pkg/verifier (四重门禁) | pkg/publisher (原子渲染与导出) | pkg/drift (双维定位)"]
     L4["4. 共享基础设施与外部适配层<br/>code-common/backend/gitsync (D-04) | code-common/backend/auth & audit & server |<br/>pkg/security (AES-256-GCM 密钥封装) | models/ (GORM 仓储实现)"]
-    L5["5. 受控本地文件系统 & 共享 PostgreSQL 持久化层<br/>LocalFS: sandbox_dir / ir_cache / doc_types / publish_dir | PG: 只读公共表 + 20 张 archdoc_* 表"]
+    L5["5. 受控本地文件系统 & 共享 PostgreSQL 持久化层<br/>LocalFS: sandbox_dir / ir_cache / doc_types / ref_docs / publish_dir | PG: 只读公共表 + 22 张 archdoc_* 表"]
 
     L1 --> L2
     L2 --> L3
@@ -110,12 +112,13 @@ flowchart TB
 - **HTTP / SSE 接入层 (`handlers/`)**：仅负责请求参数校验（路径规范化、防 `..` 穿越）、JWT/RBAC 鉴权校验、调用 `services/` 编排方法、组装标准 HTTP/SSE 响应以及向 `gin.Context` 注入 `commonAudit` 字段级 Diff 上下文。严禁在 `handlers/` 中直接执行 `git` 命令、文件落盘或调用 LLM。
 - **领域编排与调度层 (`services/`)**：持有仓储接口（Repository Interfaces）与事务边界，统筹异步任务调度、Singleflight 去重、后台周期巡检（`F-25`）、磁盘 LRU 回收（`F-27`）与事件驱动的指标采集（`F-26`）。
 - **纯领域引擎与算法层 (`pkg/`)**：**零 `models.DB` 依赖、零 Gin 依赖**。所有输入输出均为纯 Go 领域结构体与受控接口（如 `FacetStore`、`SecretScanner`、`LLMClient`），可脱离 PostgreSQL 执行毫秒级纯单元测试。
-- **受控本地文件系统层 (`data_dir`)**：统一收口至配置项 `storage.data_dir` 下的四个隔离目录：
+- **受控本地文件系统层 (`data_dir`)**：统一收口至配置项 `storage.data_dir` 下的五个隔离目录：
   - `sandbox_dir/`：受 `gitsync` 管理的只读代码仓沙箱；
   - `ir_cache/`：压缩分片的 Code IR `.json.gz` 与术语表缓存（[`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md)）；
   - `doc_types/`：`DocType` 资产唯一事实源目录；
+  - `ref_docs/`：架构参考文档不可变版本落盘目录（`<doc_id>/v<ver>.md`，[`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)）；
   - `publish_dir/`：已审批定稿 Markdown 原子落盘目录（[`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md)）。
-- **PostgreSQL 共享持久化层 (`models/`)**：复用平台只读主数据，自有 20 张表强制 `archdoc_` 前缀与 `TableName() string` 方法（`ADR-08` 零新增表）。
+- **PostgreSQL 共享持久化层 (`models/`)**：复用平台只读主数据，自有 **22 张表**（含 `ADR-10` 新增 `archdoc_reference_docs` 与 `archdoc_reference_bindings`）强制 `archdoc_` 前缀与 `TableName() string` 方法。
 
 ---
 
@@ -230,18 +233,19 @@ func FetchCommitMetadata(ctx context.Context, localPath, repoURL, commitSHA stri
 code-archdoc/
 ├── main.go                          # 组合根 (Composition Root)：配置加载、DB/仓储/引擎装配、路由注册与优雅停机
 ├── config/                          # 静态模块常量 (ModuleKey/TablePrefix/AdminRole/:8100) 与 YAML 配置模型
-├── models/                          # GORM 表结构定义（只读公共表映射 + 16 张 archdoc_*）、DB 迁移、仓储接口实现
-├── handlers/                        # Gin HTTP/SSE 控制器、三层 RBAC 中间件、commonAudit 埋点与 HTTP 集成测试
-├── services/                        # 领域编排服务（持有仓储接口与引擎实例）：生成/修订/发布/漂移/巡检/调度/回收/度量
+├── models/                          # GORM 表结构定义（只读公共表映射 + 22 张 archdoc_*）、DB 迁移、仓储接口实现
+├── handlers/                        # Gin HTTP/SSE 控制器、三层/归属作用域 RBAC 中间件、commonAudit 埋点与 HTTP 集成测试
+├── services/                        # 领域编排服务（持有仓储接口与引擎实例）：生成/修订/发布/漂移/巡检/调度/回收/度量/参考文档
 └── pkg/                             # 纯领域引擎与算法包（严禁导入 models、gorm、gin）
-    ├── security/                    # APIKey AES-256-GCM 加密、脱敏器、通用凭据/高熵扫描器（L1 与 Verifier 共用）
+    ├── security/                    # APIKey AES-256-GCM 加密、脱敏器、通用凭据/高熵扫描器（L1、refdoc 与 Verifier 共用）
     ├── sandbox/                     # 沙箱路径安全校验 (SafeJoin/防符号链接逃逸) 与三层降噪过滤引擎
     ├── codeir/                      # Canonical Code IR 模型、FacetStore 接口、LanguageExtractor SPI、通用与 Proto 提取器
     │   └── treesitter/              # CGO 隔离包：tree-sitter C/C++ (W1) 与 Java/Python (W2) 语法树解析器
     ├── doctype/                     # DocType 目录 SSOT 解析、meta.json 校验、未知字段保留、有序聚合哈希与原子写盘
+    ├── refdoc/                      # 架构参考文档纯领域引擎（ATX/Setext/编号切片、无标题分块、分级凭据检验、单源 Token 估算、非工具槽位摘录）
     ├── llm/                         # OpenAI Compatible HTTP/SSE 客户端、三层超时重试、Prompt 注入隔离、结构化裁剪与 KV Cache 编排器
     ├── opencode/                    # 只读 OpenCode CLI 双模式配置桥接、进程组强杀、8MB JSONL 事件解析与 --session 续跑（零 DB/Gin 耦合）
-    ├── verifier/                    # 四重确定性校验管线（符号/路径、槽位完备度、Mermaid 语法与上限、凭据拦截）
+    ├── verifier/                    # 四重确定性校验管线（符号/路径、槽位完备度、Mermaid 语法与上限、凭据拦截）与独立 RefDocCitation 对齐
     ├── publisher/                   # Frontmatter 渲染、平台深链转换、跨文档相对链接检查、publish_dir 原子落盘与 ZIP 导出
     └── drift/                       # 章节级 Code Drift（证据锚点+内容指纹）与 Spec Drift（slot_id 差异）纯计算引擎
 ```
@@ -257,7 +261,9 @@ code-archdoc/
 | **`handlers`** | ✅ | ✅ *(仅常量/错误型)* | ✅ *(仅类型与 RBAC 查表)* | ✅ | — | ✅ (`auth`, `audit`, `models`) |
 | **`main`** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (`server`, `auth`, `audit`) |
 
-> **依赖倒置要点**：`services/` 内部定义仓储接口（如 `SnapshotRepo`、`DocTypeRepo`、`DocumentRepo`、`TaskRepo`、`DriftRepo`），由 `models/` 下的 `*Store` 结构体实现并在 `main.go` 组合根注入；`pkg/*` 仅定义纯 Go 接口（如 `codeir.FacetStore`、`llm.ChatClient`），彻底杜绝在引擎内部出现 `models.DB` 全局单例访问。
+> **依赖倒置与 `pkg/*` 内部 DAG 约束**：
+> - `services/` 内部定义仓储接口（如 `SnapshotRepo`、`DocTypeRepo`、`DocumentRepo`、`TaskRepo`、`DriftRepo`、`ReferenceDocRepo`），由 `models/` 下的 `*Store` 结构体实现并在 `main.go` 组合根注入；`pkg/*` 仅定义纯 Go 接口（如 `codeir.FacetStore`、`llm.ChatClient`），彻底杜绝在引擎内部出现 `models.DB` 全局单例访问。
+> - **`pkg/*` 内部严格保持无环 DAG（`ADR-10`）**：`pkg/llm`、`pkg/opencode` 与 `pkg/verifier` 可单向依赖 `pkg/refdoc`；`pkg/refdoc` 仅允许依赖 `pkg/security` 与 `pkg/sandbox`（用于路径安全与分级凭据检测），**严禁导入 `pkg/llm`**。全链路统一 Token 估算公式（`ceil(ascii/3.5 + nonASCII/1.5)`）在叶包 `pkg/refdoc.EstimateTextTokens` 单源定义，由 `pkg/llm.EstimateTextTokens` 直接委托复用，从根源杜绝 `pkg/llm <-> pkg/refdoc` 循环依赖。
 
 ### 4.3 `make lint-arch` 静态防腐门禁规则（NFR-1）
 
@@ -266,7 +272,7 @@ code-archdoc/
 ```makefile
 lint-arch:
 	@echo "Checking architecture boundaries (ArchGuard)..."
-	@# 规则 1: pkg/ 下所有引擎包（含 pkg/opencode）严禁导入 code-archdoc/models、services、handlers、gorm.io/gorm 或 github.com/gin-gonic/gin
+	@# 规则 1: pkg/ 下所有引擎包（含 pkg/opencode、pkg/refdoc）严禁导入 code-archdoc/models、services、handlers、gorm.io/gorm 或 github.com/gin-gonic/gin
 	@bad_pkg_imports=$$(go list -f '{{.ImportPath}} -> {{.Imports}}' ./pkg/... | grep -E 'code-archdoc/models|code-archdoc/services|code-archdoc/handlers|gorm\.io/gorm|github\.com/gin-gonic/gin' || true); \
 	if [ -n "$$bad_pkg_imports" ]; then \
 		echo "❌ [ArchGuard Failed] pkg/* must not import models/services/handlers/gorm/gin:"; \

@@ -1,10 +1,10 @@
 # PostgreSQL 物理模型与 `archdoc_*` GORM 建模字典
 
 - **文档编号**：`05-database-schema.md`
-- **文档版本**：v1.4.0 (ADR-08 增量演进：零新增表坚守 20 表基线，3 表增补 3 列 + 1 列扩容)
-- **编制日期**：2026-11-22
+- **文档版本**：v1.5.0 (ADR-10 增量演进：20 → 22 张 `archdoc_*` 自有表 + 3 表 JSONB 隔离扩展)
+- **编制日期**：2026-11-24
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-35`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-07`](../05-adr/07-single-repo-branch-switch.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
+- **关联基线**：`Non-Goal 1`, `Non-Goal 6`, `F-01`, `F-03`, `F-04`, `F-05`, `F-07`, `F-09`, `F-10`, `F-11`, `F-12`, `F-14`, `F-25`~`F-37`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-07`](../05-adr/07-single-repo-branch-switch.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
 
 ---
 
@@ -54,7 +54,7 @@ func (ArchitectureElement) TableName() string {
 
 ## 2. 全局物理实体关系图（Mermaid ER Diagram）
 
-本模块共设计 **20 张自有业务表**，全部严格遵循 `archdoc_` 表前缀约束，划分为 8 个领域子域（严格遵守共享公共表零 DDL 红线）：
+本模块共设计 **22 张自有业务表**，全部严格遵循 `archdoc_` 表前缀约束，划分为 9 个领域子域（严格遵守共享公共表零 DDL 红线）：
 
 ```mermaid
 erDiagram
@@ -64,9 +64,14 @@ erDiagram
     REPOSITORIES ||--o{ ARCHDOC_DOCUMENTS : "repo_id"
     REPOSITORIES ||--o{ ARCHDOC_GEN_TASKS : "repo_id"
     REPOSITORIES ||--o| ARCHDOC_REPO_REMOTE_HEADS : "repo_id"
+    REPOSITORIES ||--o{ ARCHDOC_REFERENCE_BINDINGS : "repo_id"
+    ARCHITECTURE_ELEMENTS ||--o{ ARCHDOC_REFERENCE_BINDINGS : "arch_element_id"
     USERS ||--o{ ARCHDOC_GEN_TASKS : "triggered_by"
     USERS ||--o{ ARCHDOC_DOCUMENT_REVISIONS : "created_by"
     USERS ||--o{ ARCHDOC_REVIEW_COMMENTS : "author_id"
+    USERS ||--o{ ARCHDOC_REFERENCE_DOCS : "created_by"
+
+    ARCHDOC_REFERENCE_DOCS ||--o{ ARCHDOC_REFERENCE_BINDINGS : "doc_id"
 
     ARCHDOC_DOC_TYPES ||--o{ ARCHDOC_DOC_TYPE_REVISIONS : "doc_type_id"
     ARCHDOC_DOC_TYPES ||--o{ ARCHDOC_DOCUMENTS : "doc_type_slug"
@@ -217,9 +222,10 @@ type GenTask struct {
 	Engine           string         `gorm:"size:20;not null;default:'native';index" json:"engine"` // native | opencode (ADR-08)
 	Priority         string         `gorm:"size:20;not null;default:'interactive';index" json:"priority"` // interactive | batch (F-27)
 	DocTypesJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_types"`    // ADR-08：非批量任务固定长度为 1；批量父任务存所选 DocType 清单
-	TargetDocumentID *uint          `gorm:"index" json:"target_document_id"`                      // 仅 incremental_refresh 时非空：指向被增量刷新的目标文档 ID
-	TargetSlotsJSON  datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"target_slots"` // 仅 incremental_refresh 时非空：待刷新的受影响 slot_id 列表
-	Status           string         `gorm:"size:24;not null;default:'pending';index" json:"status"` // pending|extracting|generating|verifying|ready|failed|canceled
+	TargetDocumentID         *uint          `gorm:"index" json:"target_document_id"`                                // 仅 incremental_refresh 时非空：指向被增量刷新的目标文档 ID
+	TargetSlotsJSON          datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"target_slots"`            // 仅 incremental_refresh 时非空：待刷新的受影响 slot_id 列表
+	ReferenceDocSnapshotJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"reference_doc_snapshots"` // ADR-10：任务创建时固化的参考文档版本快照
+	Status                   string         `gorm:"size:24;not null;default:'pending';index" json:"status"`          // pending|extracting|generating|verifying|ready|failed|canceled
 	ProgressPercent int            `gorm:"default:0;not null" json:"progress_percent"`
 	EstimatedTokens int            `gorm:"default:0;not null" json:"estimated_tokens"`           // 首次 LLM 调用前预估总 Token
 	ErrorCode       string         `gorm:"size:64;default:''" json:"error_code"`                 // 如 TOKEN_BUDGET_EXCEEDED / FILE_BUDGET_EXCEEDED / GIT_AUTH_FAILED
@@ -321,7 +327,8 @@ type SectionEvidence struct {
 	NeedsDriftReview    bool           `gorm:"default:false;not null" json:"needs_drift_review"` // locked 章节重生成豁免后的待核对标记
 	ContentSHA256       string         `gorm:"size:64;not null" json:"content_sha256"`           // 字节级不变性验证摘要
 	VerifierSummaryJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_summary"`
-	EvidencesJSON       datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"evidences"` // ADR-03 EvidenceAnchor 数组 [{anchor_id, anchor_key, file_path, symbol_kind, fq_symbol, content_fingerprint, commit_sha, line_start, line_end, confidence}]
+	EvidencesJSON       datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"evidences"`     // ADR-03 源码/module_doc 锚点数组（零污染）
+	RefCitationsJSON    datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"ref_citations"` // ADR-10 参考文档章节引用数组 []verifier.RefDocCitation
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }
@@ -360,7 +367,7 @@ type ChatMessage struct {
 	UnifiedDiff         string         `gorm:"type:text;default:''" json:"unified_diff"`
 	VerifierPreviewJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_preview"`
 	PlanSummaryJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"plan_summary"` // M12: 阶段 1 Plan 路由结果与 advisory_locked 建议
-	ContextRefsJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"context_refs"` // M12: 引用的选区锚点 / slot_id / comment_ids
+	ContextRefsJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"context_refs"` // M12/M16: 引用的选区锚点 / slot_id / comment_ids / ref_docs 快照
 	ProposalStatus      string         `gorm:"size:20;default:'none';not null;index" json:"proposal_status"` // none | pending | accepted | rejected | superseded
 	AppliedRevisionID   *uint          `json:"applied_revision_id"`
 	ModelName           string         `gorm:"size:128;default:''" json:"model_name"`
@@ -382,6 +389,7 @@ type ChatProposalItem struct {
 	FinalAppliedMD          string         `gorm:"type:text;not null;default:''" json:"final_applied_md"`
 	UnifiedDiff             string         `gorm:"type:text;not null;default:''" json:"unified_diff"`
 	CitedAnchorsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"cited_anchors"`
+	RefCitationsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"ref_citations"` // ADR-10：参考文档章节引用数组
 	VerifierPreviewJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_preview"`
 	AddressedCommentIDsJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"addressed_comment_ids"`
 	Status                  string         `gorm:"size:20;not null;default:'pending';index:idx_archdoc_cpi_doc_slot_status,priority:3" json:"status"` // pending | accepted | rejected | superseded
@@ -565,14 +573,72 @@ type RepoModule struct {
 func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules" }
 ```
 
+### 3.9 架构参考文档与多层级绑定域（`F-37`，[`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)）
+
+```go
+// ReferenceDoc 架构参考 Markdown 文档主实体（第 21 张 archdoc_* 自有表）
+type ReferenceDoc struct {
+	ID                 uint           `gorm:"primaryKey" json:"id"`
+	Title              string         `gorm:"size:200;not null" json:"title"`
+	DocKind            string         `gorm:"size:32;not null;default:'arch_design';index" json:"doc_kind"` // arch_design | domain_glossary | interface_spec | adr_constraint | other
+	Description        string         `gorm:"size:500;default:''" json:"description"`
+	Visibility         string         `gorm:"size:16;not null;default:'public'" json:"visibility"`          // 一期默认 public（登录可读），预留 scope_bound 扩展
+	OwnerScopeKey      string         `gorm:"size:512;not null;index" json:"owner_scope_key"`               // 归属作用域唯一键: "system" | "arch:<id>" | "repo:<id>:<subdir>"
+	OwnerScopeLevel    string         `gorm:"size:16;not null;index" json:"owner_scope_level"`              // system | subsystem | group | repo | module
+	OwnerArchElementID *uint          `gorm:"index" json:"owner_arch_element_id"`
+	OwnerRepoID        *uint          `gorm:"index" json:"owner_repo_id"`
+	OwnerSubdirectory  string         `gorm:"size:512;not null;default:''" json:"owner_subdirectory"`
+	SummaryMD          string         `gorm:"type:text;not null;default:''" json:"summary_md"`              // L0 精简摘要（<=300字）
+	SummarySource      string         `gorm:"size:16;not null;default:'fallback'" json:"summary_source"`    // manual | llm | fallback
+	SummaryStatus      string         `gorm:"size:16;not null;default:'ready'" json:"summary_status"`       // ready | pending | failed
+	SummaryForVersion  int            `gorm:"not null;default:1" json:"summary_for_version"`                // 摘要对应的正文版本号（检测手填摘要滞后）
+	TOCJSON            datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"toc"`                  // []refdoc.HeadingNode（含无标题分块兜底节点）
+	DeclaredTerms      datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"declared_terms"`       // []string（仅限人工声明或术语表文档词条）
+	CurrentVersion     int            `gorm:"not null;default:1" json:"current_version"`
+	StorageRelPath     string         `gorm:"size:512;not null;default:''" json:"-"`                        // <doc_id>/v<ver>.md
+	ContentSHA256      string         `gorm:"size:64;not null;default:'';index" json:"content_sha256"`
+	ByteSize           int64          `gorm:"not null;default:0" json:"byte_size"`
+	RuneCount          int            `gorm:"not null;default:0" json:"rune_count"`
+	EstimatedTokens    int            `gorm:"not null;default:0" json:"estimated_tokens"`                   // 按 refdoc.EstimateTextTokens 预计算
+	LineCount          int            `gorm:"not null;default:0" json:"line_count"`
+	Status             string         `gorm:"size:16;not null;default:'active';index" json:"status"`        // active | archived
+	CreatedBy          uint           `gorm:"not null;index" json:"created_by"`
+	UpdatedBy          uint           `gorm:"not null" json:"updated_by"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+}
+
+func (ReferenceDoc) TableName() string { return config.TablePrefix + "reference_docs" }
+
+// ReferenceDocBinding 参考文档与四层架构作用域的多对多绑定关系（第 22 张 archdoc_* 自有表）
+type ReferenceDocBinding struct {
+	ID                uint           `gorm:"primaryKey" json:"id"`
+	DocID             uint           `gorm:"not null;uniqueIndex:idx_archdoc_ref_bind_unique,priority:1;index" json:"doc_id"`
+	ScopeKey          string         `gorm:"size:512;not null;uniqueIndex:idx_archdoc_ref_bind_unique,priority:2;index" json:"scope_key"`
+	ScopeLevel        string         `gorm:"size:16;not null;index" json:"scope_level"` // system | subsystem | group | repo | module
+	IsHome            bool           `gorm:"not null;default:false" json:"is_home"`     // 归属作用域主绑定标记（active 状态下不可单独解绑）
+	ArchElementID     *uint          `gorm:"index" json:"arch_element_id"`
+	RepoID            *uint          `gorm:"index" json:"repo_id"`
+	Subdirectory      string         `gorm:"size:512;not null;default:''" json:"subdirectory"`
+	InheritToChildren bool           `gorm:"not null;default:true" json:"inherit_to_children"`
+	DocTypeSlugsJSON  datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"doc_type_slugs"`
+	SortOrder         int            `gorm:"not null;default:0" json:"sort_order"`
+	CreatedBy         uint           `gorm:"not null" json:"created_by"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+func (ReferenceDocBinding) TableName() string { return config.TablePrefix + "reference_bindings" }
+```
+
 ---
 
 ## 4. 一致性、加密与物理隔离测试约束
 
 ### 4.1 `AutoMigrate` 初始化顺序与幂等 Seed 规则
 
-1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 20 张 `archdoc_*` 表执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ReviewComment` → `ChatSession` → `ChatMessage` → `ChatProposalItem` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric`）。
-   - **ADR-08 零增表平滑升级**：ADR-08 坚守 20 张 `archdoc_*` 表基线，仅向 `archdoc_gen_tasks.engine`、`archdoc_llm_usage_logs.engine`、`archdoc_llm_configs.opencode_model` 增补带 `default` 值的列，并将 `archdoc_llm_usage_logs.stage` 扩至 `size:32`，支持 GORM `AutoMigrate` 无损升级；写入 `GenSlotTask.ModelName` / `LLMUsageLog.ModelName` 的 `[opencode] <label>` 字符串在写入前按 128 runes 安全截断。
+1. **迁移顺序**：`models.SetupWithDB(db)` 仅对本模块 **22 张 `archdoc_*` 表**执行 `db.AutoMigrate(...)`（顺序按基础域→关联域：`DocType` → `DocTypeRevision` → `RepoModulePolicy` → `RepoModule` → `RepoSnapshot` → `CodeIRFacet` → `GenTask` → `GenSlotTask` → `Document` → `DocumentRevision` → `SectionEvidence` → `ReviewComment` → `ChatSession` → `ChatMessage` → `ChatProposalItem` → `RepoRemoteHead` → `DocumentDrift` → `LLMConfig` → `LLMUsageLog` → `QualityMetric` → `ReferenceDoc` → `ReferenceDocBinding`）。
+   - **ADR-08 & ADR-10 平滑升级**：ADR-08 向 `archdoc_gen_tasks.engine`、`archdoc_llm_usage_logs.engine`、`archdoc_llm_configs.opencode_model` 增补列并扩容 `stage`；ADR-10 新增 `archdoc_reference_docs` 与 `archdoc_reference_bindings` 2 表，并向 `archdoc_gen_tasks.reference_doc_snapshot_json`、`archdoc_section_evidences.ref_citations_json`、`archdoc_chat_proposal_items.ref_citations_json` 增补带 `default:'[]'` 的 JSONB 列，支持 GORM `AutoMigrate` 无损升级；写入 `GenSlotTask.ModelName` / `LLMUsageLog.ModelName` 的 `[opencode] <label>` 字符串在写入前按 128 runes 安全截断。
 2. **幂等初始化**：
    - `LLMConfig`：初始保持为空表，由管理员在门户「LLM 模型配置」中按需新增内网模型；启动前置 `migrateLegacyGovernanceSchema()` 幂等将历史 `tier`/`api_key_cipher` 行清理或迁移（注意旧密文不可再复用，需管理员按需重填）；
    - `DocType`：启动时将内嵌 5 类默认 `DocType` 释放至 `doc_types/`（仅补缺失目录），再调用 `DocTypeRegistry.SyncAll()` 计算聚合哈希同步入库，重复启动零重复记录、零多余修订。
@@ -581,7 +647,8 @@ func (RepoModule) TableName() string { return config.TablePrefix + "repo_modules
 ### 4.2 数据一致性与引用删除保护
 
 - **被引用 `DocType` 删除保护**：物理删除 `DocType` 时在数据库事务中持锁检查 `SELECT COUNT(1) FROM archdoc_documents WHERE doc_type_slug = ? AND status = 'approved'`，若 > 0 返回 `ErrDocTypeInUse`（HTTP `409 Conflict`）；目录删文件与删库操作同在 `slug` 写互斥锁内完成。
-- **逻辑外键与跨表隔离**：为避免对共享库公共表（`users`/`repositories`）强加跨模块物理 `FOREIGN KEY` 约束导致宿主清理/迁移阻塞，跨模块关联一律采用带索引的逻辑外键 + 应用层完整性校验。
+- **参考文档 `is_home` 绑定保护与管理员物理 `purge`**：`ReferenceDoc.Status == "active"` 时禁止直接删除 `is_home == true` 的归属主绑定（返回 `400 HOME_BINDING_PROTECTED`），须通过归档或同时持新旧归属作用域写权转移 `new_home_binding` 处理；若需彻底擦除误传涉密文档，仅管理员可调用 `DELETE /api/admin/ref-docs/:id/purge` 在原子清除数据库记录的同时物理删除 `<RefDocsDir>/<doc_id>/` 下全部 `v1..vN.md`。
+- **逻辑外键与跨表隔离**：为避免对共享库公共表（`users`/`repositories`/`architecture_elements`）强加跨模块物理 `FOREIGN KEY` 约束导致宿主清理/迁移阻塞，跨模块关联一律采用带索引的逻辑外键 + 应用层完整性校验。
 
 ### 4.3 `APIKey` 脱敏与审计零泄露规范
 

@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) 数据模型冻结与前后端 DTO 契约
 
 - **文档编号**：`02-data-model-and-dto-contract.md`
-- **文档版本**：v1.5.0 (ADR-04 ~ ADR-09 Frozen Contract)
-- **编制日期**：2026-11-23
+- **文档版本**：v1.6.0 (ADR-04 ~ ADR-10 Frozen Contract)
+- **编制日期**：2026-11-24
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.6.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md)、[`ADR-06`](../05-adr/06-document-review-and-refine-studio.md)、[`ADR-07`](../05-adr/07-single-repo-branch-switch.md)、[`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)、[`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md)
+- **上游基线**：[`docs/02-design/05-database-schema.md`](../02-design/05-database-schema.md) (v1.5.0)、[`01-http-api-contract.md`](./01-http-api-contract.md) (v1.7.0)、[`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
 
 > **文档定位**：阶段二 [`05-database-schema.md`](../02-design/05-database-schema.md) 已冻结 16 张 `archdoc_*` 表的 GORM Struct 与 ER 图；本文档进一步冻结阶段四编码所需的**表级索引/约束与数据不变量、12 组 JSONB 内部强类型 Schema、全局枚举与状态机合法转移矩阵、`services/` 依赖倒置仓储接口、`config.yaml` 扩展配置模型，以及前端 TypeScript 零 `any` 接口字典**。
 
@@ -1157,4 +1157,245 @@ export function buildArchTreeMicroPills(
   activeStatus: string,
   onToggleStatus: (nextStatus: 'approved' | 'drifted' | '') => void,
 ): MicroStatPillItem[];
+```
+
+---
+
+## 13. ADR-10 契约增量（`M16`：22 表索引、独立 `RefCitationsJSON`、`RefDocRepo` 与前端强类型契约）
+
+### 13.1 22 表增量索引、增量列与核心不变量
+
+| # / 表名 | 唯一键 / 变更列 | 索引 / 列定义 | 删除与一致策略 |
+| :-: | :--- | :--- | :--- |
+| **21** `archdoc_reference_docs` (`models.ReferenceDoc`) | `PK (id)` | `(doc_kind)`, `(owner_scope_key)`, `(owner_scope_level)`, `(owner_arch_element_id)`, `(owner_repo_id)`, `(content_sha256)`, `(status)`, `(created_by)` | 常规业务软归档（`status='archived'`）；仅管理员 `/admin/ref-docs/:id/purge` 物理删除并删磁盘目录 |
+| **22** `archdoc_reference_bindings` (`models.ReferenceDocBinding`) | `(doc_id, scope_key)` | `(doc_id)`, `(scope_key)`, `(scope_level)`, `(arch_element_id)`, `(repo_id)` | `active` 文档下 `is_home=true` 禁止单独 `DELETE`；消费绑定可局部自由解绑 |
+| `archdoc_gen_tasks` | `ReferenceDocSnapshotJSON` *(新增)* | `gorm:"type:jsonb;not null;default:'[]'" json:"reference_doc_snapshots"` | 任务创单时固化，单槽位重试严格锁死读取原快照版本 |
+| `archdoc_section_evidences` | `RefCitationsJSON` *(新增)* | `gorm:"type:jsonb;not null;default:'[]'" json:"ref_citations"` | 与源码 `EvidencesJSON` 物理隔离，零污染发布/预览/漂移 |
+| `archdoc_chat_proposal_items` | `RefCitationsJSON` *(新增)* | `gorm:"type:jsonb;not null;default:'[]'" json:"ref_citations"` | 采纳提案时随正文写入新修订的 `SectionEvidence.RefCitationsJSON` |
+
+**新增硬不变量**：
+1. **归属单点写权与防孤儿不变量**：`ReferenceDoc.OwnerScopeKey` 对应 `is_home=true` 的主绑定；编辑/归档权唯一校验 `OwnerScopeKey`（与消费绑定数量无关，彻底杜绝零绑定恒真越权与消费方反锁原作者）。
+2. **先原子写盘、后事务提交不变量**：`POST` / `PUT`（正文变更）先持 `doc_id` 锁写入 `<RefDocsDir>/<doc_id>/v<N>.md`（临时文件 + `fsync` + `rename`），后执行 DB 条件更新（`WHERE id = ? AND current_version = ?`）；若 DB 失败立即删除刚写入的孤儿文件。
+3. **单槽位重试版本锁死不变量**：`RetrySlotTask` 仅读取 `GenTask.ReferenceDocSnapshotJSON` 中的 `doc_id@v<version_no>`，绝不混入重试期间新发布的版本。
+4. **源码证据零污染不变量**：`SectionEvidence.EvidencesJSON` 严禁写入 `ref_doc` 锚点；`RefCitationsJSON` 仅作溯源展示，不参与 `source_preview`、`pkg/publisher` 源码深链与 `pkg/drift` 代码漂移计算。
+5. **历史解绑引用无损兼容不变量**：上一修订 `RefCitationsJSON` 中的已解绑/归档文档在手工直编或 Chat 重跑 Verifier 时标为 `stale: true` 且至多 `warning`，永不阻断 `can_approve`。
+6. **Monorepo 整仓 Roll-up 上限不变量**：整仓汇聚模式下排除叶 `module` 局部文档且生效总数硬上限 `12` 篇。
+
+### 13.2 JSONB Go Struct 与领域枚举 (`models/`)
+
+```go
+// models/reference_doc.go & models/json_types.go — ADR-10 增量契约
+
+// TaskReferenceDocSnapshot 固化于 GenTask.ReferenceDocSnapshotJSON 与 ChatContextRefVO.RefDocs
+type TaskReferenceDocSnapshot struct {
+	DocID               uint     `json:"doc_id"`
+	Title               string   `json:"title"`
+	DocKind             string   `json:"doc_kind"`
+	VersionNo           int      `json:"version_no"`
+	ContentSHA256       string   `json:"content_sha256"`
+	SummaryMD           string   `json:"summary_md"`
+	SummarySHA256       string   `json:"summary_sha256"`
+	TOC                 []HeadingNode `json:"toc"`
+	DeclaredTerms       []string `json:"declared_terms,omitempty"`
+	ScopeLevel          string   `json:"scope_level"` // 生效绑定层级: system | subsystem | group | repo | module
+	ScopeKey            string   `json:"scope_key"`
+	SourceScopeLabel    string   `json:"source_scope_label"`
+	EstimatedTokens     int      `json:"estimated_tokens"`
+	IsInherited         bool     `json:"is_inherited"`
+}
+
+// RefDocCitation 独立存储于 SectionEvidence.RefCitationsJSON 与 ChatProposalItem.RefCitationsJSON
+type RefDocCitation struct {
+	CitationKey  string `json:"citation_key"` // "ref_doc:<id>@v<ver>#<sec>" 或 "ref_doc:<id>@v<ver>"
+	DocID        uint   `json:"doc_id"`
+	VersionNo    int    `json:"version_no"`
+	SectionID    string `json:"section_id,omitempty"`
+	SectionTitle string `json:"section_title,omitempty"`
+	DocTitle     string `json:"doc_title"`
+	ScopeLevel   string `json:"scope_level"`
+	Stale        bool   `json:"stale"`
+}
+
+// HeadingNode 对应 ReferenceDoc.TOCJSON（同 pkg/refdoc.HeadingNode 契约）
+type HeadingNode struct {
+	SectionID   string `json:"section_id"`
+	Title       string `json:"title"`
+	Level       int    `json:"level"`
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+	RuneCount   int    `json:"rune_count"`
+	IsChunk     bool   `json:"is_chunk,omitempty"`
+}
+
+// ChatContextRefVO 扩展可选 RefDocs（保持 []ChatContextRefVO 数组序列化向后兼容）
+// RefDocs []TaskReferenceDocSnapshot `json:"ref_docs,omitempty"`
+// UnverifiedRef.RefKind 新增："ref_doc" | "external_term"
+```
+
+```go
+// models/enums.go — ADR-10 枚举常量与规范序
+const (
+	RefDocScopeSystem    = "system"
+	RefDocScopeSubsystem = "subsystem"
+	RefDocScopeGroup     = "group"
+	RefDocScopeRepo      = "repo"
+	RefDocScopeModule    = "module"
+
+	RefDocKindArchDesign     = "arch_design"
+	RefDocKindDomainGlossary = "domain_glossary"
+	RefDocKindInterfaceSpec  = "interface_spec"
+	RefDocKindADRConstraint  = "adr_constraint"
+	RefDocKindOther          = "other"
+
+	RefDocStatusActive   = "active"
+	RefDocStatusArchived = "archived"
+
+	RefDocSummarySourceManual   = "manual"
+	RefDocSummarySourceLLM      = "llm"
+	RefDocSummarySourceFallback = "fallback"
+
+	RefDocSummaryStatusReady   = "ready"
+	RefDocSummaryStatusPending = "pending"
+	RefDocSummaryStatusFailed  = "failed"
+
+	RefDocVisibilityPublic = "public"
+)
+
+func RefDocScopeRank(level string) int // system=1, subsystem=2, group=3, repo=4, module=5, 其他=0
+func IsValidRefDocScopeLevel(level string) bool
+func IsValidRefDocKind(kind string) bool
+```
+
+### 13.3 仓储接口与 `pkg/refdoc/` 纯领域契约
+
+1. **`services/repos.go` 新增与扩展**：
+   ```go
+   // SharedMasterRepo 新增方法（支撑祖先链 RBAC 与范围标签回显，零 N+1）
+   GetArchElement(ctx context.Context, id uint) (*models.ArchitectureElement, error)
+   GetRepositoriesByIDs(ctx context.Context, ids []uint) (map[uint]commonModels.Repository, error)
+
+   // ReferenceDocRepo 管理 archdoc_reference_docs 与 archdoc_reference_bindings
+   type ReferenceDocRepo interface {
+   	CreateWithHomeBinding(ctx context.Context, doc *models.ReferenceDoc, homeBinding *models.ReferenceDocBinding) error
+   	GetByID(ctx context.Context, docID uint) (*models.ReferenceDoc, error)
+   	ListDocs(ctx context.Context, filter models.RefDocListFilter) ([]models.ReferenceDoc, int64, error)
+   	UpdateDocWithVersion(ctx context.Context, docID uint, expectedVersion int, updates map[string]any) (*models.ReferenceDoc, error)
+   	UpdateLLMSummaryIfCurrent(ctx context.Context, docID uint, versionNo int, summaryMD string) error
+   	ListBindingsByDocID(ctx context.Context, docID uint) ([]models.ReferenceDocBinding, error)
+   	ListBindingsByDocIDs(ctx context.Context, docIDs []uint) (map[uint][]models.ReferenceDocBinding, error)
+   	ListAllActiveDocsAndBindings(ctx context.Context) ([]models.ReferenceDoc, []models.ReferenceDocBinding, error)
+   	CreateBinding(ctx context.Context, binding *models.ReferenceDocBinding) error
+   	GetBindingByID(ctx context.Context, docID, bindingID uint) (*models.ReferenceDocBinding, error)
+   	UpdateBinding(ctx context.Context, docID, bindingID uint, updates map[string]any) (*models.ReferenceDocBinding, error)
+   	DeleteBinding(ctx context.Context, docID, bindingID uint) error
+   	PurgeDoc(ctx context.Context, docID uint) error
+   }
+   ```
+2. **`pkg/refdoc/` 核心导出签名**：
+   - `EstimateTextTokens(s string) int`（全链路唯一 Token 估算实现）；
+   - `ValidateAndParse(markdown string, maxBytes int64, redactAndSave bool, docKind string, explicitTerms []string) (*ParsedDoc, *GateFailure, error)`；
+   - `BuildFallbackSummary(markdown string, toc []HeadingNode, maxRunes int) string`；
+   - `ReadSection(markdown string, toc []HeadingNode, sectionID string, offsetLine, maxLines, maxBytes int) (*SectionExcerpt, error)`；
+   - `SearchSections(docs []SearchableDoc, query string, filterDocID uint, maxMatches int) []SearchHit`；
+   - `SelectBudgetedExcerptsForSlot(docs []PromptDoc, slotTitle, slotHint string, maxTokens int) []SlotExcerpt`（非工具槽位 `<= 1500 Tokens` 摘录）。
+
+### 13.4 `config/config.go` `StorageSection` 增量
+
+- `RefDocMaxBytes int64`（`yaml:"ref_doc_max_bytes"`，默认 `524288` / `512 KB`）；
+- `RefDocsDir() string` → `filepath.Join(s.effectiveDataDir(), "ref_docs")`；
+- `EffectiveRefDocMaxBytes() int64` → `<= 0` 时回退 `524288`。
+
+### 13.5 前端 TypeScript 强类型契约增量 (`frontend/src/types/` & `utils/refDocUtils.ts`)
+
+```typescript
+// frontend/src/types/domain.ts 增量
+export type RefDocScopeLevel = 'system' | 'subsystem' | 'group' | 'repo' | 'module';
+export type RefDocKind = 'arch_design' | 'domain_glossary' | 'interface_spec' | 'adr_constraint' | 'other';
+export type RefDocStatus = 'active' | 'archived';
+
+export interface RefDocHeadingNode {
+  section_id: string;
+  title: string;
+  level: number;
+  start_line: number;
+  end_line: number;
+  rune_count: number;
+  is_chunk?: boolean;
+}
+
+export interface RefDocBindingVO {
+  id: number;
+  doc_id: number;
+  scope_key: string;
+  scope_level: RefDocScopeLevel;
+  scope_label: string;
+  is_home: boolean;
+  arch_element_id?: number | null;
+  repo_id?: number | null;
+  subdirectory: string;
+  inherit_to_children: boolean;
+  doc_type_slugs: string[];
+  sort_order: number;
+  can_manage_binding?: boolean;
+}
+
+export interface EffectiveRefDocVO {
+  doc_id: number;
+  binding_id: number;
+  title: string;
+  doc_kind: RefDocKind;
+  current_version: number;
+  summary_md: string;
+  summary_stale: boolean;
+  toc: RefDocHeadingNode[];
+  estimated_tokens: number;
+  is_home: boolean;
+  is_inherited: boolean;
+  effective_scope_level: RefDocScopeLevel;
+  source_scope_label: string;
+  inherit_to_children: boolean;
+  doc_type_slugs: string[];
+  can_edit: boolean;
+  can_unbind: boolean;
+}
+
+export interface RefDocCitationVO {
+  citation_key: string;
+  doc_id: number;
+  version_no: number;
+  section_id?: string;
+  section_title?: string;
+  doc_title: string;
+  scope_level: RefDocScopeLevel;
+  stale: boolean;
+}
+
+export interface TaskReferenceDocSnapshotVO {
+  doc_id: number;
+  title: string;
+  doc_kind: RefDocKind;
+  version_no: number;
+  summary_md: string;
+  scope_level: RefDocScopeLevel;
+  source_scope_label: string;
+  estimated_tokens: number;
+  is_inherited: boolean;
+}
+
+// ArchTreeSummaryVO 新增可选：system_ref_doc_count?: number;
+// ArchTreeNodeVO 新增可选：direct_ref_doc_count?: number; inherited_ref_doc_count?: number;
+// GenTaskDetailVO 新增可选：reference_docs?: TaskReferenceDocSnapshotVO[];
+// SectionVO & ChatProposalItemVO 新增可选：ref_citations?: RefDocCitationVO[];
+// ChatContextRefVO 新增可选：ref_docs?: TaskReferenceDocSnapshotVO[];
+
+// frontend/src/types/api.ts 增量
+// ArchdocErrorCode 新增：'HOME_BINDING_PROTECTED' | 'VERSION_CONFLICT' | 'ALREADY_BOUND' | 'PAYLOAD_TOO_LARGE' | 'INLINE_BASE64_IMAGE' | 'SECRET_DETECTED' | 'SECRET_CONFIRM_REQUIRED'
+// GenerateTaskPayload 新增可选：arch_element_id?: number; exclude_ref_doc_ids?: number[];
+// BatchGenerateTaskPayload / IncrementalRefreshPayload 新增可选：exclude_ref_doc_ids?: number[];
+
+// frontend/src/utils/refDocUtils.ts（纯 TypeScript，零 React/JSX 依赖，node --test 直接运行）
+export function groupEffectiveRefDocsByScope(docs: readonly EffectiveRefDocVO[]): { level: RefDocScopeLevel; label: string; items: EffectiveRefDocVO[] }[];
+export function buildExcludedRefDocIds(docs: readonly EffectiveRefDocVO[], checkedDocIds: ReadonlySet<number>): number[];
+export function formatRefDocSummaryStaleHint(summaryForVersion: number, currentVersion: number): string;
+export function formatRefCitationBadgeLabel(citation: RefDocCitationVO): string;
 ```

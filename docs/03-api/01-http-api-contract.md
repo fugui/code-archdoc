@@ -1,10 +1,10 @@
 # 代码设计文档反推 (`code-archdoc`) HTTP & SSE 接口与权限契约规范
 
 - **文档编号**：`01-http-api-contract.md`
-- **文档版本**：v1.6.0 (ADR-09 演进：`GET /api/arch-tree` 模块级三态树表契约冻结与 `GET /api/repos` 新增 `arch_binding=unbound_repo` 仓库级未关联筛选)
-- **编制日期**：2026-11-23
+- **文档版本**：v1.7.0 (ADR-10 演进：新增 9 个参考文档与绑定管理接口至 79 Endpoints，新增 7 个机器可读错误码，扩展架构树/生成/任务/文档/Chat 契约)
+- **编制日期**：2026-11-24
 - **归属阶段**：阶段三：接口与数据契约冻结 (`03-api`)
-- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.9.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.4.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md)
+- **上游基线**：[`docs/01-features/01-feature-matrix.md`](../01-features/01-feature-matrix.md) (v0.10.0)、[`docs/02-design/01-system-architecture.md`](../02-design/01-system-architecture.md) (v1.2.0) ~ [`05-database-schema.md`](../02-design/05-database-schema.md) (v1.5.0)、[`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md) ~ [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
 - **配套契约**：[`02-data-model-and-dto-contract.md`](./02-data-model-and-dto-contract.md)（JSONB Schema、枚举状态机、仓储接口与 TypeScript 类型字典）
 
 ---
@@ -23,6 +23,8 @@
 | **`Public`** | 无需认证（免密探针与独立模式登录） | — |
 | **`JWT`** | 携带有效平台 JWT 的任意已激活用户（普通登录用户） | 无/非法 Token → `401 Unauthorized` |
 | **`ScopeWrite`** | 满足三层范围写权限判定（`CheckScopeWritePermission`）：<br>1. `super_admin` 或 `archdoc_admin`；<br>2. 目标仓库 `Repository.OwnerID == user.ID` 或 `Repository.RelatedMembers` 包含 `user.ID`（涵盖整仓及所有子目录）；<br>3. 当 `subdirectory != ""` 时，`ArchitectureElement(repo_id, normalized_subdir).OwnerID == user.ID`（**严格全等匹配，子目录负责人访问同仓其他子目录或整仓返回 `403`**）。 | 未认证 → `401`<br>非负责人 → `403 Forbidden` |
+| **`ArchScopeWrite`** | 架构树参考文档与节点绑定专用写权限（`CheckArchScopeWritePermission`，不影响既有 `ScopeWrite` `SC-12`）：<br>1. `system`：仅 `super_admin` / `archdoc_admin`；<br>2. `subsystem` / `group`：管理员，或目标节点及其任意祖先节点（沿 `ParentID` 回溯 ≤16 层）的 `OwnerID == user.ID`；<br>3. `module`：满足节点/祖先 `OwnerID == user.ID`，或已绑活跃仓时满足 `CheckScopeWritePermission(repoID, module.Subdirectory)`；<br>4. `repo`：满足 `CheckScopeWritePermission(repoID, subdir)`。 | 未认证 → `401`<br>非授权负责人 → `403 Forbidden` |
+| **`RefDocOwnerWrite`** | 仅对文档**归属作用域（`OwnerScopeKey`）**具备 `ArchScopeWrite` 权限或管理员（若原归属架构节点已在共享表删除，则回退管理员或 `doc.CreatedBy`）；消费节点负责人无权修改或归档他人文档。 | 未认证 → `401`<br>非归属方 → `403 Forbidden` |
 | **`Admin`** | 挂载 `commonAuth.RequireAdmin("archdoc_admin")`（`archdoc_admin` / `super_admin` 独占） | 未认证 → `401`<br>非管理员 → `403 Forbidden` |
 
 > **草稿可读隔离红线（`F-11` / `04-workbench-and-security.md` §4.1）**：
@@ -59,14 +61,21 @@
 | `400` | `INVALID_SLUG` | `DocType` `slug` 不满足 `^[a-z0-9][a-z0-9_-]{1,62}$`（`SC-08`） |
 | `400` | `DOC_TYPE_INACTIVE` | 触发生成时勾选了已停用或不存在的 `DocType` |
 | `400` | `ENGINE_UNAVAILABLE` | 请求显式指定 `engine="opencode"` 但服务端未启用（`opencode.enabled=false`）或未检测到可用 OpenCode CLI，`details: {"engine": "opencode", "reason": "..."}` |
+| `400` | `HOME_BINDING_PROTECTED` | 试图直接 `DELETE` `active` 状态参考文档的 `is_home=true` 归属主绑定，指引改用归档或归属转移（`ADR-10`） |
 | `401` | `UNAUTHORIZED` | 缺失或无效 JWT |
-| `403` | `FORBIDDEN` | 非负责人操作范围资源、子目录负责人越权（`SC-12`）、非管理员调用管理接口（`SC-01`） |
+| `403` | `FORBIDDEN` | 非负责人操作范围资源、子目录负责人越权（`SC-12`）、非归属方修改参考文档、非管理员调用管理接口（`SC-01`） |
 | `403` | `DRAFT_ACCESS_DENIED` | 普通用户尝试访问未发布草稿或修订历史 |
 | `403` | `PATH_ESCAPE` | 源码预览或沙箱路径发生目录穿越或沙箱外符号链接逃逸（`SC-06`） |
-| `404` | `NOT_FOUND` | 仓库、文档、修订、任务、`DocType` 或源码文件不存在 |
+| `404` | `NOT_FOUND` | 仓库、文档、参考文档、修订、任务、`DocType` 或源码文件不存在 |
 | `409` | `CONFLICT` | `DocType` 新建/克隆重名 |
+| `409` | `ALREADY_BOUND` | 同一参考文档对同一 `scope_key` 重复建立消费绑定（`ADR-10`） |
+| `409` | `VERSION_CONFLICT` | `PUT /api/ref-docs/:id` 的 `expected_version` 落后于服务端 `current_version`（`ADR-10`），`details: {"current_version": 3}` |
 | `409` | `DOC_TYPE_IN_USE` | 尝试物理删除已被 `approved` 已发布文档引用的 `DocType`（`SC-08`），`details: {"published_doc_count": 3}` |
 | `409` | `OPTIMISTIC_LOCK_CONFLICT` | 手工直编 / Chat Accept / 回滚的 `base_revision_no` 落后于服务端当前版本，`details: {"current_revision_no": 5}` |
+| `413` | `PAYLOAD_TOO_LARGE` | 上传或更新参考文档 Markdown 正文超过 `storage.ref_doc_max_bytes` 上限（默认 `524288` 字节 / `512 KB`），`details: {"max_bytes": 524288, "actual_bytes": 612000}` |
+| `422` | `INLINE_BASE64_IMAGE` | 参考文档包含单块 `> 4 KB` 内嵌 Base64 图片（`data:image/...;base64,`），`details: {"line_offset": 12, "max_base64_bytes": 4096}` |
+| `422` | `SECRET_DETECTED` | 参考文档命中硬阻断凭据（`pem_private_key` / `token_prefix` / `url_credential`），不可通过 `redact_and_save` 绕过，`details: {"findings": [...]}` |
+| `422` | `SECRET_CONFIRM_REQUIRED` | 参考文档未命中硬凭据但命中可确认脱敏项（`key_blacklist` / `high_entropy`）且未传入 `redact_and_save=true`，`details: {"findings": [...]}` |
 | `422` | `VERIFIER_BLOCKED` | 发布时目标修订未通过 Verifier 硬门禁（如命中明文凭据泄漏 `blocker_count > 0`），`details: {"verifier_report": {...}}`（`SC-04`） |
 | `429` | `QUEUE_FULL` | 调度队列或单用户并发达到上限，`details: {"retry_after_seconds": 10}` |
 | `502` | `REMOTE_BRANCH_FETCH_FAILED` | 查询或校验 Git 远端分支失败（远端不可达、超时或鉴权异常，输出已脱敏） |
@@ -1382,3 +1391,108 @@ data: {"message_id":88,"prompt_tokens":3200,"cached_prompt_tokens":1900,"complet
   2. 过滤掉所有 `row.RepoID ∈ boundModuleRepoIDs` 的覆盖行（包含该仓库的整仓行与所有自动发现/历史子目录行，彻底消除 `models`/`templates` 等辅助目录噪声）；
   3. 仅设置 `repositories.service_group` 或仅被 `subsystem`/`group` 非叶节点引用的仓库，因其在 `/arch-tree` 中不承接代码仓渲染，按 MECE 原则保留在 `unbound_repo` 结果中，与 `ArchTreeSummaryVO.unassigned_repo_count`（无 `department_id` 等额外条件时）严格一致；
   4. 保留既有 `arch_binding=all | bound | unbound` 行为不变以兼容既有调用方；`/repos` 前端默认模式请求 `arch_binding=unbound_repo`，切换至「全部代码仓」时请求 `arch_binding=all` 并显式写入 URL。
+
+---
+
+## 10. ADR-10 增量接口契约（`M16`，新增 9 Endpoints，总计 79 Endpoints）
+
+### 10.1 新增接口清单
+
+| # | 方法 | 路由路径 | 鉴权级别 | 里程碑 | 业务功能摘要 | 审计 (`action / target / level`) |
+| :-: | :-: | :--- | :-: | :-: | :--- | :--- |
+| 71 | `GET` | `/api/ref-docs` | `JWT` | M16 | 分页检索可见参考文档库（支持关联已有文档搜索复用） | - |
+| 72 | `GET` | `/api/ref-docs/effective` | `JWT` | M16 | 按目标作用域解析并排序最终生效参考文档列表（含继承来源、目录与预估 Token） | - |
+| 73 | `GET` | `/api/ref-docs/:id` | `JWT` | M16 | 获取单篇参考文档详情、绑定列表与指定历史/当前版本 Markdown 正文 | - |
+| 74 | `POST` | `/api/ref-docs` | `ArchScopeWrite` | M16 | 创建参考文档（multipart `.md` 或 JSON）并建立 `is_home=true` 归属绑定 | `create / reference_doc / P1` |
+| 75 | `PUT` | `/api/ref-docs/:id` | `RefDocOwnerWrite` | M16 | 乐观锁更新元信息、发布 `v<N+1>` 正文、归档/恢复或转移归属 | `update / reference_doc / P1` |
+| 76 | `POST` | `/api/ref-docs/:id/bindings` | `ArchScopeWrite` | M16 | 将活跃参考文档跨节点消费绑定至指定架构节点或仓库范围（`is_home=false`） | `create / reference_binding / P1` |
+| 77 | `PATCH` | `/api/ref-docs/:id/bindings/:binding_id` | `ArchScopeWrite` | M16 | 更新单条绑定的 `inherit_to_children`、`doc_type_slugs` 或 `sort_order` | `update / reference_binding / P1` |
+| 78 | `DELETE` | `/api/ref-docs/:id/bindings/:binding_id` | `ArchScopeWrite` | M16 | 解除指定节点的消费绑定（`active` 下 `is_home=true` 受保护返 `400`） | `delete / reference_binding / P1` |
+| 79 | `DELETE` | `/api/admin/ref-docs/:id/purge` | `Admin` | M16 | 管理员物理彻底清除误传涉密文档全部磁盘版本与数据库记录 | `purge / reference_doc / P0` |
+
+### 10.2 参考文档核心接口详细 Schema 契约
+
+1. **`GET /api/ref-docs` (`JWT`)**：
+   - **Query 参数**：`search`、`doc_kind`、`scope_level`（`system|subsystem|group|repo|module`）、`arch_element_id`、`status`（默认 `active`，可选 `archived|all`）、`page`（默认 `1`）、`page_size`（默认 `25`）。
+   - **响应 (`200 OK`)**：标准分页 `{ items: ReferenceDocSummaryVO[], total, page, page_size }`，每项包含 `id`、`title`、`doc_kind`、`description`、`owner_scope_key`、`owner_scope_level`、`owner_scope_label`、`current_version`、`estimated_tokens`、`status`、`binding_count`、`can_edit`、`updated_at`。
+2. **`GET /api/ref-docs/effective` (`JWT`)**：
+   - **Query 参数**：`arch_element_id` 或 `(repo_id, subdirectory)`（两者至少提供一组，均未提供或目录非法返 `400 INVALID_PARAM` / `INVALID_SUBDIR`）+ 可选 `doc_type_slug`。
+   - **响应 (`200 OK`)**：
+     ```json
+     {
+       "target_scope_label": "订单模块 (order-service / svc/order)",
+       "total_count": 3,
+       "total_estimated_tokens": 2450,
+       "items": [
+         {
+           "doc_id": 12,
+           "binding_id": 31,
+           "title": "电商核心域总体架构设计",
+           "doc_kind": "arch_design",
+           "current_version": 2,
+           "summary_md": "...",
+           "summary_stale": false,
+           "toc": [{"section_id": "sec-1", "title": "系统边界", "level": 2, "start_line": 10, "end_line": 68}],
+           "estimated_tokens": 920,
+           "is_home": true,
+           "is_inherited": true,
+           "effective_scope_level": "subsystem",
+           "source_scope_label": "交易子系统",
+           "inherit_to_children": true,
+           "doc_type_slugs": [],
+           "can_edit": false,
+           "can_unbind": false
+         }
+       ]
+     }
+     ```
+3. **`GET /api/ref-docs/:id` (`JWT`)**：
+   - **Query 参数**：`version`（可选 int，默认 `current_version`；超出 `1..current_version` 或文件缺失返 `404 NOT_FOUND`）。
+   - **响应 (`200 OK`)**：返回 `ReferenceDocDetailVO`，含元信息、`viewing_version`、`summary_stale`（`summary_for_version < current_version`）、`bindings[]`（每条附 `scope_label` 与 `can_manage_binding`）、`content_md`、`toc[]`、`declared_terms[]`、`can_edit`。
+4. **`POST /api/ref-docs` (`ArchScopeWrite`)**：
+   - **请求体（同时支持 `application/json` 与 `multipart/form-data`：`file` + `payload` JSON 字段）**：
+     ```json
+     {
+       "title": "订单域核心设计规范",
+       "doc_kind": "arch_design",
+       "description": "阐述状态机与幂等保障",
+       "summary_md": "",
+       "content_md": "# 背景\n...",
+       "declared_terms": ["OrderGateway", "RiskCenter"],
+       "redact_and_save": false,
+       "initial_binding": {
+         "scope_level": "subsystem",
+         "arch_element_id": 500,
+         "inherit_to_children": true,
+         "doc_type_slugs": [],
+         "sort_order": 0
+       }
+     }
+     ```
+   - **校验与响应**：`system` 传入 `inherit_to_children=false` 返 `400 INVALID_PARAM`；非 UTF-8 或空正文返 `400 INVALID_PARAM`；超上限返 `413 PAYLOAD_TOO_LARGE`；Base64 大图/硬凭据/未确认高熵分别返 `422 INLINE_BASE64_IMAGE` / `SECRET_DETECTED` / `SECRET_CONFIRM_REQUIRED`；成功返 `201 Created`（`ReferenceDocDetailVO`）。
+5. **`PUT /api/ref-docs/:id` (`RefDocOwnerWrite`)**：
+   - **请求体**：必传 `expected_version: number`；可选 `title`、`doc_kind`、`description`、`summary_md`、`content_md`（空则仅更新元信息）、`declared_terms`、`status`（`active|archived`）、`redact_and_save`、`new_home_binding`（转移归属作用域时传入，服务端校验操作方同时具备新旧归属作用域写权）。
+   - **并发原子性**：`expected_version != doc.CurrentVersion` 返 `409 VERSION_CONFLICT`；若正文 `content_sha256` 变更，先原子写 `v<N+1>.md` 再更新 DB（DB 失败则清理孤儿文件），`200 OK` 返回更新后详情。
+6. **`POST /api/ref-docs/:id/bindings` (`ArchScopeWrite`)**：
+   - 入参 `{ scope_level, arch_element_id?, repo_id?, subdirectory?, inherit_to_children, doc_type_slugs?, sort_order? }`；仅允许绑定 `status == "active"` 的文档（归档文档返 `400 INVALID_PARAM`）；重复绑定同一 `scope_key` 返 `409 ALREADY_BOUND`；成功建 `is_home=false` 消费绑定返 `201 Created`。
+7. **`PATCH /api/ref-docs/:id/bindings/:binding_id` & `DELETE /api/ref-docs/:id/bindings/:binding_id` (`ArchScopeWrite`)**：
+   - `PATCH` 更新 `inherit_to_children`（`system` 禁置 `false`）、`doc_type_slugs`、`sort_order`；
+   - `DELETE` 在 `doc.Status == "active" && binding.IsHome` 时返 `400 HOME_BINDING_PROTECTED`。
+8. **`DELETE /api/admin/ref-docs/:id/purge` (`Admin`)**：
+   - 物理删除 `<RefDocsDir>/<doc_id>/` 下全部版本文件及 DB 主表与绑定记录，`200 OK` 返回 `{"purged_id": 12}`。
+
+### 10.3 存量接口向后兼容扩展
+
+1. **`GET /api/arch-tree` (`JWT`)**：
+   - `summary` 新增 `system_ref_doc_count: int`；
+   - `nodes[]` 每个 `ArchTreeNodeVO` 新增 `direct_ref_doc_count: int` 与 `inherited_ref_doc_count: int`（全树单次批量查表后在内存中按祖先链 O(N) 聚合，零 N+1 查询；已剪枝节点不发起额外查库）。
+2. **`POST /api/tasks/generate`（覆盖 `generate` / `regenerate`）、`POST /api/tasks/generate-batch`、`POST /api/documents/:id/incremental-refresh` (`ScopeWrite`)**：
+   - 请求体统一新增可选 `exclude_ref_doc_ids?: number[]`；`POST /api/tasks/generate` 另可选传入 `arch_element_id?: number`（在异常多模块绑同一目录时优先锁定起点，无权限或不属于目标 `(repo_id, subdir)` 返 `400`/`403`）；
+   - 创建单文档 `GenTask` 时按各自唯一 `doc_type_slug` 独立解析生效参考文档并固化 `ReferenceDocSnapshotJSON`；单槽位重试 `POST /api/tasks/:task_id/slots/:slot_task_id/retry` 无需新增入参，严格读取原任务快照版本。
+3. **`GET /api/tasks/:task_id` (`JWT` / `ScopeWrite`)**：
+   - `GenTaskDetailVO` 新增可选字段 `reference_docs?: TaskReferenceDocSnapshotVO[]`。
+4. **`GET /api/documents/:id` (`JWT` / `ScopeWrite`)**：
+   - `SectionVO` 新增可选字段 `ref_citations?: RefDocCitationVO[]`（源自 `SectionEvidence.RefCitationsJSON`，与源码 `evidences` 并列返回互不干扰）。
+5. **`GET /api/documents/:id/chat/sessions` 与 SSE `proposal_item` (`ScopeWrite`)**：
+   - `ChatContextRefVO` 新增可选 `ref_docs?: TaskReferenceDocSnapshotVO[]`；
+   - `ChatProposalItemVO` 新增可选 `ref_citations?: RefDocCitationVO[]`。

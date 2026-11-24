@@ -1,10 +1,10 @@
 # Canvas Studio 微前端工作台、双轨修订与 RBAC 审计设计
 
 - **文档编号**：`04-workbench-and-security.md`
-- **文档版本**：v1.4.0 (ADR-09 架构文档全景单一树表主视图、未关联代码仓收敛与全站安全返回动线)
-- **编制日期**：2026-11-23
+- **文档版本**：v1.5.0 (ADR-10 架构树参考文档管理抽屉、生成前可见控制、Studio 独立引用溯源与归属作用域 RBAC)
+- **编制日期**：2026-11-24
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `F-36`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `SC-23`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md)
+- **关联基线**：`F-01`, `F-03`, `F-08`, `F-09`, `F-10`, `F-12`, `F-13`, `F-14`, `F-15`, `F-26`, `F-32`, `F-33`, `F-35`, `F-36`, `F-37`, `SC-01`, `SC-05`, `SC-10`, `SC-12`, `SC-19`, `SC-20`, `SC-22`, `SC-23`, `SC-24`, `NFR-7`, [`ADR-01`](../05-adr/01-microfrontend-and-table-prefix-isolation.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-05`](../05-adr/05-doctype-blueprint-dual-mode-editor.md), [`ADR-06`](../05-adr/06-document-review-and-refine-studio.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-09`](../05-adr/09-arch-tree-primary-view-and-unassigned-repos.md), [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
 
 ---
 
@@ -13,7 +13,7 @@
 ### 1.1 Module Federation 联邦契约（`./App` 与 `./menu`）
 
 - **构建契约**：`frontend/vite.config.ts` 保持 `name: 'archdoc'`、`base: '/archdoc/'`、`filename: 'remoteEntry.js'`，共享 `react`、`react-dom`、`react-router-dom`。
-- **`./menu` 侧边栏导出（3 组 8 项）**：
+- **`./menu` 侧边栏导出（3 组 8 项，[`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md) 一期保持零菜单膨胀，参考文档入口原位嵌入 `/arch-tree`）**：
   - **文档全景（全员可见）**：
     - `/overview`（全局概览：架构功能模块覆盖态势、全平台双维漂移健康度、反推生产任务态势与生成质量度量大盘）
     - `/arch-tree`（**架构文档全景**，日常文档消费与生产唯一主入口，`M15` 升级为单一 4 列树形表格）
@@ -58,9 +58,10 @@
 ### 2.1 架构文档全景主视图与未关联代码仓视图 (`ArchTreeCoveragePage` & `RepoCoveragePage`，`F-01` / `F-36`)
 
 ```text
-ArchTreeCoveragePage（日常唯一主入口，/arch-tree，M15 树表化重构）
+ArchTreeCoveragePage（日常唯一主入口，/arch-tree，M15 树表化重构 + M16 原位参考文档管理）
 ├── PageHeader
 │   ├── Title & Subtitle（聚焦架构模块资产覆盖）
+│   ├── SystemRefDocPill（ADR-10：全系统参考文档 N 篇 · 查看与管理 ▸，点击打开 system 作用域 RefDocDrawer）
 │   └── OverviewMicroPills（buildArchTreeMicroPills：功能模块 | 已覆盖 | 已发布 | 漂移，点击后两者快捷筛选）
 ├── ArchTreeFilterBar（单行精简筛选，移除独立图例横条）
 │   ├── SearchInput（架构节点 / 仓库 / 子目录关键词防抖搜索）
@@ -70,12 +71,15 @@ ArchTreeCoveragePage（日常唯一主入口，/arch-tree，M15 树表化重构�
 ├── ArchTreeView（单一 4 列 Tree Table，移除底部未归类表与嵌套子表格）
 │   ├── TableHeader（架构层级 / 关联源码 | 负责人与基线 | 文档覆盖（N 类） | 操作）
 │   └── FlattenedTreeRows（由 flattenArchTreeRows 生成，--tree-depth 控制阶梯缩进与引导竖线）
-│       ├── NonModuleNodeRow（subsystem / group：展开箭头 + 节点图标/名称 + 负责人 + 模块覆盖 X/Y 进度条与计数微标 [0 模块占位] + 操作列纯空 "—"）
+│       ├── NonModuleNodeRow（subsystem / group：展开箭头 + 节点图标/名称 + NodeRefDocBadge [参考 N / + 参考文档] + 负责人 + 模块覆盖 X/Y 进度条与计数微标 [0 模块占位] + 操作列纯空 "—"）
 │       └── ModuleLeafRow（key="module:${node.id}"，三态区分）
-│           ├── BoundModuleRow（保留 active_task_id 胶囊 / 自定义分支高亮 / missing 目录告警；移除部门/来源/重复负责人/范围计数噪声；ScopeDocCoverageCell + 可展开 <tr colSpan={4}>ScopeDocExpandedGrid</tr>；CoverageActionButtons 主次自适应 & 0 篇隐藏 ZIP 导出）
-│           ├── UnboundModuleRow（副行斜体弱化「未关联代码仓」，操作列「未绑定源码」）
+│           ├── BoundModuleRow（保留 active_task_id 胶囊 / 自定义分支高亮 / missing 目录告警 + NodeRefDocBadge [参考 N (+M继承) / + 参考文档]；移除部门/来源/重复负责人/范围计数噪声；ScopeDocCoverageCell + 可展开 <tr colSpan={4}>ScopeDocExpandedGrid</tr>；CoverageActionButtons 主次自适应 & 0 篇隐藏 ZIP 导出）
+│           ├── UnboundModuleRow（副行斜体弱化「未关联代码仓」，操作列「未绑定源码」，仍可挂载模块级参考文档）
 │           └── InactiveRepoModuleRow（副行告警弱化「所绑仓库已停用」，操作列「仓库已停用」）
-└── GenerateTaskModal（支持 ADR-07 切分支刷新与 ADR-08 双引擎/拆单监控）
+├── RefDocDrawer（ADR-10 右侧抽屉，按目标作用域 system / subsystem / group / module 打开）
+│   ├── SectionA_DirectBindings（新建上传 .md 或粘贴 Markdown [含 markitdown/pandoc 转换引导与 422 SECRET_CONFIRM_REQUIRED 脱敏确认开关] / 搜索关联已有文档 / 编辑新版本 [带 expected_version 乐观锁与 summary_stale 提示] / 切换 inherit_to_children 与 doc_type_slugs / 归档与解绑；非归属节点明确展示归属来源标签并仅开放消费配置与解绑）
+│   └── SectionB_InheritedPreview（按 全系统 → 子系统 → 功能组 分组只读预览生效摘要、目录与预估 Token）
+└── GenerateTaskModal（支持 ADR-07 切分支刷新、ADR-08 双引擎/拆单监控与 ADR-10 EffectiveRefDocsSection 分层预览及临时排除 exclude_ref_doc_ids）
 
 RepoCoveragePage（未关联代码仓，/repos，M15 仓库级 MECE 收敛与工程兜底）
 ├── PageHeader（更名「未关联代码仓」，副标题明示独立/待归类仓定位；OverviewMicroPills；刷新矩阵）
@@ -121,12 +125,14 @@ CanvasStudioPage
 │   │   │       ├── DetachedCommentsBar (失锚待核批注 #N 聚合条，支持编辑/转全局/已解决)
 │   │   │       ├── SectionReviewOverlay (存在 pending ChatProposalItem 时原地展开：红绿 Diff / 渲染态对比 / 微调正文[暂存或立即采纳] / 拒绝本节)
 │   │   │       ├── SectionMarkdownRenderer (自定义 Markdown + 块级 startLine/endLine + 悬停 + 批注按钮 + 跨行内节点 <mark>/#N 投影高亮 + MermaidZoomViewer)
+│   │   │       ├── RefCitationsBar (ADR-10：独立展示本章引用的参考文档徽标 "标题 vN · 章节" 与 stale "已解绑历史快照" 标记，点击弹出 RefDocPreviewDrawer，不与源码证据混用)
 │   │   │       └── SectionInlineEditor (W1 手工直编 + M12 提案微调复用：支持 initialMarkdown / proposal_tweak 模式)
 │   │   └── OrphanSectionsZone (仅当存在 is_orphan=true 章节时展示：支持复制合并或显式确认删除)
+│   ├── RefDocPreviewDrawer (ADR-10：只读预览指定 doc_id + version_no 的参考文档并自动定位至目标 section_id)
 │   └── RightUtilityDrawer (可折叠且支持 440px <-> 680px 展宽切换的多标签右侧面板)
 │       ├── EvidenceSourceTab (W1: 只读源码查看器，基于 commit_sha + file + lines 精确高亮，顶部显示 fq_symbol 与锚点状态)
 │       ├── RevisionHistoryTab (W1: 不可变修订时间线，支持任意两版本章节 Diff 对比与一键回滚)
-│       └── ChatRefineTab (M12 升级为「审校精修」双视图工作台，带待处理数字徽标)
+│       └── ChatRefineTab (M12 升级为「审校精修」双视图工作台，带待处理数字徽标；消息卡片附 ContextRefDocsBadge 展示当轮生效参考快照)
 │           ├── ReviewBasketPanel (主视图：全局评论与持久约束[+添全局] + 局部指点清单[#N/分类/定位/勾选] + 一键综合精修 CTA + ProposalGroupCard 汇总采纳)
 │           └── ChatRefineThreadPanel (辅视图：紧凑会话历史下拉 + 作用域胶囊[全文/指定章节] + 划词引用 + [仅查证源码 Ask]/[发送精修] + 折叠工具轨迹)
 ```
@@ -296,6 +302,32 @@ func CheckScopeWritePermission(ctx context.Context, db *gorm.DB, user *commonMod
 }
 ```
 
+### 4.2b 架构参考文档归属作用域 RBAC 守卫 (`ADR-10` / `F-37`)
+
+既有 `CheckScopeWritePermission` 继续专用于代码快照、生成与发布（严格保持 `SC-12` 子目录全等匹配不变）；针对四层架构树参考文档管理，在 `services/rbac.go` 新增专用守卫 **`CheckArchScopeWritePermission`**，并结合「归属作用域单点写权 + 消费绑定局部自治」消除跨节点互锁与零绑定越权漏洞：
+
+```go
+// CheckArchScopeWritePermission 判定当前用户对架构树目标作用域的写权限（ADR-10 D-4）：
+// - system：仅 super_admin 或 archdoc_admin；
+// - subsystem / group：管理员，或目标节点及其任意祖先节点（沿 ParentID 回溯，visited 防环且深度 <= 16）的 OwnerID == user.ID；
+// - module：满足上述节点/祖先链 OwnerID == user.ID，或当该模块已绑定活跃仓库时满足 CheckScopeWritePermission(repoID, module.Subdirectory)；
+// - repo：满足 CheckScopeWritePermission(repoID, normSubdir)。
+func (s *RBACService) CheckArchScopeWritePermission(
+    ctx context.Context,
+    user *commonModels.User,
+    scopeLevel string,
+    archElementID *uint,
+    repoID *uint,
+    rawSubdir string,
+) (bool, error)
+```
+
+- **归属单点写权不变量**：
+  1. `POST /api/ref-docs` 校验 `initial_binding` 写权限，并将该作用域固化为 `ReferenceDoc.OwnerScopeKey`（对应 `ReferenceDocBinding.IsHome = true`）；
+  2. `PUT /api/ref-docs/:id`（更新正文/元信息/归档/恢复）仅校验 **`doc.OwnerScopeKey`** 写权限（或管理员；若原归属架构节点已在共享表 `architecture_elements` 中被物理删除，自动回退为管理员或 `doc.CreatedBy`），**绝不受后续其他消费绑定影响**，且当消费绑定数为 0 时绝不发生空集恒真越权；
+  3. 跨节点消费绑定（`POST/PATCH/DELETE .../bindings`）仅校验操作方对**目标消费节点**的写权限；`active` 状态下禁止直接 `DELETE` `is_home == true` 的主绑定（返回 `400 HOME_BINDING_PROTECTED`，引导归档或由同时具备新旧作用域写权的用户转移归属）；
+  4. **管理员应急物理清除（`DELETE /api/admin/ref-docs/:id/purge`）**：仅 `super_admin` / `archdoc_admin` 可调用，彻底物理删除 `<RefDocsDir>/<doc_id>/` 下全部历史版本 `.md` 文件及数据库主表/绑定记录。
+
 ### 4.3 全量写操作 `commonAudit` 字段级 Diff 审计埋点清单
 
 全局路由挂载 `commonAudit.Middleware(config.ModuleKey)`，所有写接口在业务执行前调用 `commonAudit.SetBefore`，成功后调用 `commonAudit.SetAuditContext` 记录新旧值字段级 Diff：
@@ -310,3 +342,6 @@ func CheckScopeWritePermission(ctx context.Context, db *gorm.DB, user *commonMod
 | `DocType` 新建 / 克隆 / 编辑 / 启停 / 删除 | `create` / `update` / `delete` | **`P0`** | `doc_type` | 记录 `slug`、`is_active`、`latest_revision_id`、`aggregate_hash` 与变更元数据 Diff |
 | LLM 模型配置修改 | `update` | **`P0`** | `llm_config` | **强制脱敏红线**：传入 `SetBefore`/`SetAfter` 的结构体必须使用脱敏视图（包含 `opencode_model`，`api_key` 仅记录 `sk-****<last4>` 或 `"[UPDATED]"`，**严禁将明文 `APIKey` 或密文写入审计日志与系统日志**） |
 | 管理员手动触发全量远端巡检 | `trigger` | `P2` | `drift_poll` | 记录触发人、巡检目标仓库数 |
+| 参考文档新建 / 更新正文与归档 | `create` / `update` | `P1` | `reference_doc` | 仅记录 `doc_id`, `title`, `doc_kind`, `owner_scope_key`, `current_version`, `content_sha256`, `status`, `redacted` 标记（**严禁将完整正文或脱敏前敏感片段写入审计表**） |
+| 参考文档消费绑定 / 配置调整 / 解绑 | `create` / `update` / `delete` | `P1` | `reference_binding` | 记录 `doc_id`, `binding_id`, `scope_key`, `is_home`, `inherit_to_children`, `doc_type_slugs` |
+| 管理员物理彻底清除参考文档 (`purge`) | `purge` | **`P0`** | `reference_doc` | 仅留存操作人、`doc_id`、标题、`owner_scope_key` 与 `content_sha256` 摘要（不留正文） |

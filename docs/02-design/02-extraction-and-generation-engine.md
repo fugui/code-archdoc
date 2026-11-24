@@ -1,10 +1,10 @@
 # Git 沙箱、Code IR 静态抽取与 L2 生成/校验引擎设计
 
 - **文档编号**：`02-extraction-and-generation-engine.md`
-- **文档版本**：v1.2.0 (ADR-08 单文档拆单、Native 底座加固与 OpenCode 双引擎架构)
-- **编制日期**：2026-11-22
+- **文档版本**：v1.3.0 (ADR-10 架构参考文档分层索引、双引擎物理隔离注入与三重 Verifier 协同)
+- **编制日期**：2026-11-24
 - **归属阶段**：阶段二：系统架构、领域引擎与数据模型设计 (`02-design`)
-- **关联基线**：`F-02`, `F-04`, `F-05`, `F-07`, `F-14`, `F-27`, `F-29`~`F-31`, `F-35`, `SC-02`, `SC-04`, `SC-06`, `SC-09`, `SC-13`, `SC-15`~`SC-18`, `SC-22`, `NFR-3`~`NFR-6`, [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md)
+- **关联基线**：`F-02`, `F-04`, `F-05`, `F-07`, `F-14`, `F-27`, `F-29`~`F-31`, `F-35`, `F-37`, `SC-02`, `SC-04`, `SC-06`, `SC-09`, `SC-13`, `SC-15`~`SC-18`, `SC-22`, `SC-24`, `NFR-3`~`NFR-6`, [`ADR-02`](../05-adr/02-cpp-parser-and-code-ir-storage.md), [`ADR-03`](../05-adr/03-evidence-anchor-and-publish-mount.md), [`ADR-04`](../05-adr/04-module-scope-discovery-and-hierarchical-docs.md), [`ADR-08`](../05-adr/08-dual-engine-doc-generation.md), [`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md)
 
 ---
 
@@ -451,3 +451,78 @@ flowchart TB
 - **Mode B Glossary 降级**：若 `LLMConfig.OpenCodeModel != ""` 且前置 `EnsureGlossary`（Native HTTP）因端点格式差异失败，记录告警并优雅降级为 `glossary = nil` 继续启动 OpenCode 会话（Mode A 保持严格失败校验）。
 - **增量刷新承袭引擎**：`IncrementalRefresh` 未显式指定 `engine` 时，经 `TaskRepo.GetLatestEngineByDocumentID` 继承该文档最近一次生成引擎；`engine == "opencode"` 时合并所有受影响非锁定槽位为单次 OpenCode 会话（`stage = "inc_refresh_opencode"`）。Canvas Studio 实时 Chat 精修保持 Native 流式引擎。
 - **列宽安全保护**：写入 `GenSlotTask.ModelName` 与 `LLMUsageLog.ModelName` 的 `[opencode] <label>` 展示串按 128 runes 安全截断。
+
+---
+
+## 8. 架构参考文档分层索引、双引擎物理隔离注入与三重 Verifier 协同 ([`ADR-10`](../05-adr/10-arch-reference-docs-and-context-injection.md) / `M16`)
+
+### 8.1 纯领域包 `pkg/refdoc/` 架构与零环依赖设计
+
+1. **包结构与架构红线**：
+   - `pkg/refdoc/` 下设 `types.go`、`parser.go`、`gate.go`、`excerpt.go`、`tokens.go`、`refdoc_test.go`，严守零导入 `models` / `services` / `handlers` / `gorm` / `gin` 与 `pkg/llm` 的红线（受 `make lint-arch` 守护）。
+   - **单源 Token 估算 (`tokens.go`)**：将统一估算函数 `EstimateTextTokens(s string) int`（非 ASCII `1.5 char/token`，ASCII `3.5 char/token`，向上取整）沉淀于叶包 `pkg/refdoc`，`pkg/llm/budget.go` 中的 `llm.EstimateTextTokens` 直接委托调用 `refdoc.EstimateTextTokens`，彻底避免 `pkg/llm <-> pkg/refdoc` 循环导入并确保全链路度量口径 100% 一致。
+2. **纯 UTF-8 Markdown 输入契约与分级凭据门禁 (`gate.go`)**：
+   - **基础输入门禁**：校验有效 UTF-8（`utf8.ValidString`）、非空正文（去空白后 `len > 0`）与体积上限（`maxBytes`，默认 `524288` 字节 / `512 KB`，超限触发 `413 PAYLOAD_TOO_LARGE`）；
+   - **内嵌 Base64 大图硬拦截**：扫描 Markdown 内联图片及引用中的 `data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+`，只要任意单块解码前 Base64 数据长度 `> 4096` 字节（4 KB），无条件阻断返回 `422 INLINE_BASE64_IMAGE`（提示用户移除内嵌图片并改用文字或 Mermaid 说明）；
+   - **分级凭据门禁（复用 `pkg/security.SecretRedactor`）**：
+     - 先将命中项拆分为 `hardFindings`（`pem_private_key`、`token_prefix`、`url_credential`）与 `softFindings`（`key_blacklist`、`high_entropy`）；
+     - **硬阻断不变量**：只要 `len(hardFindings) > 0`，**即使传入 `redact_and_save = true` 仍无条件拒绝落盘**，返回 `422 SECRET_DETECTED`（附行号与脱敏掩码）；
+     - 仅命中 `softFindings` 且 `redact_and_save == false` 时，返回 `422 SECRET_CONFIRM_REQUIRED`（附脱敏行号提示）；用户显式勾选 `redact_and_save = true` 后，服务端调用 `SecretRedactor.RedactText` 将命中片段替换为 `[REDACTED]` / `[REDACTED_HIGH_ENTROPY]` 并重新计算摘要与 SHA256 后安全落盘。
+3. **多格式标题解析与无标题/大节兜底 (`parser.go`)**：
+   - **围栏状态机**：逐行扫描时跟踪 ```` ``` ```` 与 `~~~` 围栏代码块状态，代码块内部 `#` 注释行绝不误判为章节标题；
+   - **多级标题识别**：同时识别 ATX 标题（`#` ~ `######`）与 Setext 标题（`===` / `---` 下划线）；仅当全文不存在任何 ATX/Setext 标题时，自动启用顶层数字/中文章节号行识别（如 `^1\.2\s+...`、`^[一二三四五六七八九十]+、...`）；
+   - **大节与无标题确定性分块兜底**：若整篇文档未识别出任何标题，或某单一章节行跨度 `> 250 行`，自动在空行边界（无空行时按固定行宽）按约 `160 行` 切分为确定性虚拟子块（`sec-chunk-1`、`sec-chunk-2`...，提取首非空文本行截断 48 字作标题），确保 `TOCJSON` 永不为空且单次 `ReadSection` 可控。
+4. **L0 摘要生命周期与 `DeclaredTerms` 提取**：
+   - 若用户手填 `summary_md`（非空且 `<= 300` 汉字/字符裁剪），记为 `SummarySource = "manual"`、`SummaryForVersion = CurrentVersion`、`SummaryStatus = "ready"`；后续正文升级至 `v<N+1>` 且用户未同步修改手填摘要时，保留原手填摘要但保持 `SummaryForVersion = N < CurrentVersion`，供前端提示「摘要基于旧版 vN，建议核对更新」；
+   - 若未手填 `summary_md`，入库同步提取「首段正文 + 顶层标题大纲（`<= 300` 字符）」作为立即可用的确定性兜底摘要（`SummaryStatus = "ready"`、`SummarySource = "fallback"`），后台可选触发轻量 LLM 异步提炼 `<= 300` 字摘要，回写时带 `WHERE id = ? AND current_version = ? AND summary_source != 'manual'` 条件原子更新，防止覆盖期间新发布版本或手填摘要；
+   - **收窄 `DeclaredTerms` 规则**：严禁从 `arch_design` 正文粗体或表格自动抓取驼峰词豁免；仅保留用户显式维护的 `declared_terms` 及 `doc_kind == "domain_glossary"` 文档列表/表格第一列纯词条（自动剔除包含 `/` 路径或 `::` 限定符的项）。
+
+### 8.2 四层确定性继承解析、预算管控与快照语义
+
+1. **五级作用域规范序 (`scope_rank`)**：
+   - `system(1)`（`scope_key = "system"`，强制 `inherit_to_children = true`） < `subsystem(2)`（`"arch:<id>"`） < `group(3)`（`"arch:<id>"`） < `repo(4)`（`"repo:<repo_id>:<norm_subdir>"`） < `module(5)`（`"arch:<id>"`）。
+2. **确定性继承解析 5 步算法（`services/ref_doc_service.go`）**：
+   - **Step 1（定位关联架构节点）**：若请求显式指定有效 `arch_element_id`（优先消歧异常多模块绑定同一目录的场景），以其为唯一直接起点；否则在活跃 `architecture_elements` 中查找 `type == "module" && repo_id == target_repo_id && NormalizeSubdir(subdirectory) == norm_subdir` 的节点（按 `id ASC`）；沿 `parent_id` 向上回溯至根（visited 集合防环，最大深度 `16`），分别得到 `DirectArchIDs` 与真祖先集 `AncestorArchIDs`；
+   - **Step 2（收集有效活跃绑定，`ReferenceDoc.Status == "active"`）**：
+     - `scope_level == "system"`；
+     - `arch_element_id ∈ AncestorArchIDs && inherit_to_children == true`；
+     - `arch_element_id ∈ DirectArchIDs`（无论 `inherit_to_children` 真假均直接命中）；
+     - `scope_level == "repo" && repo_id == target_repo_id`：`binding.subdirectory == norm_subdir` 时直接命中，或 `norm_subdir != "" && binding.subdirectory == "" && inherit_to_children == true` 时继承命中（保证未关联仓挂树后原 `repo` 绑定持续生效）；
+   - **Step 3（先最具体覆盖归并，后过滤 `doc_type_slugs`）**：同一 `doc_id` 命中多条绑定时，优先保留 `scope_rank` 最大（同级 `id ASC`）的唯一绑定作为生效策略，再校验其 `doc_type_slugs` 是否包含目标 `doc_type_slug`（空数组表示适用全部）；
+   - **Step 4（Monorepo 整仓 Roll-up 上限保护）**：当目标为整仓汇总（`norm_subdir == ""` 且存在活跃子模块）时，自动合并 `system` + 整仓 `repo` 绑定 + 活跃子模块所属 `subsystem`/`group` 级绑定（不拉取叶 `module` 细碎文档），最终生效总数硬上限 **`12 篇`**（按优先级裁剪）；
+   - **Step 5（确定性排序）**：最终生效列表按 **`(scope_rank ASC, sort_order ASC, doc_id ASC)`** 排序，保障跨槽位共享前缀字节 100% 稳定。
+3. **统一预算体系与 KV Cache 零破坏 (`pkg/llm/budget.go` & `pkg/refdoc/`)**：
+   - **短文档直通阈值**：生效参考文档总计 `<= 1800 Tokens` 且单篇 `<= 1000 Tokens` 时，L0 直接内联完整脱敏正文；
+   - **L0 共享前缀硬预算**：超出直通阈值时，L0 仅输出 `summary_md + toc`（`section_id`、`title`、行号范围），总预算上限 **`3000 Tokens`**（Monorepo 整仓汇总 **`3600 Tokens`**）；超限时按 `scope_rank` 从低到高（`system(1) → ... → module(5)`）依次折叠 3 级以下子标题并截断低优长摘要，同时计入生成前 `EstimateAndCheckBudget`（含非工具槽位尾部摘录估算 `<= 1500 Tokens`）。
+4. **四条执行路径版本快照契约（一期不联动双维漂移）**：
+   - **全量生成 / 重新生成 / 批量拆单 / 增量刷新**：创建任务时解析生效列表（剔除 `exclude_ref_doc_ids`）并固化至 `GenTask.ReferenceDocSnapshotJSON`（含 `doc_id`、`version_no`、`content_sha256`、`summary_md`、`summary_sha256`、`declared_terms` 等）；执行时严格从 `<RefDocsDir>/<doc_id>/v<version_no>.md` 读取对应不可变版本文件；
+   - **单槽位独立重试 (`RetrySlotTask`)**：**严格锁定读取所属 `GenTask.ReferenceDocSnapshotJSON` 中记录的文档集合与 `v<version_no>.md`**，绝不因期间参考文档升级 `v2` 而造成同文档跨槽位事实分裂；
+   - **Chat 精修 / 综合精修 / Ask 问答**：每轮对话实时解析当前作用域最新生效参考文档，并将当轮快照记录至 `ChatMessage.ContextRefsJSON`（`ChatContextRefVO.RefDocs`）。
+
+### 8.3 双引擎物理隔离注入与非工具槽位兜底
+
+1. **事实冲突仲裁铁律（三处 System Prompt 统一声明）**：
+   - 在 `pkg/llm/prompt.go`、`pkg/opencode/prompt.go` 与 `pkg/llm/chat_refine.go` 系统指令中明确：**`当前源码 / L1 Code IR > module > repo > group > subsystem > system`**；参考文档仅用于补充业务目标、跨系统边界、领域术语与演进权衡；所有文件路径、符号、路由、表结构与配置键必须以真实源码与 Code IR 为准，纯外部概念词勿包裹在反引号 `` `...` `` 中，若与当前源码不符须简短注明「设计与当前实现差异」。
+2. **Native 引擎 & Chat 精修/问答**：
+   - **KV Cache 共享前缀落位**：`BuildSlotMessages` 将 `<untrusted_repo_data nonce="..." label="arch_reference_docs">` 写入第 2 段共享 `user` 前缀末尾（紧接 `writeADR04ContextBlocks` 之后、第 3 段槽位专属尾部之前）；
+   - **开启工具槽位 (`EnableSourceTools == true`) 与 Chat 会话**：`SandboxSourceToolkit` 扩展注册只读工具 `read_ref_doc_section(doc_id, section_id, offset_line?)`（单次上限 `200` 行 / `12 KB`）与 `search_ref_docs(query, doc_id?)`（仅检索当次快照授权的参考文档副本，经 `SecretRedactor.RedactText` 二次脱敏并包裹随机 `nonce` 栅栏）；同步更新 `tk.HasTools()` 与 `chat_service.go` `enableTools` 条件为 `hasFS || ir != nil || len(refDocs) > 0`；
+   - **未开启工具槽位 (`EnableSourceTools == false`)**：**绝不强开 Tool Loop**，当存在未在 L0 全文内联的长参考文档时，由纯函数 `refdoc.SelectBudgetedExcerptsForSlot(docs, slotTitle, slotHint, 1500)` 基于槽位标题与写作要点词元命中度选取相关性最高的 1~3 个章节片段（总计 `<= 1500 Tokens`），封装在独立 `nonce` 数据栅栏内追加到 `BuildSlotMessages` **第 3 段槽位专属尾部**，兼顾 KV Cache 命中率与单轮正文可得性。
+3. **OpenCode 引擎（基于 `opencode v2.4.1` 实测验证的平级物理隔离方案）**：
+   - **OpenCode v2.x 平级 `RefDir` 隔离**：
+     1. 存在未在 L0 全量内联的参考文档时，`prepareSessionEnv` 调用 `os.MkdirTemp("", "archdoc-ocref-*")` 创建**与 `RootDir`（含明文 `apiKey` 的 `opencode.json` 与 `auth.json`）平级、互不包含的独立临时目录 `RefDir`**（权限 `0700`），并经 `filepath.EvalSymlinks` 获取规范真实路径 `canonicalRefDir`；
+     2. 将 `SecretRedactor.RedactText` 二次脱敏后的参考文档写入 `<canonicalRefDir>/<doc_id>_v<ver>_<slug>.md`（`0600`），并记录 `StagedRefFiles` 清单传入 `BuildDocumentPrompt`（仅注入 `canonicalRefDir` 路径与各文档文件名/L0 摘要/TOC）；
+     3. 在 `buildOpenCodeV2ConfigJSON` 的 `permissions` 数组末尾（位于 `{"action": "external_directory", "resource": "*", "effect": "deny"}` **之后**），仅追加单条精确放行规则：`{"action": "external_directory", "resource": canonicalRefDir + "/*", "effect": "allow"}`；
+     4. `sessionEnv.Cleanup()` 同步 `os.RemoveAll(s.RootDir)` 与 `os.RemoveAll(s.RefDir)`；
+   - **OpenCode v1.x 保守预算内联**：严禁放开全局 `"external_directory": "allow"`，自动启用 **Token 预算内联模式**（上限 `8000 Tokens`，按 `module > repo > group > subsystem > system` 优先级选取相关章节拼入 Prompt，并自动复用 `process.go` `> 64 KB` 转 `--file` 机制下发）。
+
+### 8.4 三重入口统一 Verifier、独立 `RefCitationsJSON` 与 `DeclaredTerms` 降级
+
+1. **三重入口统一接入**：`generation_service.go`、`chat_service.go` 与 `revision_service.go` 统一构造 `VerifyInput.ActiveRefDocs`（生成/重试取 `GenTask` 快照；Chat/手工直编取当前作用域实时生效集）与 `VerifyInput.HistoricalRefDocs`（取上一修订 `SectionEvidence.RefCitationsJSON` 中已引用的 `doc_id@vN` 集合）。
+2. **`scope == "ref_doc"` 独立分流对齐**：
+   - `Verifier.Verify` 在调用 `AlignCandidates` 之前，前置剥离 `scope == "ref_doc" || symbol_kind == "ref_doc"` 候选交由 `AlignRefDocCandidates`：
+     - 命中 `ActiveRefDocs`（且 `section_id` 合法或为空）→ 对齐生成 `RefDocCitation{CitationKey: "ref_doc:<id>@v<ver>#<sec>", Stale: false}` 写入 `VerifyResult.SectionRefCitations[slotID]` 并持久化至独立列 `SectionEvidence.RefCitationsJSON` / `ChatProposalItem.RefCitationsJSON`；
+     - 未命中 `ActiveRefDocs` 但命中 `HistoricalRefDocs`（例如参考文档事后被解绑或归档）→ 保留 `RefDocCitation` 并置 `Stale: true`，仅记为 `warning`（**绝不标为 `error`，保障已存在引用的章节在后续手工编辑/Chat 精修时仍可正常审批定稿**）；
+     - 既不在 `ActiveRefDocs` 也不在 `HistoricalRefDocs` → 判定为模型伪造引用，记录 `UnverifiedRef{RefKind: "ref_doc", Severity: "error"}` 阻断 `can_approve`；
+   - **源码证据零污染与兄弟章节延续**：`SectionEvidence.EvidencesJSON` 100% 保持纯源码/`module_doc` 锚点语义，`source_preview_service.go`、`pkg/publisher/renderer.go`、`pkg/drift/code_drift.go` 与 `drift_service.go` 零受影响；非重跑或未编辑章节像 `priorEvMap` 继承 `EvidencesJSON` 一样同步延续 `RefCitationsJSON`。
+3. **`DeclaredTerms` 降级而不静默豁免**：
+   - `RunSymbolGate` 若反引号驼峰词未命中 `CodeIR` 但命中 `VerifyInput.ActiveRefDocs` 聚合的 `DeclaredTerms`，**不静默忽略**，而是固定记录为 `UnverifiedRef{RefKind: "external_term", Severity: "warning"}`（即使 `StrictSymbolCheck == true` 仍固定降级为 `warning` 不阻断审批）；普通 `arch_design` 正文或表格中遗留的过时源码类名（如 `LegacyOrderMgr`）仍由 Gate 1 原强度精准拦截。

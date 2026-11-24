@@ -1,8 +1,8 @@
 # ADR-10: 基于架构树层级的 Markdown 参考文档组织与双引擎上下文引用架构
 
 - **文档编号**：`10-arch-reference-docs-and-context-injection.md`
-- **日期**：2026-11-24（经代码基线走查与本机 `opencode v2.4.1` 实测检视修订）
-- **状态**：提议待评审 (Proposed — 已完成架构检视与 OpenCode v2 权限实测验证，待评审冻结后同步更新 SDD 阶段一~三规范并拆解 M16 作战卡)
+- **日期**：2026-11-24（经代码基线走查与本机 `opencode v2.4.1` 实测检视修订，并完成 SDD 冻结）
+- **状态**：已采纳并完成 SDD 设计冻结 (Accepted — 已同步冻结 SDD 阶段一~三规范并拆解 [`17-m16-arch-reference-docs-and-context-injection.md`](../04-tasks/17-m16-arch-reference-docs-and-context-injection.md) 作战卡，待阶段四 TDD 实施)
 - **关联议题**：[`01-feature-matrix.md`](../01-features/01-feature-matrix.md)（拟新增 `F-37`, `SC-24`）；[`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)；[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)；[`05-database-schema.md`](../02-design/05-database-schema.md)；[`01-http-api-contract.md`](../03-api/01-http-api-contract.md)；[`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；[`ADR-01`](./01-microfrontend-and-table-prefix-isolation.md)；[`ADR-03`](./03-evidence-anchor-and-publish-mount.md)；[`ADR-04`](./04-module-scope-discovery-and-hierarchical-docs.md)；[`ADR-06`](./06-document-review-and-refine-studio.md)；[`ADR-08`](./08-dual-engine-doc-generation.md)；[`ADR-09`](./09-arch-tree-primary-view-and-unassigned-repos.md)
 
 ---
@@ -429,9 +429,9 @@ func (ReferenceDocBinding) TableName() string { return config.TablePrefix + "ref
 ## 7. 后续实施路径 (Next Steps)
 
 本 ADR 经评审确认后，按工作区 SDD + TDD 四阶段流水线推进：
-1. **SDD 阶段一~三规范更新**：
-   - 更新 [`01-feature-matrix.md`](../01-features/01-feature-matrix.md)（新增 `F-37` 与 `SC-24`）；
-   - 更新 [`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)、[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md) 与 [`05-database-schema.md`](../02-design/05-database-schema.md)（冻结 22 张 `archdoc_*` 表、`RefCitationsJSON` 独立列与双引擎物理隔离细节）；
-   - 更新 [`01-http-api-contract.md`](../03-api/01-http-api-contract.md) 与 [`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)；
-   - 更新 [`01-roadmap.md`](../04-tasks/01-roadmap.md) 并拆解 `M16` 作战卡（建议拆为 `M16-A` 存储/领域切片/归属 RBAC/API、`M16-B` 双引擎物理隔离/非工具槽位摘录/Chat/三重 Verifier 与 `RefCitationsJSON`、`M16-C` `/arch-tree` 抽屉、`GenerateTaskModal` 与 Studio 引用溯源）。
-2. **SDD 阶段四 TDD 编码交付**：按 `T-ADR10-01` ~ `T-ADR10-18` 先红后绿分阶段实施并通过全仓质量门禁。
+1. **SDD 阶段一~三规范更新（已完成冻结）**：
+   - 已更新 [`01-feature-matrix.md`](../01-features/01-feature-matrix.md)（v0.10.0，新增 `F-37` 与 `SC-24`）；
+   - 已更新 [`01-system-architecture.md`](../02-design/01-system-architecture.md)（v1.2.0）、[`02-extraction-and-generation-engine.md`](../02-design/02-extraction-and-generation-engine.md)（v1.3.0 §8）、[`04-workbench-and-security.md`](../02-design/04-workbench-and-security.md)（v1.5.0）与 [`05-database-schema.md`](../02-design/05-database-schema.md)（v1.5.0，冻结 22 张 `archdoc_*` 表、`RefCitationsJSON` 独立列与双引擎物理隔离细节）；
+   - 已更新 [`01-http-api-contract.md`](../03-api/01-http-api-contract.md)（v1.7.0，79 Endpoints）与 [`02-data-model-and-dto-contract.md`](../03-api/02-data-model-and-dto-contract.md)（v1.6.0 §13）；
+   - 已更新 [`01-roadmap.md`](../04-tasks/01-roadmap.md)（v1.7.0）并拆解 [`17-m16-arch-reference-docs-and-context-injection.md`](../04-tasks/17-m16-arch-reference-docs-and-context-injection.md)（`M16-A / M16-B / M16-C`）。
+2. **SDD 阶段四 TDD 编码交付（待执行）**：按 `T-ADR10-01` ~ `T-ADR10-18` 先红后绿分阶段实施并通过全仓质量门禁。

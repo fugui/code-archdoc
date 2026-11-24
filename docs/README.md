@@ -19,13 +19,13 @@ docs/
 │   ├── 01-system-architecture.md               # 【总览篇】双模拓扑、运行时五层架构、跨模块协同(D-01~D-04)与包分层防腐
 │   ├── 02-extraction-and-generation-engine.md  # 【核心引擎篇】Git 沙箱降噪、Code IR 多语言 SPI、L2 编排熔断、Verifier 与资源调度
 │   ├── 03-doctype-drift-and-publishing.md      # 【领域治理篇】DocType 目录 SSOT、章节锁定、publish_dir 落盘、双维漂移与质量度量
-│   ├── 04-workbench-and-security.md            # 【应用与安全篇】Canvas Studio 组件树、双轨修订与 SSE 协议、三层 RBAC 与审计
-│   └── 05-database-schema.md                   # 【数据模型篇】共享只读契约、全局 ER 图与 20 张 archdoc_* GORM 建模字典
+│   ├── 04-workbench-and-security.md            # 【应用与安全篇】Canvas Studio 组件树、双轨修订与 SSE 协议、三层/归属 RBAC 与审计
+│   └── 05-database-schema.md                   # 【数据模型篇】共享只读契约、全局 ER 图与 22 张 archdoc_* GORM 建模字典
 ├── 03-api/          # 接口与数据契约：RESTful & SSE API 签名、JSONB Schema、仓储接口与 TS 类型字典
-│   ├── 01-http-api-contract.md            # 【API 契约】HTTP/SSE 接口字典（含 ADR-04/05/06/07/08/09 增量）、三层 RBAC 守卫、错误码与审计规范
-│   └── 02-data-model-and-dto-contract.md  # 【数据契约】20 表索引不变量、JSONB Schema、状态机、仓储接口与 TS 类型
+│   ├── 01-http-api-contract.md            # 【API 契约】HTTP/SSE 接口字典（含 ADR-04 ~ ADR-10 增量，79 Endpoints）、RBAC 守卫、错误码与审计规范
+│   └── 02-data-model-and-dto-contract.md  # 【数据契约】22 表索引不变量、JSONB Schema、状态机、仓储接口与 TS 类型
 ├── 04-tasks/        # TDD 实施规划与验收：Milestone 拆解、W1/W2 任务作战卡与自动化验收测试标准 (AC)
-│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) + ADR-04(M8~M10) + ADR-05(M11) + ADR-06(M12) + ADR-07(M13) + ADR-08(M14) + ADR-09(M15) DAG 与质量门禁
+│   ├── 01-roadmap.md                           # 【工程路线图】W1(M1~M4) + W2(M5~M6) + 交付(M7) + ADR-04(M8~M10) + ADR-05(M11) + ADR-06(M12) + ADR-07(M13) + ADR-08(M14) + ADR-09(M15) + ADR-10(M16) DAG 与质量门禁
 │   ├── 02-m1-domain-model-and-api.md           # 【M1 作战卡】D-04 gitsync 底座、16 张领域模型、安全沙箱与 RBAC 基础 API
 │   ├── 03-m2-codeir-doctype-and-generation.md  # 【M2 作战卡】Golden Sample、L1 C/C++/Proto IR、DocType 种子与 L2/Verifier 引擎
 │   ├── 04-m3-revision-publish-and-bench-sync.md# 【M3 作战卡】手工直编、锁定/孤立保护、原子发布导出与 code-bench D-01~D-03
@@ -40,7 +40,8 @@ docs/
 │   ├── 13-m12-review-and-refine-studio.md                  # 【M12 作战卡】Canvas Studio 审阅批注篮、多槽位综合精修与文档级审校记忆
 │   ├── 14-m13-single-repo-branch-switch.md                 # 【M13 作战卡】单仓目标分支切换与远端分支发现 (ADR-07)
 │   ├── 15-m14-dual-engine-doc-generation.md                # 【M14 作战卡】单文档粒度拆单、Native 加固与 OpenCode 双引擎文档反推 (ADR-08)
-│   └── 16-m15-arch-tree-primary-view.md                    # 【M15 作战卡】架构文档全景主视图树表化重构与未关联代码仓定位收敛 (ADR-09)
+│   ├── 16-m15-arch-tree-primary-view.md                    # 【M15 作战卡】架构文档全景主视图树表化重构与未关联代码仓定位收敛 (ADR-09)
+│   └── 17-m16-arch-reference-docs-and-context-injection.md # 【M16 作战卡】基于架构树层级的 Markdown 参考文档组织与双引擎上下文引用 (ADR-10)
 ├── 05-adr/          # 架构决策记录 (ADR)：重大技术选型与权衡记录 (Architecture Decision Records)
 │   ├── 01-microfrontend-and-table-prefix-isolation.md # ADR-01：微前端集成、共享库表前缀隔离与 TDD 测试策略
 │   ├── 02-cpp-parser-and-code-ir-storage.md           # ADR-02：C/C++ tree-sitter 容错解析与 Code IR 压缩分片存储选型
