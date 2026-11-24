@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { RefreshCw, RotateCcw } from 'lucide-react';
+import { BookOpen, RefreshCw, RotateCcw } from 'lucide-react';
 import { useDebounce, useToast } from '@code/common';
 import { exportDocumentsZip } from '../api/documents';
 import { getArchTree, listDocTypes } from '../api/repos';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
 import OverviewMicroPills, { buildArchTreeMicroPills } from '../components/OverviewMicroPills';
 import ArchTreeView from '../components/coverage/ArchTreeView';
+import RefDocDrawer, { type RefDocDrawerTarget } from '../components/coverage/RefDocDrawer';
 import { useModuleUser } from '../context/ModuleUserContext';
 import type {
+  ArchTreeNodeVO,
   ArchTreeResponse,
   ArchTreeSummaryVO,
   DocTypeSummaryVO,
@@ -68,6 +70,10 @@ export const ArchTreeCoveragePage: React.FC = () => {
     open: false,
     scope: null,
   });
+  const [refDocDrawer, setRefDocDrawer] = useState<{
+    open: boolean;
+    target: RefDocDrawerTarget | null;
+  }>({ open: false, target: null });
 
   useEffect(() => {
     setSearchInput(filterState.search);
@@ -207,6 +213,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
       options?: {
         initialDocTypeSlugs?: string[];
         initialTaskId?: number | null;
+        archElementId?: number;
       },
     ) => {
       setTaskModal({
@@ -215,6 +222,7 @@ export const ArchTreeCoveragePage: React.FC = () => {
           repoId: row.repo_id,
           repoName: row.repo_name,
           subdirectory: row.subdirectory,
+          archElementId: options?.archElementId,
           branch: row.branch || 'master',
           defaultBranch: row.default_branch,
           isBranchOverridden: row.is_branch_overridden,
@@ -273,6 +281,19 @@ export const ArchTreeCoveragePage: React.FC = () => {
               updateFilter({ status: nextStatus }),
             )}
           />
+          <button
+            type="button"
+            className="code-archdoc-ghost-btn"
+            onClick={() =>
+              setRefDocDrawer({
+                open: true,
+                target: { mode: 'system', label: '全系统全局参考文档库' },
+              })
+            }
+          >
+            <BookOpen size={14} />
+            <span>全局参考文档 ({summary.system_ref_doc_count ?? 0})</span>
+          </button>
           <button
             type="button"
             className="code-archdoc-ghost-btn"
@@ -385,10 +406,24 @@ export const ArchTreeCoveragePage: React.FC = () => {
         onToggleDocRowExpand={toggleExpandRow}
         onOpenActiveTask={(r) => openGenerateModal(r, { initialTaskId: r.active_task_id })}
         onOpenStudio={openStudio}
-        onTriggerGenerate={(r, slug) =>
-          openGenerateModal(r, slug ? { initialDocTypeSlugs: [slug] } : undefined)
+        onTriggerGenerate={(r, slug, archElementId) =>
+          openGenerateModal(r, {
+            initialDocTypeSlugs: slug ? [slug] : undefined,
+            archElementId,
+          })
         }
         onExportZip={(r, rowKey) => void handleExportRowZip(r, rowKey)}
+        onOpenRefDocs={(node: ArchTreeNodeVO) =>
+          setRefDocDrawer({ open: true, target: { mode: 'arch', node } })
+        }
+      />
+
+      <RefDocDrawer
+        open={refDocDrawer.open}
+        target={refDocDrawer.target}
+        docTypes={docTypes}
+        onClose={() => setRefDocDrawer({ open: false, target: null })}
+        onChanged={() => void fetchArchTree()}
       />
 
       <GenerateTaskModal

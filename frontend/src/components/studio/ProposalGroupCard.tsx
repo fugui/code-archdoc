@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -19,8 +20,10 @@ import type {
   ChatProposalItemVO,
   ChatVerifierPreviewVO,
   ProposalStatus,
+  RefDocCitationVO,
   SectionVO,
 } from '../../types';
+import { formatRefCitationBadgeLabel } from '../../utils/refDocUtils';
 import SectionInlineEditor from './SectionInlineEditor';
 
 export interface ProposalGroupCardProps {
@@ -38,6 +41,7 @@ export interface ProposalGroupCardProps {
   onRejectItem: (itemId: number) => Promise<void>;
   onRejectAll?: (messageId: number) => Promise<void>;
   onReloadDocument: () => Promise<void>;
+  onInspectRefCitation?: (citation: RefDocCitationVO) => void;
 }
 
 function statusMeta(status: ProposalStatus): { type: StatusType; label: string } {
@@ -79,6 +83,7 @@ export const ProposalGroupCard: React.FC<ProposalGroupCardProps> = ({
   onRejectItem,
   onRejectAll,
   onReloadDocument,
+  onInspectRefCitation,
 }) => {
   const pendingItems = useMemo(
     () => items.filter((it) => it.status === 'pending'),
@@ -248,6 +253,25 @@ export const ProposalGroupCard: React.FC<ProposalGroupCardProps> = ({
                     <span key={cid} className="code-archdoc-mono">
                       #{cid}
                     </span>
+                  ))}
+                </div>
+              )}
+
+              {it.ref_citations && it.ref_citations.length > 0 && (
+                <div className="code-archdoc-review-proposal-tags">
+                  参考依据：
+                  {it.ref_citations.map((cit) => (
+                    <button
+                      key={cit.citation_key}
+                      type="button"
+                      className={`code-archdoc-refcitation-chip ${
+                        cit.stale ? 'code-archdoc-refcitation-chip--stale' : ''
+                      }`}
+                      onClick={() => onInspectRefCitation?.(cit)}
+                    >
+                      <BookOpen size={11} />
+                      <span>{formatRefCitationBadgeLabel(cit)}</span>
+                    </button>
                   ))}
                 </div>
               )}

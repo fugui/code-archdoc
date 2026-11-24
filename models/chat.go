@@ -58,6 +58,7 @@ type ChatProposalItem struct {
 	FinalAppliedMD          string         `gorm:"type:text;not null;default:''" json:"final_applied_md"`
 	UnifiedDiff             string         `gorm:"type:text;not null;default:''" json:"unified_diff"`
 	CitedAnchorsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"cited_anchors"`
+	RefCitationsJSON        datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"ref_citations"`
 	VerifierPreviewJSON     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_preview"`
 	AddressedCommentIDsJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"addressed_comment_ids"`
 	Status                  string         `gorm:"size:20;not null;default:'pending';index:idx_archdoc_cpi_doc_slot_status,priority:3" json:"status"`

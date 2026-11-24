@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
+  BookOpen,
   Cpu,
   ExternalLink,
   FolderTree,
@@ -11,6 +12,7 @@ import {
   Square,
 } from 'lucide-react';
 import { Modal, StatusTag, useConfirm, useToast, type StatusType } from '@code/common';
+import { getEffectiveRefDocs } from '../api/refDocs';
 import { listRepoModules, refreshRepoModules } from '../api/repos';
 import {
   cancelTask,
@@ -22,6 +24,7 @@ import {
 } from '../api/tasks';
 import type {
   DocTypeSummaryVO,
+  EffectiveRefDocVO,
   EngineInfoVO,
   GenEngine,
   GenSlotTaskVO,
@@ -33,6 +36,13 @@ import type {
 } from '../types';
 import { formatApiError, formatTaskErrorCode } from '../utils/errorMessages';
 import { isBatchTaskKind } from '../utils/moduleUtils';
+import {
+  buildExcludedRefDocIds,
+  computeIncludedRefDocStats,
+  formatRefDocScopeLabel,
+  formatRefDocTokenBadge,
+  groupEffectiveRefDocsByScope,
+} from '../utils/refDocUtils';
 import {
   PREFERRED_ENGINE_STORAGE_KEY,
   formatEngineLabel,
@@ -49,6 +59,7 @@ export interface GenerateTaskScope {
   repoId: number;
   repoName: string;
   subdirectory: string;
+  archElementId?: number;
   branch: string;
   defaultBranch?: string;
   isBranchOverridden?: boolean;
@@ -198,6 +209,12 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   const [selectedModules, setSelectedModules] = useState<string[]>([]);
   const [includeRepoScope, setIncludeRepoScope] = useState<boolean>(true);
 
+  // ADR-10：生效架构参考文档预览与当次勾选排除
+  const [effectiveRefDocs, setEffectiveRefDocs] = useState<EffectiveRefDocVO[]>([]);
+  const [loadingRefDocs, setLoadingRefDocs] = useState<boolean>(false);
+  const [checkedRefDocIds, setCheckedRefDocIds] = useState<Set<number>>(new Set());
+  const [refDocsRollup, setRefDocsRollup] = useState<boolean>(false);
+
   const notifiedReadyRef = useRef<number | null>(null);
   const notifiedReadyIdsRef = useRef<Set<number>>(new Set());
 
@@ -300,6 +317,43 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
       active = false;
     };
   }, [open, initialTaskId, initialDocTypeSlugs, initialMode, activeDocTypes]);
+
+  const scopeSubdir = scope?.subdirectory ?? '';
+  const scopeArchElementId = scope?.archElementId;
+  const singleDocTypeFilter = selectedSlugs.length === 1 ? selectedSlugs[0] : undefined;
+
+  useEffect(() => {
+    if (!open || initialTaskId || !scopeRepoId) {
+      return;
+    }
+    let active = true;
+    setLoadingRefDocs(true);
+    void getEffectiveRefDocs({
+      arch_element_id: scopeArchElementId,
+      repo_id: scopeRepoId,
+      subdirectory: scopeSubdir,
+      doc_type_slug: singleDocTypeFilter,
+    })
+      .then((res) => {
+        if (!active) return;
+        const list = res.items ?? [];
+        setEffectiveRefDocs(list);
+        setRefDocsRollup(Boolean(res.is_whole_repo_rollup));
+        setCheckedRefDocIds(new Set(list.map((d) => d.doc_id)));
+      })
+      .catch(() => {
+        if (!active) return;
+        setEffectiveRefDocs([]);
+        setRefDocsRollup(false);
+        setCheckedRefDocIds(new Set());
+      })
+      .finally(() => {
+        if (active) setLoadingRefDocs(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, initialTaskId, scopeRepoId, scopeSubdir, scopeArchElementId, singleDocTypeFilter]);
 
   // 轮询任务详情（支持单任务与多文档拆单增量局部轮询）
   const isSplitMonitor = splitTasks.length > 1 && drilldownTaskId === null;
@@ -422,6 +476,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     setSubmitting(true);
     setPollError('');
     try {
+      const excludeRefDocIds = buildExcludedRefDocIds(effectiveRefDocs, checkedRefDocIds);
       if (batchMode) {
         const created = await triggerBatchGenerateTask({
           repo_id: scope.repoId,
@@ -432,6 +487,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           doc_types: selectedSlugs,
           mode,
           engine: selectedEngine,
+          exclude_ref_doc_ids: excludeRefDocIds.length > 0 ? excludeRefDocIds : undefined,
         });
         notifiedReadyRef.current = null;
         setSplitTasks([]);
@@ -446,6 +502,8 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
           doc_types: selectedSlugs,
           mode,
           engine: selectedEngine,
+          arch_element_id: scope.archElementId,
+          exclude_ref_doc_ids: excludeRefDocIds.length > 0 ? excludeRefDocIds : undefined,
         });
         const tasks = normalizeSubmittedTasks(submitResp);
         notifiedReadyRef.current = null;
@@ -905,6 +963,71 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
               </label>
             </div>
 
+            <div className="code-archdoc-refdoc-panel">
+              <div className="code-archdoc-refdoc-panel-head">
+                <span className="code-archdoc-field-label">
+                  <BookOpen size={13} className="code-archdoc-inline-icon" /> 生效架构参考文档（背景注入）
+                </span>
+                {loadingRefDocs ? (
+                  <span className="text-muted">加载中...</span>
+                ) : (
+                  <span className="code-badge code-badge--info">
+                    已选 {computeIncludedRefDocStats(effectiveRefDocs, checkedRefDocIds).includedCount}/
+                    {effectiveRefDocs.length} 篇 · 约{' '}
+                    {formatRefDocTokenBadge(
+                      computeIncludedRefDocStats(effectiveRefDocs, checkedRefDocIds).includedTokens,
+                    )}
+                  </span>
+                )}
+              </div>
+              {refDocsRollup && (
+                <div className="text-muted">
+                  整仓汇总模式下仅保留系统/子系统/功能组/仓库级上位背景（上限 12 篇）。
+                </div>
+              )}
+              {!loadingRefDocs && effectiveRefDocs.length === 0 ? (
+                <div className="text-muted">当前作用域未绑定生效架构参考文档</div>
+              ) : (
+                <div className="code-archdoc-refdoc-groups">
+                  {groupEffectiveRefDocsByScope(effectiveRefDocs).map((grp) => (
+                    <div key={grp.level} className="code-archdoc-refdoc-group">
+                      <div className="code-archdoc-refdoc-group-label">{grp.label}</div>
+                      <div className="code-archdoc-refdoc-group-items">
+                        {grp.items.map((item) => {
+                          const checked = checkedRefDocIds.has(item.doc_id);
+                          return (
+                            <label key={item.doc_id} className="code-archdoc-refdoc-check-item">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  setCheckedRefDocIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (checked) {
+                                      next.delete(item.doc_id);
+                                    } else {
+                                      next.add(item.doc_id);
+                                    }
+                                    return next;
+                                  })
+                                }
+                              />
+                              <span>{item.title}</span>
+                              <span className="code-archdoc-mono">v{item.current_version}</span>
+                              <span className="text-muted">
+                                ({formatRefDocScopeLabel(item.effective_scope_level)} ·{' '}
+                                {formatRefDocTokenBadge(item.estimated_tokens)})
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="code-archdoc-doctype-grid">
               {activeDocTypes.map((dt) => {
                 const checked = selectedSlugs.includes(dt.slug);
@@ -1164,6 +1287,18 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                     ))}
                   </ul>
                 )}
+              </div>
+            )}
+
+            {taskDetail.reference_docs && taskDetail.reference_docs.length > 0 && (
+              <div className="code-archdoc-refdoc-snapshot-bar">
+                <BookOpen size={13} />
+                <span className="text-secondary">本次冻结参考文档：</span>
+                {taskDetail.reference_docs.map((rd) => (
+                  <span key={`${rd.doc_id}-${rd.version_no}`} className="code-badge code-badge--info">
+                    {rd.title} v{rd.version_no}
+                  </span>
+                ))}
               </div>
             )}
 

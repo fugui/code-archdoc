@@ -86,7 +86,7 @@ type VerifierReport struct {
 
 type UnverifiedRef struct {
 	SlotID   string `json:"slot_id"`
-	RefKind  string `json:"ref_kind"` // file_path | symbol | route | table | config_key
+	RefKind  string `json:"ref_kind"` // file_path | symbol | route | table | config_key | ref_doc | external_term
 	Value    string `json:"value"`
 	Severity string `json:"severity"` // warning | error
 }
@@ -157,4 +157,45 @@ type SlotDefinition struct {
 	InstructionHint   string   `json:"instruction_hint,omitempty"`
 	EnableSourceTools bool     `json:"enable_source_tools,omitempty"`
 	MaxToolRounds     int      `json:"max_tool_rounds,omitempty"`
+}
+
+// 13. HeadingNode 对应 ReferenceDoc.TOCJSON（ADR-10）
+type HeadingNode struct {
+	SectionID string `json:"section_id"`
+	Title     string `json:"title"`
+	Level     int    `json:"level"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	RuneCount int    `json:"rune_count"`
+	IsChunk   bool   `json:"is_chunk,omitempty"`
+}
+
+// 14. TaskReferenceDocSnapshot 固化于 GenTask.ReferenceDocSnapshotJSON 与 ChatContextRefVO.RefDocs（ADR-10）
+type TaskReferenceDocSnapshot struct {
+	DocID            uint          `json:"doc_id"`
+	Title            string        `json:"title"`
+	DocKind          string        `json:"doc_kind"`
+	VersionNo        int           `json:"version_no"`
+	ContentSHA256    string        `json:"content_sha256"`
+	SummaryMD        string        `json:"summary_md"`
+	SummarySHA256    string        `json:"summary_sha256"`
+	TOC              []HeadingNode `json:"toc"`
+	DeclaredTerms    []string      `json:"declared_terms,omitempty"`
+	ScopeLevel       string        `json:"scope_level"` // system | subsystem | group | repo | module
+	ScopeKey         string        `json:"scope_key"`
+	SourceScopeLabel string        `json:"source_scope_label"`
+	EstimatedTokens  int           `json:"estimated_tokens"`
+	IsInherited      bool          `json:"is_inherited"`
+}
+
+// 15. RefDocCitation 独立存储于 SectionEvidence.RefCitationsJSON 与 ChatProposalItem.RefCitationsJSON（ADR-10）
+type RefDocCitation struct {
+	CitationKey  string `json:"citation_key"` // "ref_doc:<id>@v<ver>#<sec>" 或 "ref_doc:<id>@v<ver>"
+	DocID        uint   `json:"doc_id"`
+	VersionNo    int    `json:"version_no"`
+	SectionID    string `json:"section_id,omitempty"`
+	SectionTitle string `json:"section_title,omitempty"`
+	DocTitle     string `json:"doc_title"`
+	ScopeLevel   string `json:"scope_level"`
+	Stale        bool   `json:"stale"`
 }

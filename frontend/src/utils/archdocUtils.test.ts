@@ -42,6 +42,17 @@ import {
   summarizeScopeDocs,
 } from './docTypeUtils.ts';
 import { parseChatSSEBlock } from './sseParser.ts';
+import {
+  buildExcludedRefDocIds,
+  computeIncludedRefDocStats,
+  formatArchNodeRefDocBadgeText,
+  formatRefCitationBadgeLabel,
+  formatRefDocKindLabel,
+  formatRefDocScopeLabel,
+  formatRefDocSummaryStaleHint,
+  formatRefDocTokenBadge,
+  groupEffectiveRefDocsByScope,
+} from './refDocUtils.ts';
 
 describe('URL Search Params 分页与筛选序列化/反序列化 (Verification Checklist §3.2.1)', () => {
   it('默认回退 page=1、pageSize=25 且正确解析全部筛选参数', () => {
@@ -922,5 +933,130 @@ describe('ADR-09 架构文档全景树表扁平化、默认展开阈值、筛选
       buildOverviewDrilldownPath(true, '/arch-tree', { status: 'drifted' }),
       '/archdoc/arch-tree?status=drifted',
     );
+  });
+});
+
+describe('架构参考文档纯函数工具 (T-ADR10-15)', () => {
+  it('按作用域层级分组、剔除 ID 计算、摘要滞后文案与引用徽章', () => {
+    const sampleDocs = [
+      {
+        doc_id: 10,
+        binding_id: 1,
+        title: '全系统架构规范',
+        doc_kind: 'arch_design' as const,
+        current_version: 2,
+        summary_md: '摘要',
+        summary_stale: true,
+        toc: [],
+        estimated_tokens: 1500,
+        is_home: true,
+        is_inherited: true,
+        effective_scope_level: 'system' as const,
+        source_scope_label: '全系统',
+        inherit_to_children: true,
+        doc_type_slugs: [],
+        can_edit: true,
+        can_unbind: false,
+      },
+      {
+        doc_id: 20,
+        binding_id: 2,
+        title: '订单模块边界',
+        doc_kind: 'interface_spec' as const,
+        current_version: 1,
+        summary_md: '摘要',
+        summary_stale: false,
+        toc: [],
+        estimated_tokens: 450,
+        is_home: true,
+        is_inherited: false,
+        effective_scope_level: 'module' as const,
+        source_scope_label: '订单模块',
+        inherit_to_children: true,
+        doc_type_slugs: ['system-architecture'],
+        can_edit: true,
+        can_unbind: false,
+      },
+      {
+        doc_id: 30,
+        binding_id: 3,
+        title: '支付仓库基线',
+        doc_kind: 'adr_constraint' as const,
+        current_version: 3,
+        summary_md: '摘要',
+        summary_stale: false,
+        toc: [],
+        estimated_tokens: 800,
+        is_home: false,
+        is_inherited: true,
+        effective_scope_level: 'repo' as const,
+        source_scope_label: 'pay-svc',
+        inherit_to_children: true,
+        doc_type_slugs: [],
+        can_edit: false,
+        can_unbind: false,
+      },
+    ];
+
+    const grouped = groupEffectiveRefDocsByScope(sampleDocs);
+    assert.deepEqual(
+      grouped.map((g) => ({ level: g.level, label: g.label, docIds: g.items.map((x) => x.doc_id) })),
+      [
+        { level: 'module', label: '功能模块', docIds: [20] },
+        { level: 'repo', label: '代码仓', docIds: [30] },
+        { level: 'system', label: '全系统', docIds: [10] },
+      ],
+    );
+
+    const checked = new Set<number>([10, 20]);
+    assert.deepEqual(buildExcludedRefDocIds(sampleDocs, checked), [30]);
+    assert.deepEqual(computeIncludedRefDocStats(sampleDocs, checked), {
+      includedCount: 2,
+      includedTokens: 1950,
+      totalCount: 3,
+    });
+
+    assert.equal(formatRefDocKindLabel('domain_glossary'), '领域术语');
+    assert.equal(formatRefDocScopeLabel('subsystem'), '子系统');
+    assert.equal(formatRefDocTokenBadge(1500), '1.5k T');
+    assert.equal(formatRefDocTokenBadge(450), '450 T');
+    assert.equal(
+      formatRefDocSummaryStaleHint(1, 3),
+      '摘要滞后于当前正文（摘要基于 v1，当前正文 v3）',
+    );
+    assert.equal(formatRefDocSummaryStaleHint(3, 3), '');
+    assert.equal(
+      formatArchNodeRefDocBadgeText({ direct_ref_doc_count: 2, inherited_ref_doc_count: 3 }),
+      '参考 2+3',
+    );
+    assert.equal(
+      formatRefCitationBadgeLabel({
+        citation_key: 'ref_doc:10@v2#sec-1',
+        doc_id: 10,
+        version_no: 2,
+        section_id: 'sec-1',
+        section_title: '边界说明',
+        doc_title: '全系统规范',
+        scope_level: 'system',
+        stale: true,
+      }),
+      '全系统规范 v2 · 边界说明 (已过期)',
+    );
+  });
+
+  it('新增 7 个参考文档 API 错误码友好映射', () => {
+    for (const code of [
+      'HOME_BINDING_PROTECTED',
+      'VERSION_CONFLICT',
+      'ALREADY_BOUND',
+      'PAYLOAD_TOO_LARGE',
+      'INLINE_BASE64_IMAGE',
+      'SECRET_DETECTED',
+      'SECRET_CONFIRM_REQUIRED',
+    ] as const) {
+      const formatted = formatApiError(new ArchdocApiError(422, { code }));
+      assert.equal(formatted.code, code);
+      assert.ok(formatted.title.length > 0 && formatted.message.length > 0);
+    }
   });
 });

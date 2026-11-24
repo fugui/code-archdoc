@@ -70,6 +70,7 @@ type SectionEvidence struct {
 	ContentSHA256       string         `gorm:"size:64;not null" json:"content_sha256"`
 	VerifierSummaryJSON datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"verifier_summary"`
 	EvidencesJSON       datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"evidences"`
+	RefCitationsJSON    datatypes.JSON `gorm:"type:jsonb;not null;default:'[]'" json:"ref_citations"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }

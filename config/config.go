@@ -87,6 +87,7 @@ type StorageSection struct {
 	SandboxMaxMB     int64  `yaml:"sandbox_max_mb"`     // 默认 20480 (20 GB)
 	IRCacheMaxMB     int64  `yaml:"ir_cache_max_mb"`    // 默认 10240 (10 GB)
 	MaxFileBytes     int64  `yaml:"max_file_bytes"`     // L1 降噪单文件上限，默认 1048576 (1 MB)
+	RefDocMaxBytes   int64  `yaml:"ref_doc_max_bytes"`  // 架构参考 Markdown 单篇体积上限，默认 524288 (512 KB)
 	ReapIntervalMins int    `yaml:"reap_interval_mins"` // LRU 回收周期，默认 10 分钟
 }
 
@@ -103,6 +104,19 @@ func (s StorageSection) IRCacheDir() string {
 // DocTypesDir 返回 DocType 唯一事实源根目录。
 func (s StorageSection) DocTypesDir() string {
 	return filepath.Join(s.effectiveDataDir(), "doc_types")
+}
+
+// RefDocsDir 返回架构参考 Markdown 文档持久化根目录。
+func (s StorageSection) RefDocsDir() string {
+	return filepath.Join(s.effectiveDataDir(), "ref_docs")
+}
+
+// EffectiveRefDocMaxBytes 返回单篇参考文档体积上限（默认 524288 字节 / 512 KB）。
+func (s StorageSection) EffectiveRefDocMaxBytes() int64 {
+	if s.RefDocMaxBytes <= 0 {
+		return 524288
+	}
+	return s.RefDocMaxBytes
 }
 
 // EffectivePublishDir 返回已审批定稿 Markdown 原子发布根目录。
@@ -293,6 +307,9 @@ func applyDefaults() error {
 	}
 	if AppConfig.Storage.MaxFileBytes <= 0 {
 		AppConfig.Storage.MaxFileBytes = 1048576
+	}
+	if AppConfig.Storage.RefDocMaxBytes <= 0 {
+		AppConfig.Storage.RefDocMaxBytes = 524288
 	}
 	if AppConfig.Storage.ReapIntervalMins <= 0 {
 		AppConfig.Storage.ReapIntervalMins = 10

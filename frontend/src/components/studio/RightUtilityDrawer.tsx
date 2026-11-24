@@ -8,6 +8,7 @@ import type {
 } from '../../types';
 import ChatRefineTab from './ChatRefineTab';
 import EvidenceSourceTab, { type EvidenceInspectRequest } from './EvidenceSourceTab';
+import type { RefDocPreviewTarget } from './RefDocPreviewDrawer';
 import type { ReviewDraftContext } from './ReviewBasketPanel';
 import RevisionHistoryTab from './RevisionHistoryTab';
 
@@ -34,6 +35,7 @@ export interface RightUtilityDrawerProps {
   onSelectCommentOnCanvas?: (comment: ReviewCommentVO) => void;
   onClearDraftContext?: () => void;
   onAppliedProposal?: (appliedSlots: string[], commentIds: number[]) => void;
+  onInspectRefDoc?: (target: RefDocPreviewTarget) => void;
 }
 
 function renderDrawerTitle(
@@ -94,6 +96,7 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
   onSelectCommentOnCanvas,
   onClearDraftContext,
   onAppliedProposal,
+  onInspectRefDoc,
 }) => {
   const openCount = reviewComments.filter((c) => c.status === 'open').length;
 
@@ -149,6 +152,7 @@ export const RightUtilityDrawer: React.FC<RightUtilityDrawerProps> = ({
               onAppliedProposal={onAppliedProposal}
               onDocumentUpdated={onRolledBack}
               onReloadDocument={onReloadDocument}
+              onInspectRefDoc={onInspectRefDoc}
             />
           ) : null
         ) : doc ? (

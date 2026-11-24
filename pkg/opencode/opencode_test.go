@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"code-archdoc/pkg/codeir"
+	"code-archdoc/pkg/refdoc"
 )
 
 func writeFakeOpenCodeScript(t *testing.T, dir, body string) string {
@@ -932,5 +933,107 @@ func TestOpenCodeRealV2EndToEndWithMockServer(t *testing.T) {
 	}
 	if !strings.Contains(joinedTools, "external_directory") {
 		t.Fatalf("越界读取 /etc/hostname 未被 external_directory 拦截: %s", joinedTools)
+	}
+}
+
+// T-ADR10-08：OpenCode v2 平级 RefDir 物理隔离 + EvalSymlinks + external_directory 精确放行 + v1 8000T 预算内联
+func TestOpenCodeRefDocSiblingDirIsolationAndV1BudgetInline_T_ADR10_08(t *testing.T) {
+	workDir := t.TempDir()
+	longBody := "# 总体架构\n\n## 1. 核心规范\n" + strings.Repeat("详细参考设计规则：订单幂等与状态机约定。\n", 220)
+	parsed, fail, err := refdoc.ValidateAndParse(longBody, 524288, false, "arch_design", nil)
+	if err != nil || fail != nil {
+		t.Fatalf("解析失败: fail=%+v err=%v", fail, err)
+	}
+	req := DocGenRequest{
+		WorkDir:            workDir,
+		RepoRoot:           workDir,
+		DocTypeSlug:        "system-architecture",
+		DocTypeDisplayName: "系统架构",
+		ActiveSlots:        []SlotTaskSpec{{SlotID: "overview", Title: "概览", Ownership: "auto"}},
+		ModelName:          "deepseek-v3",
+		BaseURL:            "http://127.0.0.1:8000/v1",
+		APIKey:             "sk-opencode-refdoc-secret",
+		RefDocs: []refdoc.PromptDoc{{
+			DocID:            42,
+			Title:            "系统总体规范",
+			DocKind:          "arch_design",
+			VersionNo:        2,
+			ScopeLevel:       "subsystem",
+			ScopeRank:        2,
+			SourceScopeLabel: "交易子系统",
+			SummaryMD:        "系统总体设计摘要",
+			TOC:              parsed.TOC,
+			EstimatedTokens:  parsed.EstimatedTokens,
+			Markdown:         "# 总体架构\npassword: \"secret_in_refdoc\"\n\n## 1. 核心规范\n" + strings.Repeat("详细参考设计规则：订单幂等与状态机约定。\n", 220),
+		}},
+	}
+
+	// 1. v2 平级 RefDir 隔离与权限配置验证
+	envV2, err := prepareSessionEnv(req, true)
+	if err != nil {
+		t.Fatalf("prepareSessionEnv v2 失败: %v", err)
+	}
+	if envV2.RefDir == "" || envV2.CanonicalRefDir == "" {
+		envV2.Cleanup()
+		t.Fatalf("v2 存在未全文内联参考文档时必须创建平级 RefDir: %+v", envV2)
+	}
+	// 严禁位于 RootDir 内部
+	relCheck, relErr := filepath.Rel(envV2.RootDir, envV2.RefDir)
+	if relErr == nil && relCheck != ".." && !strings.HasPrefix(relCheck, ".."+string(os.PathSeparator)) {
+		envV2.Cleanup()
+		t.Fatalf("安全红线违规：RefDir(%s) 绝不能位于含 APIKey 的 RootDir(%s) 内部！", envV2.RefDir, envV2.RootDir)
+	}
+	if len(envV2.StagedRefFiles) != 1 {
+		envV2.Cleanup()
+		t.Fatalf("期望写入 1 个脱敏参考文档副本，实际 %d", len(envV2.StagedRefFiles))
+	}
+	stagedBytes, _ := os.ReadFile(envV2.StagedRefFiles[0].FullPath)
+	if strings.Contains(string(stagedBytes), "secret_in_refdoc") {
+		envV2.Cleanup()
+		t.Fatal("安全红线违规：OpenCode RefDir 副本未执行二次脱敏！")
+	}
+
+	cfgBytes, _ := os.ReadFile(filepath.Join(envV2.RootDir, "opencode.json"))
+	cfgStr := string(cfgBytes)
+	wantRule := envV2.CanonicalRefDir + "/*"
+	denyIdx := strings.Index(cfgStr, `"external_directory"`)
+	allowIdx := strings.Index(cfgStr, wantRule)
+	if denyIdx < 0 || allowIdx <= denyIdx {
+		envV2.Cleanup()
+		t.Fatalf("v2 opencode.json 必须在 *:deny 之后精确追加 %q allow，实际:\n%s", wantRule, cfgStr)
+	}
+
+	promptV2 := buildDocumentPromptWithEnv(req, true, envV2.CanonicalRefDir, envV2.StagedRefFiles)
+	if !strings.Contains(promptV2, envV2.CanonicalRefDir) || !strings.Contains(promptV2, envV2.StagedRefFiles[0].FileName) {
+		envV2.Cleanup()
+		t.Fatalf("v2 Prompt 未注入 CanonicalRefDir 清单: %s", promptV2)
+	}
+
+	rootDirCopy := envV2.RootDir
+	refDirCopy := envV2.RefDir
+	envV2.Cleanup()
+	if _, err := os.Stat(rootDirCopy); !os.IsNotExist(err) {
+		t.Fatalf("Cleanup 未清理 RootDir: %s", rootDirCopy)
+	}
+	if _, err := os.Stat(refDirCopy); !os.IsNotExist(err) {
+		t.Fatalf("Cleanup 未清理 RefDir: %s", refDirCopy)
+	}
+
+	// 2. v1 保持 external_directory=deny 且不创建 RefDir，按 8000T 预算内联章节
+	envV1, err := prepareSessionEnv(req, false)
+	if err != nil {
+		t.Fatalf("prepareSessionEnv v1 失败: %v", err)
+	}
+	defer envV1.Cleanup()
+	if envV1.RefDir != "" {
+		t.Fatalf("v1 不应创建 RefDir，实际: %s", envV1.RefDir)
+	}
+	cfgV1, _ := os.ReadFile(filepath.Join(envV1.RootDir, "opencode.json"))
+	if !strings.Contains(string(cfgV1), `"external_directory": "deny"`) {
+		t.Fatalf("v1 必须保持 external_directory: deny: %s", string(cfgV1))
+	}
+	promptV1 := buildDocumentPromptWithEnv(req, false, "", nil)
+	if !strings.Contains(promptV1, "订单幂等与状态机约定") {
+		t.Fatalf("v1 Prompt 应按预算内联参考文档章节正文")
 	}
 }

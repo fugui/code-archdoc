@@ -19,6 +19,7 @@ import type {
 } from '../../types';
 import { ArchdocApiError, formatApiError } from '../../utils/errorMessages';
 import ChatRefineThreadPanel, { type ActiveThreadStreamingState } from './ChatRefineThreadPanel';
+import type { RefDocPreviewTarget } from './RefDocPreviewDrawer';
 import ReviewBasketPanel, { type ReviewDraftContext } from './ReviewBasketPanel';
 
 export interface ChatRefineTabProps {
@@ -37,6 +38,7 @@ export interface ChatRefineTabProps {
   onAppliedProposal?: (appliedSlots: string[], commentIds: number[]) => void;
   onDocumentUpdated: (updatedDoc: DocumentDetailVO) => void;
   onReloadDocument: () => Promise<void>;
+  onInspectRefDoc?: (target: RefDocPreviewTarget) => void;
 }
 
 export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
@@ -55,6 +57,7 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
   onAppliedProposal,
   onDocumentUpdated,
   onReloadDocument,
+  onInspectRefDoc,
 }) => {
   const { showToast } = useToast();
 
@@ -428,6 +431,7 @@ export const ChatRefineTab: React.FC<ChatRefineTabProps> = ({
           onRejectProposal={handleRejectAll}
           onRejectProposalItem={handleRejectItem}
           onReloadDocument={onReloadDocument}
+          onInspectRefDoc={onInspectRefDoc}
         />
       )}
     </div>

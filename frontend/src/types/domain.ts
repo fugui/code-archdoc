@@ -210,6 +210,7 @@ export interface SectionVO {
   content_sha256: string;
   markdown: string;
   evidences: EvidenceAnchor[];
+  ref_citations?: RefDocCitationVO[];
 }
 
 export interface AffectedSlotDrift {
@@ -349,6 +350,7 @@ export interface ArchTreeSummaryVO {
   draft_docs: number;
   drifted_docs: number;
   unassigned_repo_count: number;
+  system_ref_doc_count?: number;
 }
 
 export interface ArchTreeStatsVO {
@@ -376,6 +378,8 @@ export interface ArchTreeNodeVO {
   binding_status?: ArchModuleBindingStatus;
   scope?: RepoScopeCoverageVO | null;
   stats: ArchTreeStatsVO;
+  direct_ref_doc_count?: number;
+  inherited_ref_doc_count?: number;
   /** @deprecated 由 scope 替代，固定返回 [] */
   scopes: RepoScopeCoverageVO[];
   children: ArchTreeNodeVO[];
@@ -616,6 +620,7 @@ export interface ChatContextRefVO {
   slot_id?: string;
   comment_ids?: number[];
   inline_anchor?: ReviewCommentAnchor;
+  ref_docs?: TaskReferenceDocSnapshotVO[];
 }
 
 export interface ChatProposalItemVO {
@@ -629,6 +634,7 @@ export interface ChatProposalItemVO {
   final_applied_md?: string;
   unified_diff: string;
   cited_anchors: EvidenceAnchor[];
+  ref_citations?: RefDocCitationVO[];
   verifier_preview?: ChatVerifierPreviewVO | null;
   addressed_comment_ids: number[];
   status: ProposalStatus;
@@ -747,6 +753,7 @@ export interface GenTaskDetailVO {
   slot_tasks?: GenSlotTaskVO[];
   child_tasks?: GenTaskDetailVO[];
   batch_summary?: BatchSummaryVO | null;
+  reference_docs?: TaskReferenceDocSnapshotVO[];
   triggered_by: number;
   triggered_by_name?: string;
   can_write?: boolean;
@@ -1049,4 +1056,147 @@ export interface ReapResultVO {
   reaped_ir_facets: number;
   freed_bytes: number;
   skipped_active_leases: number;
+}
+
+// ─── ADR-10: 架构参考文档与上下文注入 ───
+
+export type RefDocKind =
+  | 'arch_design'
+  | 'domain_glossary'
+  | 'interface_spec'
+  | 'adr_constraint'
+  | 'other';
+
+export type RefDocStatus = 'active' | 'archived';
+
+export type RefDocScopeLevel = 'system' | 'subsystem' | 'group' | 'module' | 'repo';
+
+export interface RefDocHeadingNode {
+  section_id: string;
+  title: string;
+  level: number;
+  start_line: number;
+  end_line: number;
+  rune_count: number;
+  is_chunk?: boolean;
+}
+
+export interface RefDocBindingVO {
+  id: number;
+  doc_id: number;
+  scope_key: string;
+  scope_level: RefDocScopeLevel;
+  scope_label: string;
+  is_home: boolean;
+  arch_element_id?: number | null;
+  repo_id?: number | null;
+  subdirectory: string;
+  inherit_to_children: boolean;
+  doc_type_slugs: string[];
+  sort_order: number;
+  can_manage_binding?: boolean;
+}
+
+export interface ReferenceDocSummaryVO {
+  id: number;
+  title: string;
+  doc_kind: RefDocKind;
+  description: string;
+  owner_scope_key: string;
+  owner_scope_level: RefDocScopeLevel;
+  owner_scope_label: string;
+  summary_md: string;
+  summary_stale: boolean;
+  current_version: number;
+  estimated_tokens: number;
+  status: RefDocStatus;
+  binding_count: number;
+  can_edit: boolean;
+  updated_at: string;
+}
+
+export interface ReferenceDocDetailVO {
+  id: number;
+  title: string;
+  doc_kind: RefDocKind;
+  description: string;
+  visibility?: string;
+  owner_scope_key: string;
+  owner_scope_level: RefDocScopeLevel;
+  owner_scope_label: string;
+  summary_md: string;
+  summary_source: string;
+  summary_status: string;
+  summary_for_version: number;
+  summary_stale: boolean;
+  current_version: number;
+  viewing_version: number;
+  content_sha256: string;
+  byte_size: number;
+  rune_count: number;
+  estimated_tokens: number;
+  line_count: number;
+  status: RefDocStatus;
+  toc: RefDocHeadingNode[];
+  declared_terms: string[];
+  content_md: string;
+  bindings: RefDocBindingVO[];
+  can_edit: boolean;
+  created_by: number;
+  updated_by: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EffectiveRefDocVO {
+  doc_id: number;
+  binding_id: number;
+  title: string;
+  doc_kind: RefDocKind;
+  current_version: number;
+  summary_md: string;
+  summary_stale: boolean;
+  toc: RefDocHeadingNode[];
+  estimated_tokens: number;
+  is_home: boolean;
+  is_inherited: boolean;
+  effective_scope_level: RefDocScopeLevel;
+  source_scope_label: string;
+  inherit_to_children: boolean;
+  doc_type_slugs: string[];
+  can_edit: boolean;
+  can_unbind: boolean;
+}
+
+export type EffectiveRefDocItemVO = EffectiveRefDocVO;
+
+export interface EffectiveRefDocsResponse {
+  target_scope_label: string;
+  total_count: number;
+  total_estimated_tokens: number;
+  is_whole_repo_rollup: boolean;
+  items: EffectiveRefDocVO[];
+}
+
+export interface RefDocCitationVO {
+  citation_key: string;
+  doc_id: number;
+  version_no: number;
+  section_id?: string;
+  section_title?: string;
+  doc_title: string;
+  scope_level: RefDocScopeLevel;
+  stale: boolean;
+}
+
+export interface TaskReferenceDocSnapshotVO {
+  doc_id: number;
+  title: string;
+  doc_kind: RefDocKind;
+  version_no: number;
+  summary_md: string;
+  scope_level: RefDocScopeLevel;
+  source_scope_label: string;
+  estimated_tokens: number;
+  is_inherited: boolean;
 }

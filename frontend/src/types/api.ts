@@ -45,6 +45,13 @@ export type ArchdocErrorCode =
   | 'BATCH_TOKEN_BUDGET_EXCEEDED'
   | 'FILE_BUDGET_EXCEEDED'
   | 'REMOTE_BRANCH_FETCH_FAILED'
+  | 'HOME_BINDING_PROTECTED'
+  | 'VERSION_CONFLICT'
+  | 'ALREADY_BOUND'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'INLINE_BASE64_IMAGE'
+  | 'SECRET_DETECTED'
+  | 'SECRET_CONFIRM_REQUIRED'
   | 'INTERNAL_ERROR';
 
 export interface SwitchRepoBranchPayload {
@@ -81,6 +88,8 @@ export interface GenerateTaskPayload {
   doc_types: string[];
   mode?: 'generate' | 'regenerate';
   engine?: GenEngine;
+  arch_element_id?: number;
+  exclude_ref_doc_ids?: number[];
 }
 
 export interface BatchGenerateTaskPayload {
@@ -92,6 +101,7 @@ export interface BatchGenerateTaskPayload {
   doc_types: string[];
   mode?: 'generate' | 'regenerate';
   engine?: GenEngine;
+  exclude_ref_doc_ids?: number[];
 }
 
 export interface UpdateRepoModulePolicyPayload {
@@ -297,6 +307,66 @@ export interface DriftListQuery {
 export interface IncrementalRefreshPayload {
   slot_ids?: string[];
   engine?: GenEngine;
+  exclude_ref_doc_ids?: number[];
+}
+
+// ─── ADR-10: 架构参考文档与上下文注入 ───
+
+export interface RefDocBindingPayload {
+  scope_level: 'system' | 'subsystem' | 'group' | 'module' | 'repo';
+  arch_element_id?: number;
+  repo_id?: number;
+  subdirectory?: string;
+  inherit_to_children?: boolean;
+  doc_type_slugs?: string[];
+  sort_order?: number;
+}
+
+export interface CreateRefDocPayload {
+  title: string;
+  doc_kind?: 'arch_design' | 'domain_glossary' | 'interface_spec' | 'adr_constraint' | 'other';
+  description?: string;
+  summary_md?: string;
+  content_md?: string;
+  declared_terms?: string[];
+  redact_and_save?: boolean;
+  initial_binding: RefDocBindingPayload;
+}
+
+export interface UpdateRefDocPayload {
+  expected_version: number;
+  title?: string;
+  doc_kind?: 'arch_design' | 'domain_glossary' | 'interface_spec' | 'adr_constraint' | 'other';
+  description?: string;
+  summary_md?: string;
+  content_md?: string;
+  declared_terms?: string[];
+  status?: 'active' | 'archived';
+  redact_and_save?: boolean;
+  new_home_binding?: RefDocBindingPayload;
+}
+
+export interface UpdateRefDocBindingPayload {
+  inherit_to_children?: boolean;
+  doc_type_slugs?: string[];
+  sort_order?: number;
+}
+
+export interface RefDocListQuery {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  doc_kind?: string;
+  scope_level?: string;
+  arch_element_id?: number;
+  status?: 'active' | 'archived' | 'all';
+}
+
+export interface EffectiveRefDocsQuery {
+  arch_element_id?: number;
+  repo_id?: number;
+  subdirectory?: string;
+  doc_type_slug?: string;
 }
 
 export interface MetricsOverviewQuery {

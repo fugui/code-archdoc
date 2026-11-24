@@ -14,15 +14,18 @@ import (
 	"strings"
 
 	"code-archdoc/pkg/codeir"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/security"
 )
 
 const (
-	ToolNameListDir       = "list_dir"
-	ToolNameReadFileLines = "read_file_lines"
-	ToolNameGrepInSandbox = "grep_in_sandbox"
-	ToolNameGetSymbolImpl = "get_symbol_impl"
+	ToolNameListDir           = "list_dir"
+	ToolNameReadFileLines     = "read_file_lines"
+	ToolNameGrepInSandbox     = "grep_in_sandbox"
+	ToolNameGetSymbolImpl     = "get_symbol_impl"
+	ToolNameReadRefDocSection = "read_ref_doc_section"
+	ToolNameSearchRefDocs     = "search_ref_docs"
 
 	defaultToolMaxReadLines   = 200
 	hardToolMaxReadLines      = 250
@@ -54,6 +57,8 @@ type SandboxToolkitConfig struct {
 	IR *codeir.CodeIRBundle
 	// ExternalFileWhitelist 可选：module_context 声明的跨模块外部契约文件只读白名单（仓库根相对路径 -> true）。
 	ExternalFileWhitelist map[string]bool
+	// RefDocs 可选：当次任务/会话授权的架构参考文档快照（含正文与 TOC）。
+	RefDocs []refdoc.PromptDoc
 	// Redactor 三级凭据脱敏器；为空时自动初始化默认 SecretRedactor。
 	Redactor *security.SecretRedactor
 
@@ -72,6 +77,8 @@ type SandboxSourceToolkit struct {
 	hasFS             bool
 	ir                *codeir.CodeIRBundle
 	externalWhitelist map[string]bool
+	refDocs           []refdoc.PromptDoc
+	refDocByID        map[uint]refdoc.PromptDoc
 	redactor          *security.SecretRedactor
 	ignoreMatcher     *sandbox.IgnoreMatcher
 	maxReadLines      int
@@ -147,6 +154,20 @@ func NewSandboxSourceToolkit(cfg SandboxToolkitConfig) *SandboxSourceToolkit {
 		}
 	}
 
+	var refDocByID map[uint]refdoc.PromptDoc
+	var refDocsCopy []refdoc.PromptDoc
+	if len(cfg.RefDocs) > 0 {
+		refDocByID = make(map[uint]refdoc.PromptDoc, len(cfg.RefDocs))
+		refDocsCopy = make([]refdoc.PromptDoc, 0, len(cfg.RefDocs))
+		for _, rd := range cfg.RefDocs {
+			if rd.DocID == 0 {
+				continue
+			}
+			refDocByID[rd.DocID] = rd
+			refDocsCopy = append(refDocsCopy, rd)
+		}
+	}
+
 	return &SandboxSourceToolkit{
 		scopeRoot:         scopeRoot,
 		repoRoot:          resolvedRepoRoot,
@@ -154,6 +175,8 @@ func NewSandboxSourceToolkit(cfg SandboxToolkitConfig) *SandboxSourceToolkit {
 		hasFS:             hasFS,
 		ir:                cfg.IR,
 		externalWhitelist: extWhitelist,
+		refDocs:           refDocsCopy,
+		refDocByID:        refDocByID,
 		redactor:          redactor,
 		ignoreMatcher:     ignoreMatcher,
 		maxReadLines:      maxRead,
@@ -277,6 +300,56 @@ func (t *SandboxSourceToolkit) Definitions() []ToolDefinition {
 			},
 		})
 	}
+	if len(t.refDocs) > 0 {
+		defs = append(defs,
+			ToolDefinition{
+				Type: "function",
+				Function: ToolFunctionDefinition{
+					Name:        ToolNameReadRefDocSection,
+					Description: "按 doc_id 与 section_id 只读读取架构参考文档的指定章节正文（自动执行敏感凭据二次脱敏，单次最多 200 行 / 12 KB）。",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"doc_id": map[string]any{
+								"type":        "integer",
+								"description": "参考文档 ID（见上下文 arch_reference_docs 清单中的 ref_doc:<doc_id>）",
+							},
+							"section_id": map[string]any{
+								"type":        "string",
+								"description": "目标章节 section_id，例如 sec-1 或 sec-chunk-1",
+							},
+							"offset_line": map[string]any{
+								"type":        "integer",
+								"description": "可选：章节内起始偏移行数（默认 0）",
+							},
+						},
+						"required": []string{"doc_id", "section_id"},
+					},
+				},
+			},
+			ToolDefinition{
+				Type: "function",
+				Function: ToolFunctionDefinition{
+					Name:        ToolNameSearchRefDocs,
+					Description: "在当次任务已授权的架构参考文档正文中按关键词检索相关章节位置与摘要片段。",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"query": map[string]any{
+								"type":        "string",
+								"description": "检索关键词（字面量匹配）",
+							},
+							"doc_id": map[string]any{
+								"type":        "integer",
+								"description": "可选：限定检索某篇参考文档 ID",
+							},
+						},
+						"required": []string{"query"},
+					},
+				},
+			},
+		)
+	}
 	return defs
 }
 
@@ -298,6 +371,10 @@ func (t *SandboxSourceToolkit) Execute(ctx context.Context, call ToolCall) (stri
 		return t.execListDir(ctx, call.Function.Arguments)
 	case ToolNameGetSymbolImpl:
 		return t.execGetSymbolImpl(ctx, call.Function.Arguments)
+	case ToolNameReadRefDocSection:
+		return t.execReadRefDocSection(call.Function.Arguments)
+	case ToolNameSearchRefDocs:
+		return t.execSearchRefDocs(call.Function.Arguments)
 	default:
 		return fmt.Sprintf("拒绝调用未授权工具 %q：仅允许只读源码探索工具", call.Function.Name),
 			fmt.Sprintf("unknown tool %s", call.Function.Name), true
@@ -975,4 +1052,79 @@ func sanitizeSummaryToken(s string) string {
 		return clean[:64] + "..."
 	}
 	return clean
+}
+
+type readRefDocSectionArgs struct {
+	DocID      uint   `json:"doc_id"`
+	SectionID  string `json:"section_id"`
+	OffsetLine int    `json:"offset_line"`
+}
+
+func (t *SandboxSourceToolkit) execReadRefDocSection(rawArgs string) (string, string, bool) {
+	if len(t.refDocs) == 0 {
+		return "当前上下文未绑定架构参考文档。", "read_ref_doc_section (none)", true
+	}
+	var args readRefDocSectionArgs
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "参数解析失败，须为合法 JSON 对象: " + err.Error(), "read_ref_doc_section (invalid args)", true
+	}
+	doc, ok := t.refDocByID[args.DocID]
+	if !ok {
+		return fmt.Sprintf("未找到已授权参考文档 doc_id=%d", args.DocID), fmt.Sprintf("read_ref_doc_section(%d) not found", args.DocID), true
+	}
+	ex, err := refdoc.ReadSection(doc.Markdown, doc.TOC, args.SectionID, args.OffsetLine, t.maxReadLines, t.maxOutputBytes)
+	if err != nil {
+		return err.Error(), fmt.Sprintf("read_ref_doc_section(%d#%s) error", args.DocID, sanitizeSummaryToken(args.SectionID)), true
+	}
+	header := fmt.Sprintf("[ref_doc:%d@v%d#%s] %s · %s (L%d-%d / total %d)\n",
+		doc.DocID, doc.VersionNo, ex.SectionID, doc.Title, ex.Title, ex.StartLine, ex.EndLine, ex.TotalLines)
+	body := header + ex.Content
+	if ex.Truncated {
+		body += fmt.Sprintf("\n... (本节共 %d 行，如需继续请传 offset_line=%d)", ex.TotalLines, ex.EndLine-doc.TOC[0].StartLine+1)
+	}
+	redacted := t.truncateOutput(body)
+	wrapped, _ := WrapUntrustedData(fmt.Sprintf("ref_doc:%d#%s", doc.DocID, ex.SectionID), redacted)
+	return wrapped, fmt.Sprintf("read_ref_doc_section(%d#%s)", doc.DocID, ex.SectionID), false
+}
+
+type searchRefDocsArgs struct {
+	Query      string `json:"query"`
+	DocID      uint   `json:"doc_id"`
+	MaxMatches int    `json:"max_matches"`
+}
+
+func (t *SandboxSourceToolkit) execSearchRefDocs(rawArgs string) (string, string, bool) {
+	if len(t.refDocs) == 0 {
+		return "当前上下文未绑定架构参考文档。", "search_ref_docs (none)", true
+	}
+	var args searchRefDocsArgs
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "参数解析失败，须为合法 JSON 对象: " + err.Error(), "search_ref_docs (invalid args)", true
+	}
+	q := strings.TrimSpace(args.Query)
+	if len([]rune(q)) < 1 {
+		return "query 不能为空", "search_ref_docs (empty query)", true
+	}
+	searchDocs := make([]refdoc.SearchableDoc, 0, len(t.refDocs))
+	for _, d := range t.refDocs {
+		searchDocs = append(searchDocs, refdoc.SearchableDoc{
+			DocID:     d.DocID,
+			Title:     d.Title,
+			VersionNo: d.VersionNo,
+			Markdown:  d.Markdown,
+			TOC:       d.TOC,
+		})
+	}
+	hits := refdoc.SearchSections(searchDocs, q, args.DocID, args.MaxMatches)
+	if len(hits) == 0 {
+		return fmt.Sprintf("未在已授权参考文档中匹配到关键词 %q", q), fmt.Sprintf("search_ref_docs(%s) 0 hits", sanitizeSummaryToken(q)), false
+	}
+	var sb strings.Builder
+	for _, h := range hits {
+		sb.WriteString(fmt.Sprintf("- [ref_doc:%d@v%d#%s] %s · %s (L%d): %s\n",
+			h.DocID, h.VersionNo, h.SectionID, h.DocTitle, h.SectionTitle, h.LineNumber, h.Snippet))
+	}
+	redacted := t.truncateOutput(sb.String())
+	wrapped, _ := WrapUntrustedData("search_ref_docs", redacted)
+	return wrapped, fmt.Sprintf("search_ref_docs(%s) %d hits", sanitizeSummaryToken(q), len(hits)), false
 }

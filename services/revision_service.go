@@ -76,6 +76,7 @@ type SectionVO struct {
 	ContentSHA256    string                  `json:"content_sha256"`
 	Markdown         string                  `json:"markdown"`
 	Evidences        []models.EvidenceAnchor `json:"evidences"`
+	RefCitations     []models.RefDocCitation `json:"ref_citations,omitempty"`
 }
 
 type ViewingRevisionVO struct {
@@ -386,6 +387,7 @@ type RevisionService struct {
 	driftRepo   DriftRepo
 	chatRepo    ChatRepo
 	reviewRepo  ReviewCommentRepo
+	refDocSvc   *RefDocService
 	snapSvc     *SnapshotService
 	verifier    *verifier.Verifier
 }
@@ -417,6 +419,12 @@ func (s *RevisionService) WithModuleContext(moduleRepo ModuleRepo) *RevisionServ
 func (s *RevisionService) WithReviewHooks(chatRepo ChatRepo, reviewRepo ReviewCommentRepo) *RevisionService {
 	s.chatRepo = chatRepo
 	s.reviewRepo = reviewRepo
+	return s
+}
+
+// WithRefDocService 注入架构参考文档服务，支持修订重验时解析参考文档快照与历史失效标注（ADR-10）。
+func (s *RevisionService) WithRefDocService(refDocSvc *RefDocService) *RevisionService {
+	s.refDocSvc = refDocSvc
 	return s
 }
 
@@ -748,6 +756,7 @@ func (s *RevisionService) ApplyMultiSectionChanges(ctx context.Context, req Appl
 	}
 
 	prevAnchorsBySlot := parsePrevAnchorsBySlot(prevEvs)
+	prevRefCitsBySlot, _ := collectPriorRefCitationsBySlot(prevEvs)
 	secInputs := make([]verifier.SectionInput, 0, len(updatedSnaps))
 	for _, sn := range updatedSnaps {
 		var cited []verifier.CitedAnchorCandidate
@@ -756,6 +765,7 @@ func (s *RevisionService) ApplyMultiSectionChanges(ctx context.Context, req Appl
 		} else {
 			// P-7 ① 修复：未修改章节复用上版已对齐证据锚点（含 module_doc / proto_rpc / http_route 等非内联锚点）
 			cited = evidenceAnchorsToCandidates(prevAnchorsBySlot[sn.SlotID])
+			cited = append(cited, modelsRefCitationsToCandidates(prevRefCitsBySlot[sn.SlotID])...)
 		}
 		secInputs = append(secInputs, verifier.SectionInput{
 			SlotID:       sn.SlotID,
@@ -1096,14 +1106,28 @@ func (s *RevisionService) verifyAndAppend(
 		}
 	}
 
+	var activeRefSpecs []verifier.RefDocSpec
+	if s.refDocSvc != nil {
+		if eff, effErr := s.refDocSvc.ResolveEffectiveRefDocs(ctx, ResolveEffectiveRefDocsRequest{
+			RepoID:       &doc.RepoID,
+			Subdirectory: doc.Subdirectory,
+			DocTypeSlug:  doc.DocTypeSlug,
+		}, nil); effErr == nil && eff != nil {
+			activeRefSpecs = snapshotsToVerifierSpecs(eff.Snapshots)
+		}
+	}
+	histRefSpecs := buildHistoricalRefDocSpecs(ctx, s.refDocSvc, priorEvRows, activeRefSpecs)
+
 	vRes := s.verifier.Verify(verifier.VerifyInput{
-		CommitSHA:     commitSHA,
-		IR:            irBundle,
-		ModuleContext: modCtx,
-		ModuleDigests: moduleDigests,
-		Slots:         asset.Meta.Slots,
-		Policy:        asset.Meta.VerifyPolicy,
-		Sections:      sectionInputs,
+		CommitSHA:         commitSHA,
+		IR:                irBundle,
+		ModuleContext:     modCtx,
+		ModuleDigests:     moduleDigests,
+		ActiveRefDocs:     activeRefSpecs,
+		HistoricalRefDocs: histRefSpecs,
+		Slots:             asset.Meta.Slots,
+		Policy:            asset.Meta.VerifyPolicy,
+		Sections:          sectionInputs,
 	})
 
 	// 当快照 IR 已被回收导致本次未加载 IR 时，保留旧修订已对齐的证据锚点以免展示空白
@@ -1111,6 +1135,7 @@ func (s *RevisionService) verifyAndAppend(
 	for _, pe := range priorEvRows {
 		priorEvMap[pe.SlotID] = pe.EvidencesJSON
 	}
+	_, priorRefRawMap := collectPriorRefCitationsBySlot(priorEvRows)
 
 	fullMD := assembleFullMarkdown(asset.TemplateMD, sectionSnapshots)
 	sectionsJSON, _ := json.Marshal(sectionSnapshots)
@@ -1144,6 +1169,15 @@ func (s *RevisionService) verifyAndAppend(
 		} else {
 			evJSON = datatypes.JSON("[]")
 		}
+		var refCitJSON datatypes.JSON
+		if refList := vRes.SectionRefCitations[sn.SlotID]; len(refList) > 0 {
+			raw, _ := json.Marshal(verifierRefCitationsToModels(refList))
+			refCitJSON = datatypes.JSON(raw)
+		} else if len(priorRefRawMap[sn.SlotID]) > 2 {
+			refCitJSON = priorRefRawMap[sn.SlotID]
+		} else {
+			refCitJSON = datatypes.JSON("[]")
+		}
 		sumJSON, _ := json.Marshal(vRes.SectionSummaries[sn.SlotID])
 		secEvidences = append(secEvidences, models.SectionEvidence{
 			SlotID:              sn.SlotID,
@@ -1156,6 +1190,7 @@ func (s *RevisionService) verifyAndAppend(
 			ContentSHA256:       sn.ContentSHA256,
 			VerifierSummaryJSON: datatypes.JSON(sumJSON),
 			EvidencesJSON:       evJSON,
+			RefCitationsJSON:    refCitJSON,
 		})
 	}
 
@@ -1328,6 +1363,7 @@ func (s *RevisionService) buildDocumentDetailVO(
 func buildSectionVOs(rev *models.DocumentRevision, evidences []models.SectionEvidence) []SectionVO {
 	snaps := overlaySectionMetadata(unmarshalSectionSnapshots(rev.SectionsJSON), evidences)
 	evBySlot := make(map[string][]models.EvidenceAnchor, len(evidences))
+	refCitsBySlot := make(map[string][]models.RefDocCitation, len(evidences))
 	for _, ev := range evidences {
 		var anchors []models.EvidenceAnchor
 		_ = json.Unmarshal(ev.EvidencesJSON, &anchors)
@@ -1335,6 +1371,12 @@ func buildSectionVOs(rev *models.DocumentRevision, evidences []models.SectionEvi
 			anchors = []models.EvidenceAnchor{}
 		}
 		evBySlot[ev.SlotID] = anchors
+		if len(ev.RefCitationsJSON) > 2 {
+			var cits []models.RefDocCitation
+			if json.Unmarshal(ev.RefCitationsJSON, &cits) == nil && len(cits) > 0 {
+				refCitsBySlot[ev.SlotID] = cits
+			}
+		}
 	}
 
 	out := make([]SectionVO, 0, len(snaps))
@@ -1354,6 +1396,7 @@ func buildSectionVOs(rev *models.DocumentRevision, evidences []models.SectionEvi
 			ContentSHA256:    sn.ContentSHA256,
 			Markdown:         sn.Markdown,
 			Evidences:        anchors,
+			RefCitations:     refCitsBySlot[sn.SlotID],
 		})
 	}
 	return out

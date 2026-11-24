@@ -1,6 +1,8 @@
 package verifier
 
 import (
+	"strings"
+
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/security"
@@ -16,13 +18,15 @@ type SectionInput struct {
 
 // VerifyInput Verifier 四重确定性门禁完整入参。
 type VerifyInput struct {
-	CommitSHA     string
-	IR            *codeir.CodeIRBundle
-	ModuleContext *codeir.ModuleContextFacet // 可选：子模块跨模块外部引用白名单（支撑 scope="repo" 校验）
-	ModuleDigests []codeir.ModuleDigestInput // 可选：整仓汇总引用的子模块摘要集合（支撑 symbol_kind="module_doc" 校验）
-	Slots         []doctype.SlotSpec
-	Policy        *doctype.VerifyPolicy
-	Sections      []SectionInput
+	CommitSHA         string
+	IR                *codeir.CodeIRBundle
+	ModuleContext     *codeir.ModuleContextFacet // 可选：子模块跨模块外部引用白名单（支撑 scope="repo" 校验）
+	ModuleDigests     []codeir.ModuleDigestInput // 可选：整仓汇总引用的子模块摘要集合（支撑 symbol_kind="module_doc" 校验）
+	ActiveRefDocs     []RefDocSpec               // 可选：当次生效的架构参考文档快照（ADR-10）
+	HistoricalRefDocs []RefDocSpec               // 可选：上一修订已引用但可能已解绑的历史参考文档集合（ADR-10）
+	Slots             []doctype.SlotSpec
+	Policy            *doctype.VerifyPolicy
+	Sections          []SectionInput
 }
 
 // SectionVerifierSummary 单章节维度的校验计数汇总（对齐 models.SectionVerifierSummary）。
@@ -48,11 +52,12 @@ type VerifierReport struct {
 	SecretFindings       []SecretFinding `json:"secret_findings"`
 }
 
-// VerifyResult 汇总报告及每个章节对齐后的证据锚点与摘要。
+// VerifyResult 汇总报告及每个章节对齐后的证据锚点、参考引用与摘要。
 type VerifyResult struct {
-	Report           VerifierReport
-	SectionEvidences map[string][]EvidenceAnchor
-	SectionSummaries map[string]SectionVerifierSummary
+	Report              VerifierReport
+	SectionEvidences    map[string][]EvidenceAnchor
+	SectionRefCitations map[string][]RefDocCitation
+	SectionSummaries    map[string]SectionVerifierSummary
 }
 
 // Verifier 零 LLM 依赖的四重确定性质量与安全门禁引擎（F-07 / SC-04）。
@@ -79,18 +84,45 @@ func (v *Verifier) Verify(input VerifyInput) *VerifyResult {
 	}
 
 	sectionEvidences := make(map[string][]EvidenceAnchor, len(input.Sections))
+	sectionRefCitations := make(map[string][]RefDocCitation, len(input.Sections))
 	sectionSummaries := make(map[string]SectionVerifierSummary, len(input.Sections))
 	sectionsBySlot := make(map[string]string, len(input.Sections))
+
+	declaredTerms := make(map[string]bool)
+	for _, rd := range input.ActiveRefDocs {
+		for _, term := range rd.DeclaredTerms {
+			t := strings.TrimSpace(term)
+			if t != "" {
+				declaredTerms[t] = true
+			}
+		}
+	}
 
 	for _, sec := range input.Sections {
 		sectionsBySlot[sec.SlotID] = sec.Markdown
 		summary := SectionVerifierSummary{}
 
-		// 0. 证据锚点对齐
-		aligned, unmatched := AlignCandidates(idx, input.CommitSHA, sec.CitedAnchors)
+		// 0a. 前置剥离 ref_doc 候选锚点，独立对齐至 SectionRefCitations（零污染源码 EvidencesJSON）
+		var codeCands []CitedAnchorCandidate
+		var refCands []CitedAnchorCandidate
+		for _, cand := range sec.CitedAnchors {
+			if strings.TrimSpace(cand.Scope) == "ref_doc" || strings.TrimSpace(cand.SymbolKind) == "ref_doc" {
+				refCands = append(refCands, cand)
+			} else {
+				codeCands = append(codeCands, cand)
+			}
+		}
+		refCits, refUnverified := AlignRefDocCandidates(input.ActiveRefDocs, input.HistoricalRefDocs, sec.SlotID, refCands)
+		if len(refCits) > 0 {
+			sectionRefCitations[sec.SlotID] = refCits
+		}
 
-		// Gate 1: 符号与文件路径存在性校验
-		unverified, extraAnchors := RunSymbolGate(idx, input.CommitSHA, sec.SlotID, sec.Markdown, unmatched, policy)
+		// 0b. 源码证据锚点对齐
+		aligned, unmatched := AlignCandidates(idx, input.CommitSHA, codeCands)
+
+		// Gate 1: 符号与文件路径存在性校验（含 DeclaredTerms 降级为 external_term warning）
+		unverified, extraAnchors := RunSymbolGateWithTerms(idx, input.CommitSHA, sec.SlotID, sec.Markdown, unmatched, policy, declaredTerms)
+		unverified = append(unverified, refUnverified...)
 		allAnchors := mergeAnchors(aligned, extraAnchors)
 		sectionEvidences[sec.SlotID] = allAnchors
 
@@ -146,9 +178,10 @@ func (v *Verifier) Verify(input VerifyInput) *VerifyResult {
 	report.CanApprove = report.BlockerCount == 0 && report.ErrorCount == 0
 
 	return &VerifyResult{
-		Report:           report,
-		SectionEvidences: sectionEvidences,
-		SectionSummaries: sectionSummaries,
+		Report:              report,
+		SectionEvidences:    sectionEvidences,
+		SectionRefCitations: sectionRefCitations,
+		SectionSummaries:    sectionSummaries,
 	}
 }
 

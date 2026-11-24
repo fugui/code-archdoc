@@ -88,6 +88,7 @@ type ArchTreeSummaryVO struct {
 	DraftDocs           int `json:"draft_docs"`
 	DriftedDocs         int `json:"drifted_docs"`
 	UnassignedRepoCount int `json:"unassigned_repo_count"`
+	SystemRefDocCount   int `json:"system_ref_doc_count"`
 }
 
 type ArchTreeStatsVO struct {
@@ -101,22 +102,24 @@ type ArchTreeStatsVO struct {
 }
 
 type ArchTreeNodeVO struct {
-	ID            uint                  `json:"id"`
-	Identifier    string                `json:"identifier"`
-	NameCn        string                `json:"name_cn"`
-	NameEn        string                `json:"name_en"`
-	Type          string                `json:"type"`
-	ParentID      *uint                 `json:"parent_id"`
-	OwnerID       *uint                 `json:"owner_id"`
-	OwnerName     string                `json:"owner_name"`
-	RepoID        *uint                 `json:"repo_id"`
-	Subdirectory  string                `json:"subdirectory"`
-	Description   string                `json:"description"`
-	BindingStatus string                `json:"binding_status,omitempty"`
-	Scope         *RepoScopeCoverageVO  `json:"scope,omitempty"`
-	Stats         ArchTreeStatsVO       `json:"stats"`
-	Scopes        []RepoScopeCoverageVO `json:"scopes"` // @deprecated: 固定返回 []
-	Children      []*ArchTreeNodeVO     `json:"children"`
+	ID                   uint                  `json:"id"`
+	Identifier           string                `json:"identifier"`
+	NameCn               string                `json:"name_cn"`
+	NameEn               string                `json:"name_en"`
+	Type                 string                `json:"type"`
+	ParentID             *uint                 `json:"parent_id"`
+	OwnerID              *uint                 `json:"owner_id"`
+	OwnerName            string                `json:"owner_name"`
+	RepoID               *uint                 `json:"repo_id"`
+	Subdirectory         string                `json:"subdirectory"`
+	Description          string                `json:"description"`
+	BindingStatus        string                `json:"binding_status,omitempty"`
+	Scope                *RepoScopeCoverageVO  `json:"scope,omitempty"`
+	Stats                ArchTreeStatsVO       `json:"stats"`
+	DirectRefDocCount    int                   `json:"direct_ref_doc_count"`
+	InheritedRefDocCount int                   `json:"inherited_ref_doc_count"`
+	Scopes               []RepoScopeCoverageVO `json:"scopes"` // @deprecated: 固定返回 []
+	Children             []*ArchTreeNodeVO     `json:"children"`
 }
 
 type ArchTreeResponse struct {
@@ -193,12 +196,19 @@ type RepoService struct {
 	taskRepo   TaskRepo
 	driftRepo  DriftRepo
 	moduleRepo ModuleRepo
+	refDocRepo ReferenceDocRepo
 	rbacSvc    *RBACService
 }
 
 // WithModuleRepo 注入派生模块索引仓储，使覆盖全景矩阵融合自动发现模块、已消失模块与孤儿文档范围（ADR-04 D-1）。
 func (s *RepoService) WithModuleRepo(moduleRepo ModuleRepo) *RepoService {
 	s.moduleRepo = moduleRepo
+	return s
+}
+
+// WithRefDocRepo 注入架构参考文档仓储，使 GetArchTree 批量聚合各层级直接/继承参考文档计数（ADR-10）。
+func (s *RepoService) WithRefDocRepo(refDocRepo ReferenceDocRepo) *RepoService {
+	s.refDocRepo = refDocRepo
 	return s
 }
 
@@ -408,12 +418,136 @@ func (s *RepoService) GetArchTree(ctx context.Context, user *commonModels.User, 
 		summary.DriftedDocs += st.DriftedDocCount
 	}
 
+	if s.refDocRepo != nil {
+		if sysCount, err := s.populateArchTreeRefDocCounts(ctx, roots); err == nil {
+			summary.SystemRefDocCount = sysCount
+		}
+	}
+
 	return &ArchTreeResponse{
 		Summary:          summary,
 		Subsystems:       subsystems,
 		Nodes:            roots,
 		UnassignedScopes: []RepoScopeCoverageVO{},
 	}, nil
+}
+
+// populateArchTreeRefDocCounts 一次性批量加载活跃参考文档与绑定，在内存中按祖先链 O(N) 一次 DFS 聚合各节点参考文档计数。
+func (s *RepoService) populateArchTreeRefDocCounts(ctx context.Context, roots []*ArchTreeNodeVO) (int, error) {
+	docs, bindings, err := s.refDocRepo.ListAllActiveDocsAndBindings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	activeDocs := make(map[uint]bool, len(docs))
+	for _, d := range docs {
+		if d.Status == models.RefDocStatusActive {
+			activeDocs[d.ID] = true
+		}
+	}
+
+	systemDocs := make(map[uint]bool)
+	archDirectDocs := make(map[uint]map[uint]bool)
+	archInheritDocs := make(map[uint]map[uint]bool)
+	repoExactDocs := make(map[scopeKey]map[uint]bool)
+	repoRootInheritDocs := make(map[uint]map[uint]bool)
+
+	for _, b := range bindings {
+		if !activeDocs[b.DocID] {
+			continue
+		}
+		switch b.ScopeLevel {
+		case models.RefDocScopeSystem:
+			systemDocs[b.DocID] = true
+		case models.RefDocScopeSubsystem, models.RefDocScopeGroup, models.RefDocScopeModule:
+			if b.ArchElementID == nil || *b.ArchElementID == 0 {
+				continue
+			}
+			aid := *b.ArchElementID
+			if archDirectDocs[aid] == nil {
+				archDirectDocs[aid] = make(map[uint]bool)
+			}
+			archDirectDocs[aid][b.DocID] = true
+			if b.InheritToChildren {
+				if archInheritDocs[aid] == nil {
+					archInheritDocs[aid] = make(map[uint]bool)
+				}
+				archInheritDocs[aid][b.DocID] = true
+			}
+		case models.RefDocScopeRepo:
+			if b.RepoID == nil || *b.RepoID == 0 {
+				continue
+			}
+			normSub, nErr := sandbox.NormalizeSubdir(b.Subdirectory)
+			if nErr != nil {
+				continue
+			}
+			k := scopeKey{repoID: *b.RepoID, subdir: normSub}
+			if repoExactDocs[k] == nil {
+				repoExactDocs[k] = make(map[uint]bool)
+			}
+			repoExactDocs[k][b.DocID] = true
+			if normSub == "" && b.InheritToChildren {
+				if repoRootInheritDocs[*b.RepoID] == nil {
+					repoRootInheritDocs[*b.RepoID] = make(map[uint]bool)
+				}
+				repoRootInheritDocs[*b.RepoID][b.DocID] = true
+			}
+		}
+	}
+
+	var walk func(node *ArchTreeNodeVO, inherited map[uint]bool)
+	walk = func(node *ArchTreeNodeVO, inherited map[uint]bool) {
+		if node == nil {
+			return
+		}
+		direct := archDirectDocs[node.ID]
+		node.DirectRefDocCount = len(direct)
+
+		// 计算当前节点实际继承的参考文档数（排除已在当前节点直接绑定的 doc_id，避免重复计数）
+		inhSeen := make(map[uint]bool, len(inherited)+4)
+		for docID := range inherited {
+			if !direct[docID] {
+				inhSeen[docID] = true
+			}
+		}
+		if node.Type == models.RefDocScopeModule && node.RepoID != nil && *node.RepoID > 0 {
+			if normSub, nErr := sandbox.NormalizeSubdir(node.Subdirectory); nErr == nil {
+				for docID := range repoExactDocs[scopeKey{repoID: *node.RepoID, subdir: normSub}] {
+					if !direct[docID] {
+						inhSeen[docID] = true
+					}
+				}
+				if normSub != "" {
+					for docID := range repoRootInheritDocs[*node.RepoID] {
+						if !direct[docID] {
+							inhSeen[docID] = true
+						}
+					}
+				}
+			}
+		}
+		node.InheritedRefDocCount = len(inhSeen)
+
+		if len(node.Children) == 0 {
+			return
+		}
+		// 仅向子节点传递当前节点可继承的集合
+		nextInherited := make(map[uint]bool, len(inherited)+len(archInheritDocs[node.ID]))
+		for docID := range inherited {
+			nextInherited[docID] = true
+		}
+		for docID := range archInheritDocs[node.ID] {
+			nextInherited[docID] = true
+		}
+		for _, ch := range node.Children {
+			walk(ch, nextInherited)
+		}
+	}
+
+	for _, root := range roots {
+		walk(root, systemDocs)
+	}
+	return len(systemDocs), nil
 }
 
 func (s *RepoService) GetRepoScopes(ctx context.Context, user *commonModels.User, repoID uint) (*RepoScopesDetailResponse, error) {

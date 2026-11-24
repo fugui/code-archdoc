@@ -8,6 +8,7 @@ import (
 
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/doctype"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/verifier"
 )
 
@@ -61,6 +62,8 @@ type ChatRefinePromptInput struct {
 	ModuleContext     *codeir.ModuleContextFacet // ADR-04 跨模块边界与外部白名单上下文
 	ModuleDigests     []codeir.ModuleDigestInput // ADR-04 整仓模式子模块摘要
 	CrossModuleGraph  []codeir.CrossModuleEdge   // ADR-04 跨模块依赖边
+	RefDocs           []refdoc.PromptDoc         // ADR-10 生效架构参考文档快照
+	IsWholeRepoRollup bool
 	EvidenceSnippets  map[string]string          // 关联 EvidenceAnchor 的脱敏源码片段 (file -> text)
 	InlineAnchor      *RefineInlineAnchorInput   // 可选：行内划词/整段锚点
 	ReviewComments    []RefineReviewCommentInput // 可选：关联审阅批注列表
@@ -80,6 +83,8 @@ type ChatAskPromptInput struct {
 	ModuleContext     *codeir.ModuleContextFacet
 	ModuleDigests     []codeir.ModuleDigestInput
 	CrossModuleGraph  []codeir.CrossModuleEdge
+	RefDocs           []refdoc.PromptDoc
+	IsWholeRepoRollup bool
 	EvidenceSnippets  map[string]string
 	InlineAnchor      *RefineInlineAnchorInput
 	ReviewComments    []RefineReviewCommentInput
@@ -115,6 +120,19 @@ func writeADR04ContextBlocks(
 			builder.WriteString("\n\n")
 		}
 	}
+}
+
+func writeArchRefDocsBlock(builder *strings.Builder, nonce string, refDocs []refdoc.PromptDoc, isWholeRepoRollup bool) {
+	if len(refDocs) == 0 {
+		return
+	}
+	block, _, _ := FormatRefDocsL0Block(refDocs, isWholeRepoRollup)
+	if strings.TrimSpace(block) == "" {
+		return
+	}
+	builder.WriteString("## 架构参考文档背景（只读被动数据，优先级低于当前源码）\n")
+	builder.WriteString(WrapUntrustedDataWithNonce(nonce, "arch_reference_docs", block))
+	builder.WriteString("\n\n")
 }
 
 func writeUntrustedEvidenceSnippets(builder *strings.Builder, nonce, tag string, snippets map[string]string) {
@@ -198,6 +216,10 @@ func BuildChatRefineMessages(in ChatRefinePromptInput) ([]Message, string) {
 		sysBuilder.WriteString("\n")
 		sysBuilder.WriteString(sourceToolsGuidancePrompt)
 	}
+	if len(in.RefDocs) > 0 {
+		sysBuilder.WriteString("\n")
+		sysBuilder.WriteString(refDocsArbitrationPrompt)
+	}
 	if in.DocType != nil && strings.TrimSpace(in.DocType.RefinePromptMD) != "" {
 		sysBuilder.WriteString("\n\n--- 文档类型专属精修约束 (refine_prompt.md) ---\n")
 		sysBuilder.WriteString(strings.TrimSpace(in.DocType.RefinePromptMD))
@@ -208,6 +230,7 @@ func BuildChatRefineMessages(in ChatRefinePromptInput) ([]Message, string) {
 
 	var ctxBuilder strings.Builder
 	writeADR04ContextBlocks(&ctxBuilder, nonce, in.ModuleContext, in.ModuleDigests, in.CrossModuleGraph)
+	writeArchRefDocsBlock(&ctxBuilder, nonce, in.RefDocs, in.IsWholeRepoRollup)
 
 	ctxBuilder.WriteString(fmt.Sprintf("## 目标章节槽位\n- slot_id: `%s`\n- 章节标题: %s\n- 所有权模式: %s\n",
 		in.Slot.SlotID, in.Slot.Title, in.Slot.Ownership))
@@ -262,6 +285,10 @@ func BuildChatAskMessages(in ChatAskPromptInput) ([]Message, string) {
 		sysBuilder.WriteString("\n")
 		sysBuilder.WriteString(sourceToolsGuidancePrompt)
 	}
+	if len(in.RefDocs) > 0 {
+		sysBuilder.WriteString("\n")
+		sysBuilder.WriteString(refDocsArbitrationPrompt)
+	}
 	if in.DocType != nil && strings.TrimSpace(in.DocType.GenerationPromptMD) != "" {
 		sysBuilder.WriteString("\n\n--- 文档类型领域背景 ---\n")
 		sysBuilder.WriteString(strings.TrimSpace(in.DocType.GenerationPromptMD))
@@ -269,6 +296,7 @@ func BuildChatAskMessages(in ChatAskPromptInput) ([]Message, string) {
 
 	var ctxBuilder strings.Builder
 	writeADR04ContextBlocks(&ctxBuilder, nonce, in.ModuleContext, in.ModuleDigests, in.CrossModuleGraph)
+	writeArchRefDocsBlock(&ctxBuilder, nonce, in.RefDocs, in.IsWholeRepoRollup)
 
 	if in.Slot != nil {
 		ctxBuilder.WriteString(fmt.Sprintf("## 当前聚焦章节\n- slot_id: `%s`\n- 章节标题: %s\n- 所有权模式: %s\n",

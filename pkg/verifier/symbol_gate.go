@@ -43,6 +43,19 @@ func RunSymbolGate(
 	unmatchedCandidates []CitedAnchorCandidate,
 	policy doctype.VerifyPolicy,
 ) ([]UnverifiedRef, []EvidenceAnchor) {
+	return RunSymbolGateWithTerms(idx, commitSHA, slotID, markdown, unmatchedCandidates, policy, nil)
+}
+
+// RunSymbolGateWithTerms 在 RunSymbolGate 基础上支持将参考文档显式声明的外部术语（declaredTerms）降级为 warning 而不阻断审批。
+func RunSymbolGateWithTerms(
+	idx *IRIndex,
+	commitSHA string,
+	slotID string,
+	markdown string,
+	unmatchedCandidates []CitedAnchorCandidate,
+	policy doctype.VerifyPolicy,
+	declaredTerms map[string]bool,
+) ([]UnverifiedRef, []EvidenceAnchor) {
 	severity := "warning"
 	if policy.StrictSymbolCheck {
 		severity = "error"
@@ -151,6 +164,9 @@ func RunSymbolGate(
 					seenAnchor[anc.AnchorKey] = true
 					extraAnchors = append(extraAnchors, anc)
 				}
+			} else if declaredTerms != nil && declaredTerms[tok] {
+				// ADR-10: 显式外部系统/领域术语固定降级为 warning（即使 StrictSymbolCheck=true 亦不阻断审批），同时保持审计可见性
+				addIssueWithSeverity("external_term", tok, "warning")
 			} else {
 				addIssue("symbol", tok)
 			}

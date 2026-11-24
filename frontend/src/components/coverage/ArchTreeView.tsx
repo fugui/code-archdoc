@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import {
   Activity,
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Cpu,
@@ -11,12 +12,14 @@ import {
 } from 'lucide-react';
 import { EmptyState } from '@code/common';
 import type {
+  ArchTreeNodeVO,
   ArchTreeResponse,
   DocTypeSummaryVO,
   RepoScopeCoverageVO,
 } from '../../types';
 import { flattenArchTreeRows } from '../../utils/archTreeUtils';
 import { formatArchElementTypeLabel, summarizeScopeDocs } from '../../utils/docTypeUtils';
+import { formatArchNodeRefDocBadgeText } from '../../utils/refDocUtils';
 import { shortSha } from '../../utils/urlQuery';
 import CoverageActionButtons from './CoverageActionButtons';
 import ScopeDocCoverageCell from './ScopeDocCoverageCell';
@@ -36,8 +39,9 @@ export interface ArchTreeViewProps {
   onToggleDocRowExpand: (rowKey: string) => void;
   onOpenActiveTask: (row: RepoScopeCoverageVO) => void;
   onOpenStudio: (repoId: number, docId?: number, subdirectory?: string) => void;
-  onTriggerGenerate: (row: RepoScopeCoverageVO, docTypeSlug?: string) => void;
+  onTriggerGenerate: (row: RepoScopeCoverageVO, docTypeSlug?: string, archElementId?: number) => void;
   onExportZip: (row: RepoScopeCoverageVO, rowKey: string) => void;
+  onOpenRefDocs?: (node: ArchTreeNodeVO) => void;
 }
 
 function ArchNodeIcon({ type, expanded }: { type: string; expanded: boolean }) {
@@ -86,6 +90,7 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
   onOpenStudio,
   onTriggerGenerate,
   onExportZip,
+  onOpenRefDocs,
 }) => {
   const nodes = useMemo(() => data?.nodes ?? [], [data?.nodes]);
   const flattenedRows = useMemo(
@@ -187,6 +192,17 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
                         {node.identifier && (
                           <code className="code-archdoc-mono">{node.identifier}</code>
                         )}
+                        {onOpenRefDocs && (
+                          <button
+                            type="button"
+                            className="code-archdoc-refdoc-badge-btn"
+                            onClick={() => onOpenRefDocs(node)}
+                            title="管理或查看本架构节点绑定的参考文档与继承概览"
+                          >
+                            <BookOpen size={12} />
+                            <span>{formatArchNodeRefDocBadgeText(node) || '参考文档'}</span>
+                          </button>
+                        )}
                       </div>
                     </td>
 
@@ -272,6 +288,17 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
                             {node.identifier && (
                               <code className="code-archdoc-mono">{node.identifier}</code>
                             )}
+                            {onOpenRefDocs && (
+                              <button
+                                type="button"
+                                className="code-archdoc-refdoc-badge-btn"
+                                onClick={() => onOpenRefDocs(node)}
+                                title="管理或查看本功能模块绑定的参考文档"
+                              >
+                                <BookOpen size={12} />
+                                <span>{formatArchNodeRefDocBadgeText(node) || '参考文档'}</span>
+                              </button>
+                            )}
                           </div>
                           <div
                             className={`code-archdoc-tree-status-note ${
@@ -350,6 +377,17 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
                                 目录已缺失
                               </span>
                             )}
+                            {onOpenRefDocs && (
+                              <button
+                                type="button"
+                                className="code-archdoc-refdoc-badge-btn"
+                                onClick={() => onOpenRefDocs(node)}
+                                title="管理或查看本功能模块绑定的参考文档与继承概览"
+                              >
+                                <BookOpen size={12} />
+                                <span>{formatArchNodeRefDocBadgeText(node) || '参考文档'}</span>
+                              </button>
+                            )}
                           </div>
 
                           <div className="code-archdoc-tree-source-meta">
@@ -412,7 +450,7 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
                         onOpenStudio={(docId) =>
                           onOpenStudio(scope.repo_id, docId, scope.subdirectory)
                         }
-                        onTriggerGenerate={(slug) => onTriggerGenerate(scope, slug)}
+                        onTriggerGenerate={(slug) => onTriggerGenerate(scope, slug, node.id)}
                       />
                     </td>
 
@@ -427,7 +465,7 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
                         onOpenStudio={() =>
                           onOpenStudio(scope.repo_id, firstDoc?.document_id, scope.subdirectory)
                         }
-                        onTriggerGenerate={() => onTriggerGenerate(scope)}
+                        onTriggerGenerate={() => onTriggerGenerate(scope, undefined, node.id)}
                         onExportZip={() => onExportZip(scope, rowKey)}
                       />
                     </td>
@@ -443,7 +481,7 @@ export const ArchTreeView: React.FC<ArchTreeViewProps> = ({
                           onOpenStudio={(docId) =>
                             onOpenStudio(scope.repo_id, docId, scope.subdirectory)
                           }
-                          onTriggerGenerate={(slug) => onTriggerGenerate(scope, slug)}
+                          onTriggerGenerate={(slug) => onTriggerGenerate(scope, slug, node.id)}
                         />
                       </td>
                     </tr>

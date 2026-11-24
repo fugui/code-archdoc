@@ -231,6 +231,33 @@ func (s *SharedMasterStore) ListAllArchElements(ctx context.Context) ([]Architec
 	return elems, nil
 }
 
+func (s *SharedMasterStore) GetArchElement(ctx context.Context, id uint) (*ArchitectureElement, error) {
+	var el ArchitectureElement
+	err := s.db.WithContext(ctx).First(&el, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &el, nil
+}
+
+func (s *SharedMasterStore) GetRepositoriesByIDs(ctx context.Context, ids []uint) (map[uint]commonModels.Repository, error) {
+	res := make(map[uint]commonModels.Repository, len(ids))
+	if len(ids) == 0 {
+		return res, nil
+	}
+	var repos []commonModels.Repository
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&repos).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range repos {
+		res[r.ID] = r
+	}
+	return res, nil
+}
+
 func (s *SharedMasterStore) FindArchElementsByRepoAndOwner(ctx context.Context, repoID, ownerID uint) ([]ArchitectureElement, error) {
 	var elems []ArchitectureElement
 	if err := s.db.WithContext(ctx).
@@ -2287,4 +2314,326 @@ func (s *GovernanceStore) ListSectionVerifierSummaries(ctx context.Context, docT
 		return nil, err
 	}
 	return rows, nil
+}
+
+// ─── 10. ReferenceDocStore (ADR-10 第 21 & 22 张自有表) ───
+
+type ReferenceDocStore struct {
+	db *gorm.DB
+}
+
+func NewReferenceDocStore(db *gorm.DB) *ReferenceDocStore {
+	return &ReferenceDocStore{db: db}
+}
+
+func (s *ReferenceDocStore) CreateWithHomeBinding(ctx context.Context, doc *ReferenceDoc, homeBinding *ReferenceDocBinding) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(doc).Error; err != nil {
+			return err
+		}
+		if homeBinding != nil {
+			homeBinding.DocID = doc.ID
+			homeBinding.IsHome = true
+			if err := tx.Create(homeBinding).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *ReferenceDocStore) GetByID(ctx context.Context, docID uint) (*ReferenceDoc, error) {
+	var doc ReferenceDoc
+	err := s.db.WithContext(ctx).First(&doc, docID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &doc, nil
+}
+
+func (s *ReferenceDocStore) ListDocs(ctx context.Context, filter RefDocListFilter) ([]ReferenceDoc, int64, error) {
+	q := s.db.WithContext(ctx).Model(&ReferenceDoc{})
+	status := strings.ToLower(strings.TrimSpace(filter.Status))
+	if status == "" {
+		status = RefDocStatusActive
+	}
+	if status != "all" {
+		q = q.Where("status = ?", status)
+	}
+	if dk := strings.TrimSpace(filter.DocKind); dk != "" {
+		q = q.Where("doc_kind = ?", dk)
+	}
+	if sl := strings.TrimSpace(filter.ScopeLevel); sl != "" {
+		q = q.Where("owner_scope_level = ?", sl)
+	}
+	if filter.ArchElementID != nil && *filter.ArchElementID > 0 {
+		bindTable := (ReferenceDocBinding{}).TableName()
+		q = q.Where("id IN (SELECT doc_id FROM "+bindTable+" WHERE arch_element_id = ?)", *filter.ArchElementID)
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		like := "%" + search + "%"
+		q = q.Where("LOWER(title) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?) OR LOWER(summary_md) LIKE LOWER(?)", like, like, like)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var docs []ReferenceDoc
+	query := q.Order("updated_at DESC, id DESC")
+	if filter.Limit > 0 {
+		query = query.Offset(filter.Offset).Limit(filter.Limit)
+	}
+	if err := query.Find(&docs).Error; err != nil {
+		return nil, 0, err
+	}
+	return docs, total, nil
+}
+
+func (s *ReferenceDocStore) UpdateDocWithVersion(ctx context.Context, docID uint, expectedVersion int, updates map[string]any) (*ReferenceDoc, error) {
+	var updated ReferenceDoc
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var cur ReferenceDoc
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cur, docID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if cur.CurrentVersion != expectedVersion {
+			return ErrVersionConflict
+		}
+		res := tx.Model(&ReferenceDoc{}).
+			Where("id = ? AND current_version = ?", docID, expectedVersion).
+			Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrVersionConflict
+		}
+		return tx.First(&updated, docID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (s *ReferenceDocStore) UpdateDocAndTransferHomeWithVersion(
+	ctx context.Context,
+	docID uint,
+	expectedVersion int,
+	updates map[string]any,
+	newHome *ReferenceDocBinding,
+) (*ReferenceDoc, error) {
+	var updated ReferenceDoc
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var cur ReferenceDoc
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cur, docID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if cur.CurrentVersion != expectedVersion {
+			return ErrVersionConflict
+		}
+		if newHome != nil {
+			if err := tx.Model(&ReferenceDocBinding{}).
+				Where("doc_id = ? AND is_home = ?", docID, true).
+				Update("is_home", false).Error; err != nil {
+				return err
+			}
+			var existing ReferenceDocBinding
+			err := tx.Where("doc_id = ? AND scope_key = ?", docID, newHome.ScopeKey).First(&existing).Error
+			if err == nil {
+				if upErr := tx.Model(&existing).Updates(map[string]any{
+					"is_home":             true,
+					"inherit_to_children": newHome.InheritToChildren,
+					"doc_type_slugs_json": newHome.DocTypeSlugsJSON,
+					"sort_order":          newHome.SortOrder,
+				}).Error; upErr != nil {
+					return upErr
+				}
+			} else if errors.Is(err, gorm.ErrRecordNotFound) {
+				newHome.DocID = docID
+				newHome.IsHome = true
+				if crErr := tx.Create(newHome).Error; crErr != nil {
+					return crErr
+				}
+			} else {
+				return err
+			}
+		}
+		res := tx.Model(&ReferenceDoc{}).
+			Where("id = ? AND current_version = ?", docID, expectedVersion).
+			Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrVersionConflict
+		}
+		return tx.First(&updated, docID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (s *ReferenceDocStore) UpdateLLMSummaryIfCurrent(ctx context.Context, docID uint, versionNo int, summaryMD string) error {
+	return s.db.WithContext(ctx).Model(&ReferenceDoc{}).
+		Where("id = ? AND current_version = ? AND summary_source <> ?", docID, versionNo, RefDocSummarySourceManual).
+		Updates(map[string]any{
+			"summary_md":          summaryMD,
+			"summary_source":      RefDocSummarySourceLLM,
+			"summary_status":      RefDocSummaryStatusReady,
+			"summary_for_version": versionNo,
+		}).Error
+}
+
+func (s *ReferenceDocStore) ListBindingsByDocID(ctx context.Context, docID uint) ([]ReferenceDocBinding, error) {
+	var list []ReferenceDocBinding
+	if err := s.db.WithContext(ctx).
+		Where("doc_id = ?", docID).
+		Order("is_home DESC, sort_order ASC, id ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *ReferenceDocStore) ListBindingsByDocIDs(ctx context.Context, docIDs []uint) (map[uint][]ReferenceDocBinding, error) {
+	out := make(map[uint][]ReferenceDocBinding, len(docIDs))
+	if len(docIDs) == 0 {
+		return out, nil
+	}
+	var list []ReferenceDocBinding
+	if err := s.db.WithContext(ctx).
+		Where("doc_id IN ?", docIDs).
+		Order("is_home DESC, sort_order ASC, id ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	for _, b := range list {
+		out[b.DocID] = append(out[b.DocID], b)
+	}
+	return out, nil
+}
+
+func (s *ReferenceDocStore) ListAllActiveDocsAndBindings(ctx context.Context) ([]ReferenceDoc, []ReferenceDocBinding, error) {
+	var docs []ReferenceDoc
+	if err := s.db.WithContext(ctx).
+		Where("status = ?", RefDocStatusActive).
+		Order("id ASC").
+		Find(&docs).Error; err != nil {
+		return nil, nil, err
+	}
+	if len(docs) == 0 {
+		return []ReferenceDoc{}, []ReferenceDocBinding{}, nil
+	}
+	docIDs := make([]uint, 0, len(docs))
+	for _, d := range docs {
+		docIDs = append(docIDs, d.ID)
+	}
+	var bindings []ReferenceDocBinding
+	if err := s.db.WithContext(ctx).
+		Where("doc_id IN ?", docIDs).
+		Order("id ASC").
+		Find(&bindings).Error; err != nil {
+		return nil, nil, err
+	}
+	return docs, bindings, nil
+}
+
+func (s *ReferenceDocStore) CreateBinding(ctx context.Context, binding *ReferenceDocBinding) error {
+	var existing ReferenceDocBinding
+	err := s.db.WithContext(ctx).
+		Where("doc_id = ? AND scope_key = ?", binding.DocID, binding.ScopeKey).
+		First(&existing).Error
+	if err == nil {
+		return ErrAlreadyBound
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if err := s.db.WithContext(ctx).Create(binding).Error; err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") || strings.Contains(err.Error(), "23505") {
+			return ErrAlreadyBound
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *ReferenceDocStore) GetBindingByID(ctx context.Context, docID, bindingID uint) (*ReferenceDocBinding, error) {
+	var b ReferenceDocBinding
+	err := s.db.WithContext(ctx).
+		Where("doc_id = ? AND id = ?", docID, bindingID).
+		First(&b).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *ReferenceDocStore) UpdateBinding(ctx context.Context, docID, bindingID uint, updates map[string]any) (*ReferenceDocBinding, error) {
+	res := s.db.WithContext(ctx).Model(&ReferenceDocBinding{}).
+		Where("doc_id = ? AND id = ?", docID, bindingID).
+		Updates(updates)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetBindingByID(ctx, docID, bindingID)
+}
+
+func (s *ReferenceDocStore) DeleteBinding(ctx context.Context, docID, bindingID uint) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var doc ReferenceDoc
+		if err := tx.First(&doc, docID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		var b ReferenceDocBinding
+		if err := tx.Where("doc_id = ? AND id = ?", docID, bindingID).First(&b).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if doc.Status == RefDocStatusActive && b.IsHome {
+			return ErrHomeBindingProtected
+		}
+		return tx.Delete(&b).Error
+	})
+}
+
+func (s *ReferenceDocStore) PurgeDoc(ctx context.Context, docID uint) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var doc ReferenceDoc
+		if err := tx.First(&doc, docID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if err := tx.Where("doc_id = ?", docID).Delete(&ReferenceDocBinding{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&ReferenceDoc{}, docID).Error
+	})
 }

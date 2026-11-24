@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"code-archdoc/pkg/doctype"
+	"code-archdoc/pkg/refdoc"
 )
 
 // MaxBatchRefineSlots 限制单次全局或批量审阅最多自动编排精修的可写章节数。
@@ -40,11 +41,13 @@ type ReviewPlanComment struct {
 
 // ReviewPlanPromptInput 装配 Plan 阶段的完整上下文。
 type ReviewPlanPromptInput struct {
-	DocType    *doctype.AssetBundle
-	Sections   []ReviewPlanSectionSummary
-	Comments   []ReviewPlanComment
-	UserPrompt string
-	Nonce      string
+	DocType           *doctype.AssetBundle
+	Sections          []ReviewPlanSectionSummary
+	Comments          []ReviewPlanComment
+	RefDocs           []refdoc.PromptDoc
+	IsWholeRepoRollup bool
+	UserPrompt        string
+	Nonce             string
 }
 
 // ReviewPlanSlotAction 描述规划产出的单个章节处置方案。
@@ -80,6 +83,7 @@ func BuildReviewPlanMessages(in ReviewPlanPromptInput) ([]Message, string) {
 
 	secBytes, _ := json.Marshal(in.Sections)
 	var ctx strings.Builder
+	writeArchRefDocsBlock(&ctx, nonce, in.RefDocs, in.IsWholeRepoRollup)
 	ctx.WriteString("## 文档章节目录与现状摘要（只读被动数据）\n")
 	ctx.WriteString(WrapUntrustedDataWithNonce(nonce, "plan_sections", string(secBytes)))
 	ctx.WriteString("\n")

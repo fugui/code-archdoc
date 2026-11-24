@@ -16,6 +16,7 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/drift"
 	"code-archdoc/pkg/llm"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/security"
 	"code-archdoc/pkg/verifier"
 
@@ -109,10 +110,11 @@ type ChatPlanSummaryVO struct {
 }
 
 type ChatContextRefVO struct {
-	ScopeType    string                      `json:"scope_type,omitempty"`
-	SlotID       string                      `json:"slot_id,omitempty"`
-	CommentIDs   []uint                      `json:"comment_ids,omitempty"`
-	InlineAnchor *models.ReviewCommentAnchor `json:"inline_anchor,omitempty"`
+	ScopeType    string                            `json:"scope_type,omitempty"`
+	SlotID       string                            `json:"slot_id,omitempty"`
+	CommentIDs   []uint                            `json:"comment_ids,omitempty"`
+	InlineAnchor *models.ReviewCommentAnchor       `json:"inline_anchor,omitempty"`
+	RefDocs      []models.TaskReferenceDocSnapshot `json:"ref_docs,omitempty"`
 }
 
 type ChatProposalItemVO struct {
@@ -126,6 +128,7 @@ type ChatProposalItemVO struct {
 	FinalAppliedMD      string                  `json:"final_applied_md,omitempty"`
 	UnifiedDiff         string                  `json:"unified_diff"`
 	CitedAnchors        []models.EvidenceAnchor `json:"cited_anchors"`
+	RefCitations        []models.RefDocCitation `json:"ref_citations,omitempty"`
 	VerifierPreview     *ChatVerifierPreviewVO  `json:"verifier_preview,omitempty"`
 	AddressedCommentIDs []uint                  `json:"addressed_comment_ids"`
 	Status              string                  `json:"status"`
@@ -182,35 +185,38 @@ type ChatProposalAuditSnapshot struct {
 
 // PreparedChatRefine 保存 SSE 流启动前校验完毕并准备好的全部上下文。
 type PreparedChatRefine struct {
-	Mode             string // revise | ask
-	ScopeType        string // slot | inline | global | review_batch
-	Doc              *models.Document
-	CurrentRev       *models.DocumentRevision
-	Sections         []models.DocumentSectionSnapshot
-	SectionEvs       []models.SectionEvidence
-	TargetIdx        int
-	TargetSlot       doctype.SlotSpec
-	SlotSpecMap      map[string]doctype.SlotSpec
-	DocTypeBundle    *doctype.AssetBundle
-	IR               *codeir.CodeIRBundle
-	ModuleContext    *codeir.ModuleContextFacet
-	ModuleDigests    []codeir.ModuleDigestInput
-	CrossModuleGraph []codeir.CrossModuleEdge
-	ReviewComments   []models.ReviewComment
-	CommentIDs       []uint
-	InlineAnchor     *models.ReviewCommentAnchor
-	History          []llm.Message
-	UserPrompt       string
-	Session          *models.ChatSession
-	AssistantMsg     *models.ChatMessage
-	ModelName        string
-	Endpoint         llm.EndpointConfig
-	PromptMessages   []llm.Message
-	PromptNonce      string
-	RepoRoot         string
-	ScopeRoot        string
-	EnableTools      bool
-	OperatorID       uint
+	Mode              string // revise | ask
+	ScopeType         string // slot | inline | global | review_batch
+	Doc               *models.Document
+	CurrentRev        *models.DocumentRevision
+	Sections          []models.DocumentSectionSnapshot
+	SectionEvs        []models.SectionEvidence
+	TargetIdx         int
+	TargetSlot        doctype.SlotSpec
+	SlotSpecMap       map[string]doctype.SlotSpec
+	DocTypeBundle     *doctype.AssetBundle
+	IR                *codeir.CodeIRBundle
+	ModuleContext     *codeir.ModuleContextFacet
+	ModuleDigests     []codeir.ModuleDigestInput
+	CrossModuleGraph  []codeir.CrossModuleEdge
+	RefDocSnapshots   []models.TaskReferenceDocSnapshot
+	RefDocs           []refdoc.PromptDoc
+	IsWholeRepoRollup bool
+	ReviewComments    []models.ReviewComment
+	CommentIDs        []uint
+	InlineAnchor      *models.ReviewCommentAnchor
+	History           []llm.Message
+	UserPrompt        string
+	Session           *models.ChatSession
+	AssistantMsg      *models.ChatMessage
+	ModelName         string
+	Endpoint          llm.EndpointConfig
+	PromptMessages    []llm.Message
+	PromptNonce       string
+	RepoRoot          string
+	ScopeRoot         string
+	EnableTools       bool
+	OperatorID        uint
 }
 
 // ChatService 编排 Canvas Studio SSE Chat Ask 问答、单/多槽位流式协同精修、审阅批注批处理、确定性 Verifier 预览与采纳/拒绝状态机。
@@ -226,6 +232,7 @@ type ChatService struct {
 	reviewRepo  ReviewCommentRepo
 	moduleRepo  ModuleRepo
 	masterRepo  SharedMasterRepo
+	refDocSvc   *RefDocService
 	llmClient   *llm.Client
 	verifier    *verifier.Verifier
 	redactor    *security.SecretRedactor
@@ -270,6 +277,12 @@ func (s *ChatService) WithReviewCommentRepo(reviewRepo ReviewCommentRepo) *ChatS
 func (s *ChatService) WithModuleContext(moduleRepo ModuleRepo, masterRepo SharedMasterRepo) *ChatService {
 	s.moduleRepo = moduleRepo
 	s.masterRepo = masterRepo
+	return s
+}
+
+// WithRefDocService 注入架构参考文档服务，用于 Chat Ask/Refine 注入生效参考文档及 Tool-Calling 按需阅读（ADR-10）。
+func (s *ChatService) WithRefDocService(refDocSvc *RefDocService) *ChatService {
+	s.refDocSvc = refDocSvc
 	return s
 }
 
@@ -557,6 +570,24 @@ func (s *ChatService) PrepareRefine(
 		targetSlot = filterSlotSpecForScope(targetSlot, doc.Subdirectory, dtBundle.Meta, len(moduleDigests) > 0)
 	}
 
+	var (
+		refDocSnapshots   []models.TaskReferenceDocSnapshot
+		refPromptDocs     []refdoc.PromptDoc
+		isWholeRepoRollup bool
+	)
+	if s.refDocSvc != nil {
+		repoIDCopy := doc.RepoID
+		if eff, effErr := s.refDocSvc.ResolveEffectiveRefDocs(ctx, ResolveEffectiveRefDocsRequest{
+			RepoID:       &repoIDCopy,
+			Subdirectory: doc.Subdirectory,
+			DocTypeSlug:  doc.DocTypeSlug,
+		}, nil); effErr == nil && eff != nil {
+			refDocSnapshots = eff.Snapshots
+			isWholeRepoRollup = eff.IsWholeRepoRollup
+			refPromptDocs = s.refDocSvc.LoadPromptDocsFromSnapshots(refDocSnapshots)
+		}
+	}
+
 	// 准备会话及最近历史（最多 6 条）
 	sessionSlotKey := targetSlotID
 	sess, err := s.chatRepo.GetOrCreateSession(ctx, doc.ID, sessionSlotKey, operatorID, req.SessionID)
@@ -589,6 +620,7 @@ func (s *ChatService) PrepareRefine(
 		SlotID:       targetSlotID,
 		CommentIDs:   cleanCommentIDs,
 		InlineAnchor: inlineCopy,
+		RefDocs:      refDocSnapshots,
 	}})
 
 	userMsg := &models.ChatMessage{
@@ -643,7 +675,7 @@ func (s *ChatService) PrepareRefine(
 	if s.snapSvc != nil {
 		repoRoot, scopeRoot, hasFS = s.snapSvc.ResolveSandboxScope(doc.RepoID, doc.Subdirectory)
 	}
-	enableTools := hasFS || irBundle != nil
+	enableTools := hasFS || irBundle != nil || len(refPromptDocs) > 0
 
 	var promptMsgs []llm.Message
 	var promptNonce string
@@ -678,6 +710,8 @@ func (s *ChatService) PrepareRefine(
 			ModuleContext:     modCtx,
 			ModuleDigests:     moduleDigests,
 			CrossModuleGraph:  crossModuleGraph,
+			RefDocs:           refPromptDocs,
+			IsWholeRepoRollup: isWholeRepoRollup,
 			EvidenceSnippets:  evSnips,
 			InlineAnchor:      toLLMInlineAnchor(inlineCopy),
 			ReviewComments:    toLLMReviewComments(comments),
@@ -695,6 +729,8 @@ func (s *ChatService) PrepareRefine(
 			ModuleContext:     modCtx,
 			ModuleDigests:     moduleDigests,
 			CrossModuleGraph:  crossModuleGraph,
+			RefDocs:           refPromptDocs,
+			IsWholeRepoRollup: isWholeRepoRollup,
 			EvidenceSnippets:  evSnips,
 			InlineAnchor:      toLLMInlineAnchor(inlineCopy),
 			ReviewComments:    toLLMReviewComments(comments),
@@ -705,43 +741,48 @@ func (s *ChatService) PrepareRefine(
 	default:
 		// global / review_batch: 预装配 Plan 阶段消息
 		promptMsgs, promptNonce = llm.BuildReviewPlanMessages(llm.ReviewPlanPromptInput{
-			DocType:    dtBundle,
-			Sections:   buildPlanSectionSummaries(snaps),
-			Comments:   buildPlanComments(comments),
-			UserPrompt: promptText,
+			DocType:           dtBundle,
+			Sections:          buildPlanSectionSummaries(snaps),
+			Comments:          buildPlanComments(comments),
+			RefDocs:           refPromptDocs,
+			IsWholeRepoRollup: isWholeRepoRollup,
+			UserPrompt:        promptText,
 		})
 	}
 
 	return &PreparedChatRefine{
-		Mode:             mode,
-		ScopeType:        scopeType,
-		Doc:              doc,
-		CurrentRev:       curRev,
-		Sections:         snaps,
-		SectionEvs:       prevEvs,
-		TargetIdx:        targetIdx,
-		TargetSlot:       targetSlot,
-		SlotSpecMap:      slotSpecMap,
-		DocTypeBundle:    dtBundle,
-		IR:               irBundle,
-		ModuleContext:    modCtx,
-		ModuleDigests:    moduleDigests,
-		CrossModuleGraph: crossModuleGraph,
-		ReviewComments:   comments,
-		CommentIDs:       cleanCommentIDs,
-		InlineAnchor:     inlineCopy,
-		History:          history,
-		UserPrompt:       promptText,
-		Session:          sess,
-		AssistantMsg:     assistantMsg,
-		ModelName:        resolvedModelName,
-		Endpoint:         endpointCfg,
-		PromptMessages:   promptMsgs,
-		PromptNonce:      promptNonce,
-		RepoRoot:         repoRoot,
-		ScopeRoot:        scopeRoot,
-		EnableTools:      enableTools,
-		OperatorID:       operatorID,
+		Mode:              mode,
+		ScopeType:         scopeType,
+		Doc:               doc,
+		CurrentRev:        curRev,
+		Sections:          snaps,
+		SectionEvs:        prevEvs,
+		TargetIdx:         targetIdx,
+		TargetSlot:        targetSlot,
+		SlotSpecMap:       slotSpecMap,
+		DocTypeBundle:     dtBundle,
+		IR:                irBundle,
+		ModuleContext:     modCtx,
+		ModuleDigests:     moduleDigests,
+		CrossModuleGraph:  crossModuleGraph,
+		RefDocSnapshots:   refDocSnapshots,
+		RefDocs:           refPromptDocs,
+		IsWholeRepoRollup: isWholeRepoRollup,
+		ReviewComments:    comments,
+		CommentIDs:        cleanCommentIDs,
+		InlineAnchor:      inlineCopy,
+		History:           history,
+		UserPrompt:        promptText,
+		Session:           sess,
+		AssistantMsg:      assistantMsg,
+		ModelName:         resolvedModelName,
+		Endpoint:          endpointCfg,
+		PromptMessages:    promptMsgs,
+		PromptNonce:       promptNonce,
+		RepoRoot:          repoRoot,
+		ScopeRoot:         scopeRoot,
+		EnableTools:       enableTools,
+		OperatorID:        operatorID,
 	}, nil
 }
 
@@ -785,6 +826,7 @@ func (s *ChatService) ExecuteRefineStream(
 			RepoRoot:              prep.RepoRoot,
 			IR:                    prep.IR,
 			ExternalFileWhitelist: extractExternalFileWhitelist(prep.ModuleContext),
+			RefDocs:               prep.RefDocs,
 			Redactor:              s.redactor,
 		})
 	}
@@ -986,6 +1028,11 @@ func (s *ChatService) executeSingleSlotRefineStream(
 	previewBytes, _ := json.Marshal(previewVO)
 
 	citedBytes, _ := json.Marshal(persistedAnchors)
+	refCits := verifierRefCitationsToModels(verifyRes.SectionRefCitations[prep.TargetSlot.SlotID])
+	if refCits == nil {
+		refCits = []models.RefDocCitation{}
+	}
+	refCitsBytes, _ := json.Marshal(refCits)
 	addrBytes, _ := json.Marshal(prep.CommentIDs)
 	propItem := &models.ChatProposalItem{
 		MessageID:               prep.AssistantMsg.ID,
@@ -996,6 +1043,7 @@ func (s *ChatService) executeSingleSlotRefineStream(
 		ProposedAfterMD:         afterMD,
 		UnifiedDiff:             unifiedDiff,
 		CitedAnchorsJSON:        datatypes.JSON(citedBytes),
+		RefCitationsJSON:        datatypes.JSON(refCitsBytes),
 		VerifierPreviewJSON:     datatypes.JSON(previewBytes),
 		AddressedCommentIDsJSON: datatypes.JSON(addrBytes),
 		Status:                  models.ProposalStatusPending,
@@ -1194,6 +1242,8 @@ func (s *ChatService) executeBatchRefineStream(
 			ModuleContext:     prep.ModuleContext,
 			ModuleDigests:     prep.ModuleDigests,
 			CrossModuleGraph:  prep.CrossModuleGraph,
+			RefDocs:           prep.RefDocs,
+			IsWholeRepoRollup: prep.IsWholeRepoRollup,
 			EvidenceSnippets:  evSnips,
 			ReviewComments:    toLLMReviewComments(slotComments),
 			History:           prep.History,
@@ -1310,6 +1360,11 @@ func (s *ChatService) executeBatchRefineStream(
 			persistedAnchors = []models.EvidenceAnchor{}
 		}
 		citedBytes, _ := json.Marshal(persistedAnchors)
+		refCits := verifierRefCitationsToModels(verifyRes.SectionRefCitations[d.action.SlotID])
+		if refCits == nil {
+			refCits = []models.RefDocCitation{}
+		}
+		refCitsBytes, _ := json.Marshal(refCits)
 		addrBytes, _ := json.Marshal(d.action.CommentIDs)
 		item := &models.ChatProposalItem{
 			MessageID:               prep.AssistantMsg.ID,
@@ -1320,6 +1375,7 @@ func (s *ChatService) executeBatchRefineStream(
 			ProposedAfterMD:         d.afterMD,
 			UnifiedDiff:             d.unifiedDiff,
 			CitedAnchorsJSON:        datatypes.JSON(citedBytes),
+			RefCitationsJSON:        datatypes.JSON(refCitsBytes),
 			VerifierPreviewJSON:     datatypes.JSON(previewBytes),
 			AddressedCommentIDsJSON: datatypes.JSON(addrBytes),
 			Status:                  models.ProposalStatusPending,
@@ -1384,6 +1440,7 @@ func (s *ChatService) runJointVerifier(
 	citedBySlot map[string][]verifier.CitedAnchorCandidate,
 ) *verifier.VerifyResult {
 	prevAnchors := parsePrevAnchorsBySlot(prep.SectionEvs)
+	prevRefCits, _ := collectPriorRefCitationsBySlot(prep.SectionEvs)
 	secInputs := make([]verifier.SectionInput, 0, len(prep.Sections))
 	for _, sn := range prep.Sections {
 		md := sn.Markdown
@@ -1393,6 +1450,7 @@ func (s *ChatService) runJointVerifier(
 			cited = citedBySlot[sn.SlotID]
 		} else {
 			cited = evidenceAnchorsToCandidates(prevAnchors[sn.SlotID])
+			cited = append(cited, modelsRefCitationsToCandidates(prevRefCits[sn.SlotID])...)
 		}
 		secInputs = append(secInputs, verifier.SectionInput{
 			SlotID:       sn.SlotID,
@@ -1407,14 +1465,18 @@ func (s *ChatService) runJointVerifier(
 		slots = prep.DocTypeBundle.Meta.Slots
 		policy = prep.DocTypeBundle.Meta.VerifyPolicy
 	}
+	activeRefSpecs := promptDocsToVerifierSpecs(prep.RefDocs)
+	histRefSpecs := buildHistoricalRefDocSpecs(context.Background(), s.refDocSvc, prep.SectionEvs, activeRefSpecs)
 	return s.verifier.Verify(verifier.VerifyInput{
-		CommitSHA:     prep.CurrentRev.CommitSHA,
-		IR:            prep.IR,
-		ModuleContext: prep.ModuleContext,
-		ModuleDigests: prep.ModuleDigests,
-		Slots:         slots,
-		Policy:        policy,
-		Sections:      secInputs,
+		CommitSHA:         prep.CurrentRev.CommitSHA,
+		IR:                prep.IR,
+		ModuleContext:     prep.ModuleContext,
+		ModuleDigests:     prep.ModuleDigests,
+		ActiveRefDocs:     activeRefSpecs,
+		HistoricalRefDocs: histRefSpecs,
+		Slots:             slots,
+		Policy:            policy,
+		Sections:          secInputs,
 	})
 }
 
@@ -1552,6 +1614,10 @@ func (s *ChatService) ApplyProposalItems(
 		var cited []verifier.CitedAnchorCandidate
 		if len(it.CitedAnchorsJSON) > 2 {
 			_ = json.Unmarshal(it.CitedAnchorsJSON, &cited)
+		}
+		var refCits []models.RefDocCitation
+		if len(it.RefCitationsJSON) > 2 && json.Unmarshal(it.RefCitationsJSON, &refCits) == nil {
+			cited = append(cited, modelsRefCitationsToCandidates(refCits)...)
 		}
 		changes = append(changes, SectionChangeItem{
 			SlotID:       it.SlotID,
@@ -2035,6 +2101,10 @@ func toChatProposalItemVO(it models.ChatProposalItem, slotTitle string) ChatProp
 	if cids == nil {
 		cids = []uint{}
 	}
+	var refCits []models.RefDocCitation
+	if len(it.RefCitationsJSON) > 2 {
+		_ = json.Unmarshal(it.RefCitationsJSON, &refCits)
+	}
 	return ChatProposalItemVO{
 		ItemID:              it.ID,
 		MessageID:           it.MessageID,
@@ -2046,6 +2116,7 @@ func toChatProposalItemVO(it models.ChatProposalItem, slotTitle string) ChatProp
 		FinalAppliedMD:      it.FinalAppliedMD,
 		UnifiedDiff:         it.UnifiedDiff,
 		CitedAnchors:        anchors,
+		RefCitations:        refCits,
 		VerifierPreview:     parseVerifierPreviewJSON(it.VerifierPreviewJSON),
 		AddressedCommentIDs: cids,
 		Status:              it.Status,

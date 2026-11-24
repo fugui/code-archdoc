@@ -57,6 +57,7 @@ storage:
   sandbox_max_mb: 20480                 # Git 沙箱磁盘上限（生产推荐 20480 MB = 20 GB，超出触发受活跃租约保护的 LRU 回收）
   ir_cache_max_mb: 10240                # Code IR 压缩分片缓存上限（生产推荐 10240 MB = 10 GB）
   max_file_bytes: 1048576               # L1 降噪单文件体积上限（默认 1 MB，过滤超大单文件与二进制）
+  ref_doc_max_bytes: 524288             # 架构参考 Markdown 文档单篇体积上限（默认 512 KB，ADR-10）
   reap_interval_mins: 10                # 后台磁盘配额巡检周期（分钟，生产推荐 10~15）
 
 # ── 任务调度与 LLM 并发控制配置 (F-05 / F-27) ──

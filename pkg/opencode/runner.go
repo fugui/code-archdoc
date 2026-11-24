@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"code-archdoc/pkg/codeir"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/verifier"
 )
 
@@ -100,6 +101,8 @@ type DocGenRequest struct {
 	ModuleContext          *codeir.ModuleContextFacet
 	ModuleDigests          []codeir.ModuleDigestInput
 	CrossModuleGraph       []codeir.CrossModuleEdge
+	RefDocs                []refdoc.PromptDoc
+	IsWholeRepoRollup      bool
 	ModelName              string
 	BaseURL                string
 	APIKey                 string // 仅写入 0600 临时配置文件，绝不进 argv/env/日志
@@ -392,7 +395,7 @@ func (r *Runner) GenerateDocument(ctx context.Context, req DocGenRequest) (*DocG
 	}
 
 	startedAt := time.Now()
-	promptText := BuildDocumentPrompt(req)
+	promptText := buildDocumentPromptWithEnv(req, isV2, sessEnv.CanonicalRefDir, sessEnv.StagedRefFiles)
 
 	outcome1 := runOpenCodeProcess(ctx, processRunSpec{
 		BinaryPath:   probe.BinaryPath,

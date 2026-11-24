@@ -87,10 +87,22 @@ func main() {
 	chatStore := models.NewChatStore(models.DB)
 	reviewStore := models.NewReviewCommentStore(models.DB)
 	moduleStore := models.NewModuleStore(models.DB)
+	refDocStore := models.NewReferenceDocStore(models.DB)
 
 	rbacSvc := services.NewRBACService(masterStore)
+	refDocSvc, err := services.NewRefDocService(
+		refDocStore,
+		masterStore,
+		rbacSvc,
+		config.AppConfig.Storage.RefDocsDir(),
+		config.AppConfig.Storage.EffectiveRefDocMaxBytes(),
+	)
+	if err != nil {
+		log.Fatalf("[%s] 初始化参考文档服务失败: %v", config.ServiceName, err)
+	}
 	repoSvc := services.NewRepoService(masterStore, docStore, snapStore, taskStore, driftStore, rbacSvc).
-		WithModuleRepo(moduleStore)
+		WithModuleRepo(moduleStore).
+		WithRefDocRepo(refDocStore)
 	llmSvc := services.NewLLMConfigService(govStore).
 		WithDocTypeRepo(docTypeStore).
 		WithUserAgent(llmUserAgent)
@@ -146,7 +158,8 @@ func main() {
 	}
 	revSvc := services.NewRevisionService(docStore, docTypeStore, masterStore, driftStore, snapSvc).
 		WithModuleContext(moduleStore).
-		WithReviewHooks(chatStore, reviewStore)
+		WithReviewHooks(chatStore, reviewStore).
+		WithRefDocService(refDocSvc)
 	previewSvc := services.NewSourcePreviewService(docStore, masterStore, services.DefaultGitSyncer{}, irAggregator, config.AppConfig.Storage.SandboxDir()).
 		WithLeaseManager(leaseMgr).
 		WithSnapshotService(snapSvc)
@@ -183,10 +196,12 @@ func main() {
 		}
 	})
 	genSvc.WithModuleGovernance(moduleStore, moduleSvc, rbacSvc).
-		WithReviewCommentRepo(reviewStore)
+		WithReviewCommentRepo(reviewStore).
+		WithRefDocService(refDocSvc)
 	chatSvc := services.NewChatService(chatStore, docStore, docTypeStore, docTypeSvc, govStore, revSvc, snapSvc, previewSvc, llmClient).
 		WithReviewCommentRepo(reviewStore).
-		WithModuleContext(moduleStore, masterStore)
+		WithModuleContext(moduleStore, masterStore).
+		WithRefDocService(refDocSvc)
 	reviewSvc := services.NewReviewCommentService(reviewStore, docStore)
 	metricsSvc := services.NewQualityMetricsService(govStore, docTypeStore)
 	branchSvc := services.NewBranchService(masterStore, moduleStore, docStore, taskStore, driftStore, driftSvc, services.DefaultRemoteBranchFetcher{})
@@ -223,6 +238,7 @@ func main() {
 	appHandlers := handlers.NewAppHandlers(rbacSvc, repoSvc, llmSvc, docTypeSvc, genSvc).
 		WithBranchService(branchSvc).
 		WithModuleService(moduleSvc).
+		WithRefDocService(refDocSvc).
 		WithDocumentServices(revSvc, previewSvc, publishSvc).
 		WithChatService(chatSvc).
 		WithReviewCommentService(reviewSvc).

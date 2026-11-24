@@ -27,6 +27,7 @@ type AppHandlers struct {
 	pollerSvc  *services.RemoteHeadPoller
 	metricsSvc *services.QualityMetricsService
 	reaperSvc  *services.ResourceReaper
+	refDocSvc  *services.RefDocService
 }
 
 // NewAppHandlers 构造处理器聚合对象。
@@ -79,6 +80,12 @@ func (h *AppHandlers) WithModuleService(moduleSvc *services.ModuleService) *AppH
 // WithBranchService 注入单仓目标分支发现与无损切换服务（M13 / ADR-07）。
 func (h *AppHandlers) WithBranchService(branchSvc *services.BranchService) *AppHandlers {
 	h.branchSvc = branchSvc
+	return h
+}
+
+// WithRefDocService 注入架构参考文档管理与四层继承解析服务（M16 / ADR-10）。
+func (h *AppHandlers) WithRefDocService(refDocSvc *services.RefDocService) *AppHandlers {
+	h.refDocSvc = refDocSvc
 	return h
 }
 
@@ -139,6 +146,16 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.POST("/repos/:repo_id/modules/refresh", h.RefreshRepoModules)
 			protected.PATCH("/repos/:repo_id/modules/:module_id/status", h.UpdateRepoModuleStatus)
 			protected.POST("/repos/:repo_id/modules/migrate", h.MigrateRepoModule)
+		}
+		if h.refDocSvc != nil {
+			protected.GET("/ref-docs", h.ListRefDocs)
+			protected.GET("/ref-docs/effective", h.GetEffectiveRefDocs)
+			protected.GET("/ref-docs/:id", h.GetRefDocDetail)
+			protected.POST("/ref-docs", h.CreateRefDoc)
+			protected.PUT("/ref-docs/:id", h.UpdateRefDoc)
+			protected.POST("/ref-docs/:id/bindings", h.CreateRefDocBinding)
+			protected.PATCH("/ref-docs/:id/bindings/:binding_id", h.UpdateRefDocBinding)
+			protected.DELETE("/ref-docs/:id/bindings/:binding_id", h.DeleteRefDocBinding)
 		}
 
 		// 域 2：可管理文档类型注册表 W1 只读查询 (F-03)
@@ -244,6 +261,9 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			if h.reaperSvc != nil {
 				admin.GET("/storage/stats", h.GetAdminStorageStats)
 				admin.POST("/storage/reap", h.TriggerAdminStorageReap)
+			}
+			if h.refDocSvc != nil {
+				admin.DELETE("/ref-docs/:id/purge", h.PurgeRefDoc)
 			}
 		}
 	}

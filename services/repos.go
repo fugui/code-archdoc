@@ -17,8 +17,28 @@ type SharedMasterRepo interface {
 	ListArchElementsByRepo(ctx context.Context, repoID uint) ([]models.ArchitectureElement, error)
 	ListArchElementsByRepos(ctx context.Context, repoIDs []uint) ([]models.ArchitectureElement, error)
 	ListAllArchElements(ctx context.Context) ([]models.ArchitectureElement, error)
+	GetArchElement(ctx context.Context, id uint) (*models.ArchitectureElement, error)
+	GetRepositoriesByIDs(ctx context.Context, ids []uint) (map[uint]commonModels.Repository, error)
 	FindArchElementsByRepoAndOwner(ctx context.Context, repoID, ownerID uint) ([]models.ArchitectureElement, error)
 	GetUsersByIDs(ctx context.Context, ids []uint) (map[uint]commonModels.User, error)
+}
+
+// ReferenceDocRepo 管理 archdoc_reference_docs 与 archdoc_reference_bindings（ADR-10）
+type ReferenceDocRepo interface {
+	CreateWithHomeBinding(ctx context.Context, doc *models.ReferenceDoc, homeBinding *models.ReferenceDocBinding) error
+	GetByID(ctx context.Context, docID uint) (*models.ReferenceDoc, error)
+	ListDocs(ctx context.Context, filter models.RefDocListFilter) ([]models.ReferenceDoc, int64, error)
+	UpdateDocWithVersion(ctx context.Context, docID uint, expectedVersion int, updates map[string]any) (*models.ReferenceDoc, error)
+	UpdateDocAndTransferHomeWithVersion(ctx context.Context, docID uint, expectedVersion int, updates map[string]any, newHome *models.ReferenceDocBinding) (*models.ReferenceDoc, error)
+	UpdateLLMSummaryIfCurrent(ctx context.Context, docID uint, versionNo int, summaryMD string) error
+	ListBindingsByDocID(ctx context.Context, docID uint) ([]models.ReferenceDocBinding, error)
+	ListBindingsByDocIDs(ctx context.Context, docIDs []uint) (map[uint][]models.ReferenceDocBinding, error)
+	ListAllActiveDocsAndBindings(ctx context.Context) ([]models.ReferenceDoc, []models.ReferenceDocBinding, error)
+	CreateBinding(ctx context.Context, binding *models.ReferenceDocBinding) error
+	GetBindingByID(ctx context.Context, docID, bindingID uint) (*models.ReferenceDocBinding, error)
+	UpdateBinding(ctx context.Context, docID, bindingID uint, updates map[string]any) (*models.ReferenceDocBinding, error)
+	DeleteBinding(ctx context.Context, docID, bindingID uint) error
+	PurgeDoc(ctx context.Context, docID uint) error
 }
 
 // DocTypeRepo 管理 archdoc_doc_types 与 archdoc_doc_type_revisions

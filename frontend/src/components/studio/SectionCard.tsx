@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   Check,
   Code2,
   Edit3,
@@ -11,12 +12,14 @@ import {
 } from 'lucide-react';
 import type {
   EvidenceAnchor,
+  RefDocCitationVO,
   ReviewCommentAnchor,
   ReviewCommentVO,
   SectionOwnership,
   SectionVO,
 } from '../../types';
 import { buildInlineAnchorFromText } from '../../utils/reviewAnchor';
+import { formatRefCitationBadgeLabel } from '../../utils/refDocUtils';
 import type { EvidenceDeepLinkParams } from '../../utils/urlQuery';
 import SectionInlineEditor from './SectionInlineEditor';
 import SectionMarkdownRenderer from './SectionMarkdownRenderer';
@@ -41,6 +44,7 @@ export interface SectionCardProps {
   onReloadDocument: () => Promise<void>;
   onInspectEvidence: (anchor: EvidenceAnchor) => void;
   onInspectEvidenceLink: (params: { docId: number } & EvidenceDeepLinkParams) => void;
+  onInspectRefCitation?: (citation: RefDocCitationVO) => void;
   onOpenChatRefine?: (slotId: string) => void;
   onAnnotateBlock?: (slotId: string, anchor: ReviewCommentAnchor) => void;
   onSelectReviewComment?: (comment: ReviewCommentVO) => void;
@@ -68,6 +72,7 @@ export const SectionCard: React.FC<SectionCardProps> = ({
   onReloadDocument,
   onInspectEvidence,
   onInspectEvidenceLink,
+  onInspectRefCitation,
   onOpenChatRefine,
   onAnnotateBlock,
   onSelectReviewComment,
@@ -346,6 +351,32 @@ export const SectionCard: React.FC<SectionCardProps> = ({
                 {ev.fq_symbol && (
                   <span className="code-archdoc-evidence-chip-sym">{ev.fq_symbol}</span>
                 )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 架构参考文档引用徽章（严格与真实源码证据分离展示，ADR-10） */}
+      {section.ref_citations && section.ref_citations.length > 0 && (
+        <div className="code-archdoc-refcitation-bar">
+          <span className="code-archdoc-evidence-bar-label">
+            <BookOpen size={13} />
+            <span>参考依据 ({section.ref_citations.length})</span>
+          </span>
+          <div className="code-archdoc-evidence-chips">
+            {section.ref_citations.map((cit) => (
+              <button
+                key={cit.citation_key}
+                type="button"
+                className={`code-archdoc-refcitation-chip ${
+                  cit.stale ? 'code-archdoc-refcitation-chip--stale' : ''
+                }`}
+                onClick={() => onInspectRefCitation?.(cit)}
+                title={formatRefCitationBadgeLabel(cit)}
+              >
+                <BookOpen size={11} />
+                <span>{formatRefCitationBadgeLabel(cit)}</span>
               </button>
             ))}
           </div>

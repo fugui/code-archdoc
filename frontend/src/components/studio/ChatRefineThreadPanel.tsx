@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   HelpCircle,
   Loader2,
   Lock,
@@ -28,6 +29,7 @@ import type {
 import type { ChatRefineStageName } from '../../types/sse';
 import DiffProposalCard from './DiffProposalCard';
 import ProposalGroupCard from './ProposalGroupCard';
+import { citationToPreviewTarget, type RefDocPreviewTarget } from './RefDocPreviewDrawer';
 
 export interface ActiveThreadStreamingState {
   sessionId?: number;
@@ -81,6 +83,7 @@ export interface ChatRefineThreadPanelProps {
   onRejectProposal: (messageId: number) => Promise<void>;
   onRejectProposalItem: (itemId: number) => Promise<void>;
   onReloadDocument: () => Promise<void>;
+  onInspectRefDoc?: (target: RefDocPreviewTarget) => void;
 }
 
 const STAGE_LABELS: Record<ChatRefineStageName, string> = {
@@ -115,6 +118,7 @@ export const ChatRefineThreadPanel: React.FC<ChatRefineThreadPanelProps> = ({
   onRejectProposal,
   onRejectProposalItem,
   onReloadDocument,
+  onInspectRefDoc,
 }) => {
   const [prompt, setPrompt] = useState<string>('');
 
@@ -308,6 +312,35 @@ export const ChatRefineThreadPanel: React.FC<ChatRefineThreadPanelProps> = ({
                     <div className="code-archdoc-chat-bubble-text">{msg.content}</div>
                   )}
 
+                  {msg.role === 'assistant' &&
+                    msg.context_refs &&
+                    msg.context_refs.some((cr) => cr.ref_docs && cr.ref_docs.length > 0) && (
+                      <div className="code-archdoc-chat-refdocs-row">
+                        <span className="text-muted">已参考：</span>
+                        {msg.context_refs
+                          .flatMap((cr) => cr.ref_docs ?? [])
+                          .map((rd) => (
+                            <button
+                              key={`${msg.id}-rd-${rd.doc_id}-${rd.version_no}`}
+                              type="button"
+                              className="code-archdoc-refcitation-chip"
+                              onClick={() =>
+                                onInspectRefDoc?.({
+                                  docId: rd.doc_id,
+                                  versionNo: rd.version_no,
+                                  docTitle: rd.title,
+                                })
+                              }
+                            >
+                              <BookOpen size={11} />
+                              <span>
+                                {rd.title} v{rd.version_no}
+                              </span>
+                            </button>
+                          ))}
+                      </div>
+                    )}
+
                   {hasGroupItems && msg.proposal_items && (
                     <ProposalGroupCard
                       messageId={msg.id}
@@ -324,6 +357,9 @@ export const ChatRefineThreadPanel: React.FC<ChatRefineThreadPanelProps> = ({
                       onRejectItem={onRejectProposalItem}
                       onRejectAll={onRejectProposal}
                       onReloadDocument={onReloadDocument}
+                      onInspectRefCitation={(cit) =>
+                        onInspectRefDoc?.(citationToPreviewTarget(cit))
+                      }
                     />
                   )}
 

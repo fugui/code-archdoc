@@ -13,10 +13,10 @@ import (
 	"gorm.io/datatypes"
 )
 
-func TestAll20TablesPrefixAndAutoMigrate(t *testing.T) {
+func TestAll22TablesPrefixAndAutoMigrate(t *testing.T) {
 	ownModels := AllOwnModels()
-	if len(ownModels) != 20 {
-		t.Fatalf("期望自有 GORM 模型数量为 20，实际为 %d", len(ownModels))
+	if len(ownModels) != 22 {
+		t.Fatalf("期望自有 GORM 模型数量为 22，实际为 %d", len(ownModels))
 	}
 
 	seen := make(map[string]bool, len(ownModels))
@@ -129,6 +129,15 @@ func TestEnumsAndTaskStateMachine(t *testing.T) {
 	}
 	if !IsValidEngine(EngineNative) || !IsValidEngine(EngineOpenCode) || IsValidEngine("copilot") {
 		t.Fatal("GenEngine 校验失败")
+	}
+	if !IsValidRefDocScopeLevel(RefDocScopeSystem) || !IsValidRefDocScopeLevel(RefDocScopeModule) || IsValidRefDocScopeLevel("org") {
+		t.Fatal("RefDocScopeLevel 校验失败")
+	}
+	if RefDocScopeRank(RefDocScopeSystem) != 1 || RefDocScopeRank(RefDocScopeSubsystem) != 2 || RefDocScopeRank(RefDocScopeGroup) != 3 || RefDocScopeRank(RefDocScopeRepo) != 4 || RefDocScopeRank(RefDocScopeModule) != 5 {
+		t.Fatal("RefDocScopeRank 权重序校验失败")
+	}
+	if !IsValidRefDocKind(RefDocKindArchDesign) || !IsValidRefDocKind(RefDocKindDomainGlossary) || IsValidRefDocKind("unknown") {
+		t.Fatal("RefDocKind 校验失败")
 	}
 	if NormalizeEngine(" OpenCode ") != EngineOpenCode || NormalizeEngine("") != EngineNative || NormalizeEngine("bogus") != EngineNative {
 		t.Fatal("NormalizeEngine 归一化校验失败")
@@ -404,5 +413,70 @@ func TestMigrateLegacyInactiveLLMAndRepairInconsistentDefault(t *testing.T) {
 	}
 	if !gotActiveDefault.IsDefault || !gotActiveDefault.IsActive {
 		t.Fatalf("正常已启用默认模型不应被清除默认标记: %+v", gotActiveDefault)
+	}
+}
+
+func TestReferenceDocStoreOptimisticLockAndBindings(t *testing.T) {
+	db := testdb.SetupIsolatedDB(t, config.ModuleKey)
+	if err := SetupTestDB(t, db); err != nil {
+		t.Fatalf("SetupTestDB 失败: %v", err)
+	}
+
+	store := NewReferenceDocStore(db)
+	ctx := context.Background()
+
+	doc := &ReferenceDoc{
+		Title:           "全系统总体架构",
+		DocKind:         RefDocKindArchDesign,
+		OwnerScopeKey:   "system",
+		OwnerScopeLevel: RefDocScopeSystem,
+		CurrentVersion:  1,
+		Status:          RefDocStatusActive,
+		CreatedBy:       1,
+		UpdatedBy:       1,
+	}
+	home := &ReferenceDocBinding{
+		ScopeKey:          "system",
+		ScopeLevel:        RefDocScopeSystem,
+		InheritToChildren: true,
+		CreatedBy:         1,
+	}
+	if err := store.CreateWithHomeBinding(ctx, doc, home); err != nil {
+		t.Fatalf("CreateWithHomeBinding 失败: %v", err)
+	}
+	if !home.IsHome || doc.ID == 0 {
+		t.Fatalf("主绑定未标记 IsHome 或 DocID 为 0: doc=%+v home=%+v", doc, home)
+	}
+
+	// 重复绑定同一 scope_key 返回 ErrAlreadyBound
+	if err := store.CreateBinding(ctx, &ReferenceDocBinding{
+		DocID:      doc.ID,
+		ScopeKey:   "system",
+		ScopeLevel: RefDocScopeSystem,
+		CreatedBy:  1,
+	}); !errors.Is(err, ErrAlreadyBound) {
+		t.Fatalf("期望重复绑定返回 ErrAlreadyBound，实际: %v", err)
+	}
+
+	// active 下删除 is_home 返回 ErrHomeBindingProtected
+	if err := store.DeleteBinding(ctx, doc.ID, home.ID); !errors.Is(err, ErrHomeBindingProtected) {
+		t.Fatalf("期望 active 下删 is_home 返回 ErrHomeBindingProtected，实际: %v", err)
+	}
+
+	// 乐观锁更新：错误版本返 ErrVersionConflict，正确版本成功递增
+	if _, err := store.UpdateDocWithVersion(ctx, doc.ID, 2, map[string]any{"title": "冲突"}); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("期望错版本返 ErrVersionConflict，实际: %v", err)
+	}
+	updated, err := store.UpdateDocWithVersion(ctx, doc.ID, 1, map[string]any{"current_version": 2, "title": "v2"})
+	if err != nil || updated.CurrentVersion != 2 {
+		t.Fatalf("期望版本更新成功至 2，实际: updated=%+v err=%v", updated, err)
+	}
+
+	// PurgeDoc 物理删库
+	if err := store.PurgeDoc(ctx, doc.ID); err != nil {
+		t.Fatalf("PurgeDoc 失败: %v", err)
+	}
+	if _, err := store.GetByID(ctx, doc.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("PurgeDoc 后期望返回 ErrNotFound，实际: %v", err)
 	}
 }

@@ -221,6 +221,58 @@ export function formatApiError(err: unknown, fallback = '操作失败，请稍�
           code: err.code,
           status: err.status,
         };
+      case 'HOME_BINDING_PROTECTED':
+        return {
+          title: '受保护的主归属绑定',
+          message:
+            err.rawMessage || '活跃参考文档的唯一主归属绑定受防孤儿保护，请先转移归属作用域或归档后再删除。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'VERSION_CONFLICT':
+        return {
+          title: '参考文档版本冲突',
+          message: err.rawMessage || '服务端参考文档已更新至新版本，请刷新最新内容后再保存。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'ALREADY_BOUND':
+        return {
+          title: '作用域重复绑定',
+          message: err.rawMessage || '该参考文档已绑定到当前目标作用域，无需重复绑定。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'PAYLOAD_TOO_LARGE':
+        return {
+          title: '文档体积超出上限',
+          message: err.rawMessage || '参考文档单篇正文大小超出服务端配置上限（默认 512KB），请精简后重试。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'INLINE_BASE64_IMAGE':
+        return {
+          title: '禁止内联大体积 Base64 图片',
+          message: err.rawMessage || '参考文档正文包含超大 Base64 Data URI，请改用外链或精简图表文本。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'SECRET_DETECTED':
+        return {
+          title: '检出高危明文凭据（已硬阻断）',
+          message:
+            err.rawMessage || '参考文档包含私钥、固定前缀令牌或带密码 URL 等高危明文凭据，请手工彻底脱敏后重新保存。',
+          code: err.code,
+          status: err.status,
+        };
+      case 'SECRET_CONFIRM_REQUIRED':
+        return {
+          title: '检测到疑似敏感片段，请确认处理方式',
+          message:
+            err.rawMessage || '文本包含疑似密钥赋值或高熵字符串，可点击“自动脱敏并保存”或手动清理后提交。',
+          code: err.code,
+          status: err.status,
+        };
       default:
         return {
           title: '请求执行失败',

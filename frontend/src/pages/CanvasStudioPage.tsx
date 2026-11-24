@@ -23,6 +23,10 @@ import GenerateTaskModal from '../components/GenerateTaskModal';
 import LeftDocTreePanel from '../components/studio/LeftDocTreePanel';
 import OrphanSectionsZone from '../components/studio/OrphanSectionsZone';
 import RightUtilityDrawer, { type RightDrawerTab } from '../components/studio/RightUtilityDrawer';
+import RefDocPreviewDrawer, {
+  type RefDocPreviewTarget,
+  citationToPreviewTarget,
+} from '../components/studio/RefDocPreviewDrawer';
 import type { ReviewDraftContext } from '../components/studio/ReviewBasketPanel';
 import SectionCard from '../components/studio/SectionCard';
 import StudioTopBar from '../components/studio/StudioTopBar';
@@ -93,6 +97,10 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
   const [wideDrawer, setWideDrawer] = useState<boolean>(false);
   const [drawerTab, setDrawerTab] = useState<RightDrawerTab>('evidence');
   const [evidenceRequest, setEvidenceRequest] = useState<EvidenceInspectRequest | null>(null);
+  const [refDocPreview, setRefDocPreview] = useState<{
+    open: boolean;
+    target: RefDocPreviewTarget | null;
+  }>({ open: false, target: null });
   const [chatTargetSlotId, setChatTargetSlotId] = useState<string>('');
   const [chatSubTab, setChatSubTab] = useState<'basket' | 'chat'>('chat');
   const [chatMode, setChatMode] = useState<ChatIntentMode>('revise');
@@ -761,6 +769,9 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
                   onReloadDocument={loadStudioData}
                   onInspectEvidence={handleInspectEvidence}
                   onInspectEvidenceLink={handleInspectEvidenceLink}
+                  onInspectRefCitation={(cit) =>
+                    setRefDocPreview({ open: true, target: citationToPreviewTarget(cit) })
+                  }
                   onOpenChatRefine={(slotId) =>
                     handleOpenChatForReview(slotId, { subTab: 'chat', mode: 'revise' })
                   }
@@ -802,9 +813,16 @@ export const CanvasStudioPage: React.FC<CanvasStudioPageProps> = ({
             onSelectCommentOnCanvas={handleSelectReviewComment}
             onClearDraftContext={() => setReviewDraftContext(null)}
             onAppliedProposal={handleAppliedProposal}
+            onInspectRefDoc={(target) => setRefDocPreview({ open: true, target })}
           />
         )}
       </div>
+
+      <RefDocPreviewDrawer
+        open={refDocPreview.open}
+        target={refDocPreview.target}
+        onClose={() => setRefDocPreview({ open: false, target: null })}
+      />
 
       {/* 重新生成 / 新增文档类型弹窗 */}
       <GenerateTaskModal

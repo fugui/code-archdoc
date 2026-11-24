@@ -13,6 +13,9 @@ var (
 	ErrDocTypeInUse           = errors.New("该文档类型已被已发布文档引用，禁止物理删除")
 	ErrMigrationConflict      = errors.New("目标模块范围已存在同名文档或存在运行中任务，迁移已取消")
 	ErrReviewCommentConflict  = errors.New("当前批注已关联提案或已采纳解决，仅允许撤回或删除草稿态批注")
+	ErrVersionConflict        = errors.New("参考文档版本号已过期，请刷新后重试")
+	ErrAlreadyBound           = errors.New("该参考文档已绑定至当前作用域")
+	ErrHomeBindingProtected   = errors.New("活跃参考文档的归属主绑定不可直接解绑，请先归档或转移归属")
 )
 
 // FacetName 枚举（9 大 Canonical Code IR 分片 + 第 10 个派生分片 module_context）
@@ -316,4 +319,67 @@ func NormalizeEngine(raw string) string {
 		return v
 	}
 	return EngineNative
+}
+
+// ReferenceDoc 作用域、分类、状态与摘要枚举（ADR-10）
+const (
+	RefDocScopeSystem    = "system"
+	RefDocScopeSubsystem = "subsystem"
+	RefDocScopeGroup     = "group"
+	RefDocScopeRepo      = "repo"
+	RefDocScopeModule    = "module"
+
+	RefDocKindArchDesign     = "arch_design"
+	RefDocKindDomainGlossary = "domain_glossary"
+	RefDocKindInterfaceSpec  = "interface_spec"
+	RefDocKindADRConstraint  = "adr_constraint"
+	RefDocKindOther          = "other"
+
+	RefDocStatusActive   = "active"
+	RefDocStatusArchived = "archived"
+
+	RefDocSummarySourceManual   = "manual"
+	RefDocSummarySourceLLM      = "llm"
+	RefDocSummarySourceFallback = "fallback"
+
+	RefDocSummaryStatusReady   = "ready"
+	RefDocSummaryStatusPending = "pending"
+	RefDocSummaryStatusFailed  = "failed"
+
+	RefDocVisibilityPublic = "public"
+)
+
+// RefDocScopeRank 返回参考文档作用域从宏观到具体的规范权重序（system=1..module=5）。
+func RefDocScopeRank(level string) int {
+	switch strings.TrimSpace(level) {
+	case RefDocScopeSystem:
+		return 1
+	case RefDocScopeSubsystem:
+		return 2
+	case RefDocScopeGroup:
+		return 3
+	case RefDocScopeRepo:
+		return 4
+	case RefDocScopeModule:
+		return 5
+	default:
+		return 0
+	}
+}
+
+func IsValidRefDocScopeLevel(level string) bool {
+	return RefDocScopeRank(level) > 0
+}
+
+func IsValidRefDocKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case RefDocKindArchDesign, RefDocKindDomainGlossary, RefDocKindInterfaceSpec, RefDocKindADRConstraint, RefDocKindOther:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsValidRefDocStatus(status string) bool {
+	return status == RefDocStatusActive || status == RefDocStatusArchived
 }

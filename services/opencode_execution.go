@@ -14,6 +14,7 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/opencode"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/verifier"
 	commonModels "code-common/backend/models"
@@ -106,6 +107,7 @@ type docTypeExecPlan struct {
 	priorOrdered     []models.DocumentSectionSnapshot
 	priorSections    map[string]models.DocumentSectionSnapshot
 	priorEvAnchors   map[string][]models.EvidenceAnchor
+	priorEvRows      []models.SectionEvidence
 	moduleDigests    []codeir.ModuleDigestInput
 	crossModuleGraph []codeir.CrossModuleEdge
 	reviewGuidance   map[string][]string
@@ -127,6 +129,8 @@ func (o *GenerationOrchestrator) executeOpenCodeDocPlans(
 ) (completedSlots int, failedSlots int) {
 	ocCfg := config.AppConfig.OpenCode
 	doneCount := 0
+	_, refPromptDocs := o.resolveTaskPromptDocs(task)
+	wholeRepoRollup := o.isWholeRepoRollup(dbCtx, repo.ID, task.Subdirectory)
 
 	for _, p := range plans {
 		var (
@@ -221,6 +225,8 @@ func (o *GenerationOrchestrator) executeOpenCodeDocPlans(
 			ModuleContext:          modCtxForCall,
 			ModuleDigests:          p.moduleDigests,
 			CrossModuleGraph:       p.crossModuleGraph,
+			RefDocs:                refPromptDocs,
+			IsWholeRepoRollup:      wholeRepoRollup,
 			ModelName:              epCfg.ModelName,
 			BaseURL:                epCfg.BaseURL,
 			APIKey:                 epCfg.APIKey,
@@ -306,6 +312,8 @@ func (o *GenerationOrchestrator) executeOpenCodeIncrementalRefresh(
 	glossary *codeir.GlossaryCache,
 	moduleDigests []codeir.ModuleDigestInput,
 	crossModuleGraph []codeir.CrossModuleEdge,
+	refPromptDocs []refdoc.PromptDoc,
+	wholeRepoRollup bool,
 	priorBySlot map[string]models.DocumentSectionSnapshot,
 	reviewGuidanceMap map[string][]string,
 	llmSet *resolvedLLMEndpoints,
@@ -394,6 +402,8 @@ func (o *GenerationOrchestrator) executeOpenCodeIncrementalRefresh(
 		ModuleContext:          modCtxForCall,
 		ModuleDigests:          moduleDigests,
 		CrossModuleGraph:       crossModuleGraph,
+		RefDocs:                refPromptDocs,
+		IsWholeRepoRollup:      wholeRepoRollup,
 		ModelName:              epCfg.ModelName,
 		BaseURL:                epCfg.BaseURL,
 		APIKey:                 epCfg.APIKey,
@@ -471,6 +481,8 @@ func (o *GenerationOrchestrator) executeOpenCodeSlotRetry(
 	glossary *codeir.GlossaryCache,
 	moduleDigests []codeir.ModuleDigestInput,
 	crossModuleGraph []codeir.CrossModuleEdge,
+	refPromptDocs []refdoc.PromptDoc,
+	wholeRepoRollup bool,
 	priorHybridMD string,
 	reviewGuidance []string,
 	epCfg llm.EndpointConfig,
@@ -526,6 +538,8 @@ func (o *GenerationOrchestrator) executeOpenCodeSlotRetry(
 		ModuleContext:          modCtxForCall,
 		ModuleDigests:          moduleDigests,
 		CrossModuleGraph:       crossModuleGraph,
+		RefDocs:                refPromptDocs,
+		IsWholeRepoRollup:      wholeRepoRollup,
 		ModelName:              epCfg.ModelName,
 		BaseURL:                epCfg.BaseURL,
 		APIKey:                 epCfg.APIKey,

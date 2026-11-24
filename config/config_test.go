@@ -25,8 +25,11 @@ func TestLoadConfigDefaultsAndOverrides(t *testing.T) {
 	if AppConfig.Storage.EffectivePublishDir() != filepath.Join("./data", "publish_dir") {
 		t.Fatalf("期望默认 PublishDir=./data/publish_dir，实际为 %q", AppConfig.Storage.EffectivePublishDir())
 	}
-	if AppConfig.Storage.SandboxMaxMB != 20480 || AppConfig.Storage.IRCacheMaxMB != 10240 || AppConfig.Storage.MaxFileBytes != 1048576 || AppConfig.Storage.ReapIntervalMins != 10 {
+	if AppConfig.Storage.SandboxMaxMB != 20480 || AppConfig.Storage.IRCacheMaxMB != 10240 || AppConfig.Storage.MaxFileBytes != 1048576 || AppConfig.Storage.ReapIntervalMins != 10 || AppConfig.Storage.EffectiveRefDocMaxBytes() != 524288 {
 		t.Fatalf("Storage 默认值异常: %+v", AppConfig.Storage)
+	}
+	if AppConfig.Storage.RefDocsDir() != filepath.Join("./data", "ref_docs") {
+		t.Fatalf("期望默认 RefDocsDir=./data/ref_docs，实际为 %q", AppConfig.Storage.RefDocsDir())
 	}
 	if AppConfig.Scheduler.MaxLLMConcurrency != 8 || AppConfig.Scheduler.MaxUserConcurrency != 2 || AppConfig.Scheduler.InteractiveQueueCap != 64 || AppConfig.Scheduler.BatchQueueCap != 256 {
 		t.Fatalf("Scheduler 默认值异常: %+v", AppConfig.Scheduler)

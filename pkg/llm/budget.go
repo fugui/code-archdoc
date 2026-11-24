@@ -6,10 +6,11 @@ import (
 	"math"
 	"path"
 	"sort"
-	"unicode"
+	"strings"
 
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/doctype"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/sandbox"
 )
 
@@ -44,11 +45,13 @@ type BudgetAdvice struct {
 
 // BudgetCheckInput 确定性预算预检入参。
 type BudgetCheckInput struct {
-	IR               *codeir.CodeIRBundle
-	DocTypes         []*doctype.AssetBundle
-	GlossaryCached   bool
-	MaxTokensPerTask int
-	MaxFilesPerTask  int
+	IR                *codeir.CodeIRBundle
+	DocTypes          []*doctype.AssetBundle
+	GlossaryCached    bool
+	MaxTokensPerTask  int
+	MaxFilesPerTask   int
+	RefDocs           []refdoc.PromptDoc
+	IsWholeRepoRollup bool
 	// LockedSlotsByDoc 可选：记录已存在历史内容且被锁定的槽位（跳过不计入预算）
 	LockedSlotsByDoc map[string]map[string]bool
 }
@@ -61,21 +64,9 @@ type BudgetCheckResult struct {
 	Advice       BudgetAdvice
 }
 
-// EstimateTextTokens 保守 Token 估算：中文/非 ASCII 1.5 char/token，英文/代码 3.5 char/token（零 LLM 调用）。
+// EstimateTextTokens 委托调用叶包 refdoc.EstimateTextTokens，保证全链路 Token 估算单源一致且零循环依赖。
 func EstimateTextTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	var asciiCount, nonASCIICount float64
-	for _, r := range s {
-		if r <= unicode.MaxASCII {
-			asciiCount++
-		} else {
-			nonASCIICount++
-		}
-	}
-	est := asciiCount/3.5 + nonASCIICount/1.5
-	return int(math.Ceil(est))
+	return refdoc.EstimateTextTokens(s)
 }
 
 // EstimateAndCheckBudget 在发出首次 LLM HTTP 请求之前执行文件数与 Token 规模预检（SC-09）。
@@ -115,9 +106,11 @@ func EstimateAndCheckBudget(in BudgetCheckInput) BudgetCheckResult {
 		glossaryTokens = facetTokens[codeir.FacetTree] + facetTokens[codeir.FacetDeps] + modCount*400
 	}
 
-	// 4. 逐 DocType 与活跃槽位累加预估 Token
+	// 4. 逐 DocType 与活跃槽位累加预估 Token（纳入参考文档 L0 共享前缀与非工具槽位摘录预算）
 	const glossaryPromptOverhead = 600
 	const slotExpectedOutputTokens = 1200
+
+	_, refFullyInlined, refL0Tokens := FormatRefDocsL0Block(in.RefDocs, in.IsWholeRepoRollup)
 
 	totalSlotsTokens := 0
 	docTypeItems := make([]BudgetDocTypeItem, 0, len(in.DocTypes))
@@ -127,6 +120,9 @@ func EstimateAndCheckBudget(in BudgetCheckInput) BudgetCheckResult {
 			continue
 		}
 		sysTokens := EstimateTextTokens(globalSystemSecurityPrompt) + EstimateTextTokens(dt.GenerationPromptMD)
+		if len(in.RefDocs) > 0 {
+			sysTokens += EstimateTextTokens(refDocsArbitrationPrompt)
+		}
 		lockedMap := in.LockedSlotsByDoc[dt.Slug]
 		dtTotal := 0
 
@@ -145,11 +141,18 @@ func EstimateAndCheckBudget(in BudgetCheckInput) BudgetCheckResult {
 			if sliceTok > slotCap {
 				sliceTok = slotCap
 			}
+			refSlotTokens := refL0Tokens
+			if !slot.EnableSourceTools && !refFullyInlined && len(in.RefDocs) > 0 {
+				excerpts := refdoc.SelectBudgetedExcerptsForSlot(in.RefDocs, slot.Title, slot.InstructionHint, 1500)
+				for _, ex := range excerpts {
+					refSlotTokens += ex.EstimatedTokens
+				}
+			}
 			expectedOut := slotExpectedOutputTokens
 			if dt.Meta.MaxOutputTokens > 0 && dt.Meta.MaxOutputTokens/maxInt(len(dt.Meta.Slots), 1) < expectedOut {
 				expectedOut = dt.Meta.MaxOutputTokens / maxInt(len(dt.Meta.Slots), 1)
 			}
-			dtTotal += sysTokens + glossaryPromptOverhead + sliceTok + expectedOut
+			dtTotal += sysTokens + glossaryPromptOverhead + sliceTok + refSlotTokens + expectedOut
 		}
 		totalSlotsTokens += dtTotal
 		docTypeItems = append(docTypeItems, BudgetDocTypeItem{
@@ -341,4 +344,133 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// FormatRefDocsL0Block 按 ADR-10 D-3 预算策略序列化参考文档共享前缀块：
+// - 短文档总计 <= 1800 Tokens 且单篇 <= 1000 Tokens 时直接全文内联（fullyInlined=true）；
+// - 否则仅输出 L0 摘要与目录（上限 3000T，整仓汇总 3600T），超限按 scope_rank 从低到高依次折叠子标题与截断摘要。
+func FormatRefDocsL0Block(docs []refdoc.PromptDoc, isWholeRepoRollup bool) (string, bool, int) {
+	if len(docs) == 0 {
+		return "", false, 0
+	}
+
+	cappedDocs := docs
+	if isWholeRepoRollup && len(cappedDocs) > 12 {
+		cappedDocs = cappedDocs[:12]
+	}
+
+	totalBodyTokens := 0
+	allSmall := true
+	for _, d := range cappedDocs {
+		t := d.EstimatedTokens
+		if t <= 0 {
+			t = EstimateTextTokens(d.Markdown)
+		}
+		totalBodyTokens += t
+		if t > 1000 || strings.TrimSpace(d.Markdown) == "" {
+			allSmall = false
+		}
+	}
+
+	if allSmall && totalBodyTokens <= 1800 {
+		var sb strings.Builder
+		for i, d := range cappedDocs {
+			if i > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(fmt.Sprintf("### [ref_doc:%d@v%d] %s (kind=%s, scope=%s:%s)\n",
+				d.DocID, d.VersionNo, d.Title, d.DocKind, d.ScopeLevel, d.SourceScopeLabel))
+			if len(d.DeclaredTerms) > 0 {
+				sb.WriteString("声明外部术语: " + strings.Join(d.DeclaredTerms, ", ") + "\n")
+			}
+			sb.WriteString(strings.TrimSpace(d.Markdown))
+		}
+		out := sb.String()
+		return out, true, EstimateTextTokens(out)
+	}
+
+	l0Cap := 3000
+	if isWholeRepoRollup {
+		l0Cap = 3600
+	}
+
+	type l0Item struct {
+		doc         refdoc.PromptDoc
+		summary     string
+		maxTOCLevel int
+	}
+	items := make([]l0Item, len(cappedDocs))
+	for i, d := range cappedDocs {
+		items[i] = l0Item{
+			doc:         d,
+			summary:     strings.TrimSpace(d.SummaryMD),
+			maxTOCLevel: 6,
+		}
+	}
+
+	renderL0 := func() string {
+		var sb strings.Builder
+		for i, it := range items {
+			if i > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(fmt.Sprintf("### [ref_doc:%d@v%d] %s (kind=%s, scope=%s:%s)\n",
+				it.doc.DocID, it.doc.VersionNo, it.doc.Title, it.doc.DocKind, it.doc.ScopeLevel, it.doc.SourceScopeLabel))
+			if len(it.doc.DeclaredTerms) > 0 {
+				sb.WriteString("声明外部术语: " + strings.Join(it.doc.DeclaredTerms, ", ") + "\n")
+			}
+			if it.summary != "" {
+				sb.WriteString("摘要: " + it.summary + "\n")
+			}
+			if it.maxTOCLevel > 0 && len(it.doc.TOC) > 0 {
+				sb.WriteString("目录:\n")
+				for _, n := range it.doc.TOC {
+					if n.Level > it.maxTOCLevel {
+						continue
+					}
+					sb.WriteString(fmt.Sprintf("- %s: %s (L%d-%d)\n", n.SectionID, n.Title, n.StartLine, n.EndLine))
+				}
+			}
+		}
+		return strings.TrimSpace(sb.String())
+	}
+
+	out := renderL0()
+	if EstimateTextTokens(out) <= l0Cap {
+		return out, false, EstimateTextTokens(out)
+	}
+
+	// 按优先级从低到高（items 已按 scope_rank ASC 排列，index 0 最低）依次折叠 TOC 深度并截断摘要
+	for _, lvl := range []int{3, 2, 1} {
+		for i := range items {
+			if items[i].maxTOCLevel > lvl {
+				items[i].maxTOCLevel = lvl
+				out = renderL0()
+				if EstimateTextTokens(out) <= l0Cap {
+					return out, false, EstimateTextTokens(out)
+				}
+			}
+		}
+	}
+	for _, maxRunes := range []int{120, 60} {
+		for i := range items {
+			runes := []rune(items[i].summary)
+			if len(runes) > maxRunes {
+				items[i].summary = string(runes[:maxRunes]) + "..."
+				out = renderL0()
+				if EstimateTextTokens(out) <= l0Cap {
+					return out, false, EstimateTextTokens(out)
+				}
+			}
+		}
+	}
+	for i := range items {
+		items[i].maxTOCLevel = 0
+		out = renderL0()
+		if EstimateTextTokens(out) <= l0Cap {
+			return out, false, EstimateTextTokens(out)
+		}
+	}
+
+	return out, false, EstimateTextTokens(out)
 }

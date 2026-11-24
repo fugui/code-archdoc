@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"code-archdoc/models"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
+	"code-archdoc/pkg/sandbox"
 	commonModels "code-common/backend/models"
 
 	"gorm.io/datatypes"
@@ -919,3 +922,266 @@ func TestChatReviewStudioPaths_T_ADR06_06_to_11(t *testing.T) {
 func commonTestRepo(id uint) *commonModels.Repository {
 	return &commonModels.Repository{ID: id, Name: "demo"}
 }
+
+type stubChatMasterRepo struct {
+	repo commonModels.Repository
+}
+
+func (s *stubChatMasterRepo) ListDepartments(context.Context) ([]commonModels.Department, error) {
+	return nil, nil
+}
+func (s *stubChatMasterRepo) GetRepository(context.Context, uint) (*commonModels.Repository, error) {
+	cp := s.repo
+	return &cp, nil
+}
+func (s *stubChatMasterRepo) ListActiveRepositories(context.Context, models.RepoQueryFilter) ([]commonModels.Repository, int64, error) {
+	return []commonModels.Repository{s.repo}, 1, nil
+}
+func (s *stubChatMasterRepo) ListAllActiveRepositories(context.Context, *uint) ([]commonModels.Repository, error) {
+	return []commonModels.Repository{s.repo}, nil
+}
+func (s *stubChatMasterRepo) ListArchElementsByRepo(context.Context, uint) ([]models.ArchitectureElement, error) {
+	return nil, nil
+}
+func (s *stubChatMasterRepo) ListArchElementsByRepos(context.Context, []uint) ([]models.ArchitectureElement, error) {
+	return nil, nil
+}
+func (s *stubChatMasterRepo) ListAllArchElements(context.Context) ([]models.ArchitectureElement, error) {
+	return nil, nil
+}
+func (s *stubChatMasterRepo) GetArchElement(context.Context, uint) (*models.ArchitectureElement, error) {
+	return nil, models.ErrNotFound
+}
+func (s *stubChatMasterRepo) GetRepositoriesByIDs(context.Context, []uint) (map[uint]commonModels.Repository, error) {
+	return map[uint]commonModels.Repository{s.repo.ID: s.repo}, nil
+}
+func (s *stubChatMasterRepo) FindArchElementsByRepoAndOwner(context.Context, uint, uint) ([]models.ArchitectureElement, error) {
+	return nil, nil
+}
+func (s *stubChatMasterRepo) GetUsersByIDs(context.Context, []uint) (map[uint]commonModels.User, error) {
+	return nil, nil
+}
+
+type stubRefDocRepo struct {
+	docs     []models.ReferenceDoc
+	bindings []models.ReferenceDocBinding
+}
+
+func (r *stubRefDocRepo) CreateWithHomeBinding(_ context.Context, doc *models.ReferenceDoc, homeBinding *models.ReferenceDocBinding) error {
+	doc.ID = uint(len(r.docs) + 1)
+	r.docs = append(r.docs, *doc)
+	if homeBinding != nil {
+		homeBinding.ID = uint(len(r.bindings) + 1)
+		homeBinding.DocID = doc.ID
+		r.bindings = append(r.bindings, *homeBinding)
+	}
+	return nil
+}
+func (r *stubRefDocRepo) GetByID(_ context.Context, docID uint) (*models.ReferenceDoc, error) {
+	for _, d := range r.docs {
+		if d.ID == docID {
+			cp := d
+			return &cp, nil
+		}
+	}
+	return nil, models.ErrNotFound
+}
+func (r *stubRefDocRepo) ListDocs(_ context.Context, _ models.RefDocListFilter) ([]models.ReferenceDoc, int64, error) {
+	return r.docs, int64(len(r.docs)), nil
+}
+func (r *stubRefDocRepo) UpdateDocWithVersion(_ context.Context, _ uint, _ int, _ map[string]any) (*models.ReferenceDoc, error) {
+	return nil, models.ErrNotFound
+}
+func (r *stubRefDocRepo) UpdateDocAndTransferHomeWithVersion(_ context.Context, _ uint, _ int, _ map[string]any, _ *models.ReferenceDocBinding) (*models.ReferenceDoc, error) {
+	return nil, models.ErrNotFound
+}
+func (r *stubRefDocRepo) UpdateLLMSummaryIfCurrent(context.Context, uint, int, string) error {
+	return nil
+}
+func (r *stubRefDocRepo) CreateBinding(_ context.Context, _ *models.ReferenceDocBinding) error {
+	return nil
+}
+func (r *stubRefDocRepo) GetBindingByID(_ context.Context, _, _ uint) (*models.ReferenceDocBinding, error) {
+	return nil, models.ErrNotFound
+}
+func (r *stubRefDocRepo) UpdateBinding(_ context.Context, _, _ uint, _ map[string]any) (*models.ReferenceDocBinding, error) {
+	return nil, models.ErrNotFound
+}
+func (r *stubRefDocRepo) DeleteBinding(_ context.Context, _, _ uint) error { return nil }
+func (r *stubRefDocRepo) ListBindingsByDocID(_ context.Context, docID uint) ([]models.ReferenceDocBinding, error) {
+	var out []models.ReferenceDocBinding
+	for _, b := range r.bindings {
+		if b.DocID == docID {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+func (r *stubRefDocRepo) ListBindingsByDocIDs(_ context.Context, _ []uint) (map[uint][]models.ReferenceDocBinding, error) {
+	out := make(map[uint][]models.ReferenceDocBinding)
+	for _, b := range r.bindings {
+		out[b.DocID] = append(out[b.DocID], b)
+	}
+	return out, nil
+}
+func (r *stubRefDocRepo) ListAllActiveDocsAndBindings(_ context.Context) ([]models.ReferenceDoc, []models.ReferenceDocBinding, error) {
+	return r.docs, r.bindings, nil
+}
+func (r *stubRefDocRepo) PurgeDoc(_ context.Context, _ uint) error { return nil }
+
+func TestChatAskAndRefineRefDocInjection_T_ADR10_13(t *testing.T) {
+	ctx := context.Background()
+	refDir := t.TempDir()
+	refContent := "# 目标定位 {#sec-1}\n\nREFDOC_CHAT_MARKER 统一订单状态机边界。\n"
+	if err := os.MkdirAll(filepath.Join(refDir, "77"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "77", "v1.md"), []byte(refContent), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	tocJSON, _ := json.Marshal([]models.HeadingNode{{SectionID: "sec-1", Title: "目标定位", Level: 1, StartLine: 1, EndLine: 3}})
+	refRepo := &stubRefDocRepo{
+		docs: []models.ReferenceDoc{{
+			ID:                77,
+			Title:             "订单设计纲领",
+			DocKind:           models.RefDocKindArchDesign,
+			OwnerScopeKey:     "repo:1",
+			OwnerScopeLevel:   models.RefDocScopeRepo,
+			SummaryMD:         "订单状态机目标",
+			SummarySource:     models.RefDocSummarySourceFallback,
+			SummaryStatus:     models.RefDocSummaryStatusReady,
+			SummaryForVersion: 1,
+			CurrentVersion:    1,
+			StorageRelPath:    "77/v1.md",
+			EstimatedTokens:   40,
+			Status:            models.RefDocStatusActive,
+			TOCJSON:           datatypes.JSON(tocJSON),
+		}},
+		bindings: []models.ReferenceDocBinding{{
+			ID:                1,
+			DocID:             77,
+			ScopeKey:          "repo:1",
+			ScopeLevel:        models.RefDocScopeRepo,
+			RepoID:            ptrUintVal(1),
+			IsHome:            true,
+			InheritToChildren: true,
+			DocTypeSlugsJSON:  datatypes.JSON(`[]`),
+		}},
+	}
+
+	_ = sandbox.ErrInvalidSubdir
+	master := &stubChatMasterRepo{repo: commonModels.Repository{ID: 1, Name: "demo", OwnerID: 7}}
+	refSvc, err := NewRefDocService(refRepo, master, NewRBACService(master), refDir, 524288)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var capturedPayloads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ := json.Marshal(body)
+		mu.Lock()
+		capturedPayloads = append(capturedPayloads, string(raw))
+		mu.Unlock()
+
+		s := string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(s, "Ask 只读问答模式") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": map[string]any{"content": "Ask 回答已结合参考文档。"}}}})
+			_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"` + llm.MarkerReply + `\n依据订单设计纲领精修\n` + llm.MarkerPayloadJSON + `{\"reply\":\"ok\",\"markdown\":\"已按订单设计纲领完善核心架构。\",\"cited_anchors\":[{\"scope\":\"ref_doc\",\"file_path\":\"ref_doc:77\",\"fq_symbol\":\"sec-1\",\"symbol_kind\":\"ref_doc\"}]}"}}]}`))
+	}))
+	defer srv.Close()
+
+	h := newChatReviewHarness(srv.URL)
+	h.revSvc.WithRefDocService(refSvc)
+	h.chatSvc.WithModuleContext(nil, master).WithRefDocService(refSvc)
+
+	// 1. Ask 模式注入参考文档并记录 ContextRefsJSON
+	askPrep, err := h.chatSvc.PrepareRefine(ctx, 10, ChatRefineRequest{
+		Mode:           models.ChatModeAsk,
+		ScopeType:      models.ChatScopeGlobal,
+		BaseRevisionNo: 1,
+		Prompt:         "状态机目标是什么？",
+	}, 7)
+	if err != nil {
+		t.Fatalf("Ask PrepareRefine 失败: %v", err)
+	}
+	if !askPrep.EnableTools {
+		t.Fatal("存在参考文档时应开放工具集（含 read_ref_doc_section / search_ref_docs）")
+	}
+	_ = collectSSE(ctx, h.chatSvc, askPrep)
+
+	// 2. Refine 模式注入参考文档，产生带 RefCitations 的 ProposalItem 并采纳入 SectionEvidence
+	refPrep, err := h.chatSvc.PrepareRefine(ctx, 10, ChatRefineRequest{
+		Mode:           models.ChatModeRevise,
+		ScopeType:      models.ChatScopeSlot,
+		TargetSlotID:   "sec_auto",
+		BaseRevisionNo: 1,
+		Prompt:         "按设计纲领完善核心架构",
+	}, 7)
+	if err != nil {
+		t.Fatalf("Refine PrepareRefine 失败: %v", err)
+	}
+	evs := collectSSE(ctx, h.chatSvc, refPrep)
+	var proposalID uint
+	for _, ev := range evs {
+		if ev.name == "proposal_item" {
+			if idv, ok := ev.data["message_id"].(float64); ok {
+				proposalID = uint(idv)
+			}
+		}
+	}
+	if proposalID == 0 {
+		t.Fatalf("Refine 未产生 proposal_item 事件: %+v", evs)
+	}
+
+	mu.Lock()
+	joined := strings.Join(capturedPayloads, "\n")
+	mu.Unlock()
+	if strings.Count(joined, "REFDOC_CHAT_MARKER") < 2 {
+		t.Fatalf("期望 Ask 与 Refine 请求均注入参考文档正文，实际捕获:\n%s", joined)
+	}
+
+	// 验证 ContextRefsJSON 记录 ref_docs
+	sessions, err := h.chatSvc.ListSessions(ctx, 10)
+	if err != nil || len(sessions) == 0 {
+		t.Fatalf("ListSessions 失败: %v", err)
+	}
+	sawCtxRefDoc := false
+	for _, s := range sessions {
+		for _, m := range s.Messages {
+			for _, cr := range m.ContextRefs {
+				if len(cr.RefDocs) > 0 && cr.RefDocs[0].DocID == 77 {
+					sawCtxRefDoc = true
+				}
+			}
+		}
+	}
+	if !sawCtxRefDoc {
+		t.Fatal("期望 ChatMessage.ContextRefsJSON 记录参与的 ref_docs")
+	}
+
+	// 3. 采纳提案 -> SectionEvidence.RefCitationsJSON 持久化
+	detail, _, err := h.chatSvc.AcceptProposal(ctx, 10, proposalID, 1, 7)
+	if err != nil {
+		t.Fatalf("AcceptProposal 失败: %v", err)
+	}
+	var gotCit bool
+	for _, sec := range detail.Sections {
+		if sec.SlotID == "sec_auto" && len(sec.RefCitations) == 1 && sec.RefCitations[0].DocID == 77 && sec.RefCitations[0].SectionID == "sec-1" {
+			gotCit = true
+		}
+	}
+	if !gotCit {
+		t.Fatalf("采纳 Refine 后期望 sec_auto 含 DocID=77 sec-1 的 RefCitations，实际 %+v", detail.Sections)
+	}
+}
+
+func ptrUintVal(v uint) *uint { return &v }

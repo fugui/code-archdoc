@@ -18,6 +18,7 @@ import (
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
 	"code-archdoc/pkg/opencode"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/verifier"
 	"code-common/backend/gitsync"
@@ -97,6 +98,7 @@ type BatchGenerateRequest struct {
 	DocTypes         []string `json:"doc_types"`
 	Mode             string   `json:"mode"` // generate | regenerate
 	Engine           string   `json:"engine"`
+	ExcludeRefDocIDs []uint   `json:"exclude_ref_doc_ids,omitempty"`
 }
 
 // BatchSummaryVO 批量父任务的聚合子任务进度摘要。
@@ -110,13 +112,15 @@ type BatchSummaryVO struct {
 
 // GenerateTaskRequest 对应 POST /api/tasks/generate 入参。
 type GenerateTaskRequest struct {
-	RepoID       uint     `json:"repo_id"`
-	Subdirectory string   `json:"subdirectory"`
-	RefName      string   `json:"ref_name"`
-	DocType      string   `json:"doc_type"`
-	DocTypes     []string `json:"doc_types"`
-	Mode         string   `json:"mode"` // generate | regenerate
-	Engine       string   `json:"engine"`
+	RepoID           uint     `json:"repo_id"`
+	Subdirectory     string   `json:"subdirectory"`
+	RefName          string   `json:"ref_name"`
+	DocType          string   `json:"doc_type"`
+	DocTypes         []string `json:"doc_types"`
+	Mode             string   `json:"mode"` // generate | regenerate
+	Engine           string   `json:"engine"`
+	ArchElementID    *uint    `json:"arch_element_id,omitempty"`
+	ExcludeRefDocIDs []uint   `json:"exclude_ref_doc_ids,omitempty"`
 }
 
 // GenerateTaskSubmitResponse 对应 POST /api/tasks/generate (202) 响应：
@@ -144,35 +148,36 @@ type GenSlotTaskVO struct {
 
 // GenTaskDetailVO 对应 POST /api/tasks/generate (202) 与 GET /api/tasks/:task_id (200) 响应。
 type GenTaskDetailVO struct {
-	ID               uint                 `json:"id"`
-	ParentTaskID     *uint                `json:"parent_task_id,omitempty"`
-	RepoID           uint                 `json:"repo_id"`
-	RepoName         string               `json:"repo_name,omitempty"`
-	Subdirectory     string               `json:"subdirectory"`
-	RefName          string               `json:"ref_name"`
-	SnapshotID       *uint                `json:"snapshot_id,omitempty"`
-	CommitSHA        string               `json:"commit_sha,omitempty"`
-	TaskKind         string               `json:"task_kind"`
-	Engine           string               `json:"engine"`
-	Priority         string               `json:"priority"`
-	DocTypes         []string             `json:"doc_types"`
-	TargetDocumentID *uint                `json:"target_document_id,omitempty"`
-	TargetSlots      []string             `json:"target_slots,omitempty"`
-	Status           string               `json:"status"`
-	ProgressPercent  int                  `json:"progress_percent"`
-	EstimatedTokens  int                  `json:"estimated_tokens"`
-	ErrorCode        string               `json:"error_code,omitempty"`
-	ErrorMessage     string               `json:"error_message,omitempty"`
-	BudgetAdvice     *models.BudgetAdvice `json:"budget_advice,omitempty"`
-	SlotTasks        []GenSlotTaskVO      `json:"slot_tasks,omitempty"`
-	ChildTasks       []GenTaskDetailVO    `json:"child_tasks,omitempty"`
-	BatchSummary     *BatchSummaryVO      `json:"batch_summary,omitempty"`
-	TriggeredBy      uint                 `json:"triggered_by"`
-	TriggeredByName  string               `json:"triggered_by_name,omitempty"`
-	CanWrite         bool                 `json:"can_write,omitempty"`
-	StartedAt        *time.Time           `json:"started_at"`
-	FinishedAt       *time.Time           `json:"finished_at"`
-	CreatedAt        time.Time            `json:"created_at"`
+	ID               uint                              `json:"id"`
+	ParentTaskID     *uint                             `json:"parent_task_id,omitempty"`
+	RepoID           uint                              `json:"repo_id"`
+	RepoName         string                            `json:"repo_name,omitempty"`
+	Subdirectory     string                            `json:"subdirectory"`
+	RefName          string                            `json:"ref_name"`
+	SnapshotID       *uint                             `json:"snapshot_id,omitempty"`
+	CommitSHA        string                            `json:"commit_sha,omitempty"`
+	TaskKind         string                            `json:"task_kind"`
+	Engine           string                            `json:"engine"`
+	Priority         string                            `json:"priority"`
+	DocTypes         []string                          `json:"doc_types"`
+	TargetDocumentID *uint                             `json:"target_document_id,omitempty"`
+	TargetSlots      []string                          `json:"target_slots,omitempty"`
+	Status           string                            `json:"status"`
+	ProgressPercent  int                               `json:"progress_percent"`
+	EstimatedTokens  int                               `json:"estimated_tokens"`
+	ErrorCode        string                            `json:"error_code,omitempty"`
+	ErrorMessage     string                            `json:"error_message,omitempty"`
+	BudgetAdvice     *models.BudgetAdvice              `json:"budget_advice,omitempty"`
+	SlotTasks        []GenSlotTaskVO                   `json:"slot_tasks,omitempty"`
+	ChildTasks       []GenTaskDetailVO                 `json:"child_tasks,omitempty"`
+	BatchSummary     *BatchSummaryVO                   `json:"batch_summary,omitempty"`
+	ReferenceDocs    []models.TaskReferenceDocSnapshot `json:"reference_docs,omitempty"`
+	TriggeredBy      uint                              `json:"triggered_by"`
+	TriggeredByName  string                            `json:"triggered_by_name,omitempty"`
+	CanWrite         bool                              `json:"can_write,omitempty"`
+	StartedAt        *time.Time                        `json:"started_at"`
+	FinishedAt       *time.Time                        `json:"finished_at"`
+	CreatedAt        time.Time                         `json:"created_at"`
 }
 
 // TaskSummaryVO 汇总任务中心的各状态分布数量（受非状态筛选条件约束）。
@@ -212,6 +217,7 @@ type GenerationOrchestrator struct {
 	reviewRepo        ReviewCommentRepo
 	moduleSvc         *ModuleService
 	rbacSvc           *RBACService
+	refDocSvc         *RefDocService
 	llmClient         *llm.Client
 	opencodeRunner    opencode.DocGenerator
 	verifier          *verifier.Verifier
@@ -246,6 +252,12 @@ func (o *GenerationOrchestrator) WithModuleGovernance(moduleRepo ModuleRepo, mod
 // WithReviewCommentRepo 注入审阅批注仓储，使 L2 三路径生成自动携带 persist_for_regen 长期审阅指导（ADR-06 T-ADR06-12）。
 func (o *GenerationOrchestrator) WithReviewCommentRepo(reviewRepo ReviewCommentRepo) *GenerationOrchestrator {
 	o.reviewRepo = reviewRepo
+	return o
+}
+
+// WithRefDocService 注入架构参考文档服务，用于任务创建期冻结参考文档版本快照及执行期 Prompt/Verifier 注入（ADR-10）。
+func (o *GenerationOrchestrator) WithRefDocService(refDocSvc *RefDocService) *GenerationOrchestrator {
+	o.refDocSvc = refDocSvc
 	return o
 }
 
@@ -561,6 +573,20 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 		return nil, err
 	}
 
+	if req.ArchElementID != nil && *req.ArchElementID > 0 {
+		el, elErr := o.masterRepo.GetArchElement(ctx, *req.ArchElementID)
+		if elErr != nil {
+			return nil, elErr
+		}
+		if el.RepoID == nil || *el.RepoID != repo.ID {
+			return nil, fmt.Errorf("%w: arch_element_id 未绑定目标仓库 #%d", ErrInvalidTaskParam, repo.ID)
+		}
+		elSub, sErr := sandbox.NormalizeSubdir(el.Subdirectory)
+		if sErr != nil || elSub != normSubdir {
+			return nil, fmt.Errorf("%w: arch_element_id 与目标作用域 (%d, %q) 不匹配", ErrInvalidTaskParam, repo.ID, normSubdir)
+		}
+	}
+
 	// 去重并校验全部勾选的 DocType 均存在且启用中
 	seenSlugs := make(map[string]bool, len(rawSlugs))
 	dedupSlugs := make([]string, 0, len(rawSlugs))
@@ -604,17 +630,39 @@ func (o *GenerationOrchestrator) SubmitGenerateTask(
 	tasks := make([]*models.GenTask, 0, len(dedupSlugs))
 	for _, slug := range dedupSlugs {
 		docTypesJSON, _ := json.Marshal([]string{slug})
+		var refSnapJSON datatypes.JSON
+		if o.refDocSvc != nil {
+			repoIDCopy := repo.ID
+			eff, effErr := o.refDocSvc.ResolveEffectiveRefDocs(ctx, ResolveEffectiveRefDocsRequest{
+				ArchElementID: req.ArchElementID,
+				RepoID:        &repoIDCopy,
+				Subdirectory:  normSubdir,
+				DocTypeSlug:   slug,
+				ExcludeDocIDs: req.ExcludeRefDocIDs,
+			}, nil)
+			if effErr != nil {
+				if rollbackSlots != nil {
+					rollbackSlots()
+				}
+				return nil, fmt.Errorf("解析生效参考文档失败: %w", effErr)
+			}
+			if len(eff.Snapshots) > 0 {
+				b, _ := json.Marshal(eff.Snapshots)
+				refSnapJSON = datatypes.JSON(b)
+			}
+		}
 		tasks = append(tasks, &models.GenTask{
-			RepoID:          repo.ID,
-			Subdirectory:    normSubdir,
-			RefName:         refName,
-			TaskKind:        taskKind,
-			Engine:          engine,
-			Priority:        models.TaskPriorityInteractive,
-			DocTypesJSON:    datatypes.JSON(docTypesJSON),
-			Status:          models.TaskStatusPending,
-			ProgressPercent: 0,
-			TriggeredBy:     operatorID,
+			RepoID:                   repo.ID,
+			Subdirectory:             normSubdir,
+			RefName:                  refName,
+			TaskKind:                 taskKind,
+			Engine:                   engine,
+			Priority:                 models.TaskPriorityInteractive,
+			DocTypesJSON:             datatypes.JSON(docTypesJSON),
+			ReferenceDocSnapshotJSON: refSnapJSON,
+			Status:                   models.TaskStatusPending,
+			ProgressPercent:          0,
+			TriggeredBy:              operatorID,
 		})
 	}
 	if err := o.taskRepo.CreateTasksBatch(ctx, tasks); err != nil {
@@ -682,6 +730,7 @@ type IncrementalRefreshTaskInput struct {
 	NeedSyncCode       bool
 	Priority           string
 	Engine             string
+	ExcludeRefDocIDs   []uint
 }
 
 // SubmitIncrementalRefreshTask 发起单篇文档的章节级增量刷新任务（返回 202 视图）：
@@ -718,20 +767,34 @@ func (o *GenerationOrchestrator) SubmitIncrementalRefreshTask(
 
 	docTypesJSON, _ := json.Marshal([]string{in.Document.DocTypeSlug})
 	targetSlotsJSON, _ := json.Marshal(in.TargetSlots)
+	var refSnapJSON datatypes.JSON
+	if o.refDocSvc != nil {
+		repoIDCopy := repo.ID
+		if eff, effErr := o.refDocSvc.ResolveEffectiveRefDocs(ctx, ResolveEffectiveRefDocsRequest{
+			RepoID:        &repoIDCopy,
+			Subdirectory:  in.Document.Subdirectory,
+			DocTypeSlug:   in.Document.DocTypeSlug,
+			ExcludeDocIDs: in.ExcludeRefDocIDs,
+		}, nil); effErr == nil && eff != nil && len(eff.Snapshots) > 0 {
+			b, _ := json.Marshal(eff.Snapshots)
+			refSnapJSON = datatypes.JSON(b)
+		}
+	}
 	docID := in.Document.ID
 	task := &models.GenTask{
-		RepoID:           repo.ID,
-		Subdirectory:     in.Document.Subdirectory,
-		RefName:          in.Document.RefName,
-		TaskKind:         models.TaskKindIncrementalRefresh,
-		Engine:           engine,
-		Priority:         priority,
-		DocTypesJSON:     datatypes.JSON(docTypesJSON),
-		TargetDocumentID: &docID,
-		TargetSlotsJSON:  datatypes.JSON(targetSlotsJSON),
-		Status:           models.TaskStatusPending,
-		ProgressPercent:  0,
-		TriggeredBy:      operatorID,
+		RepoID:                   repo.ID,
+		Subdirectory:             in.Document.Subdirectory,
+		RefName:                  in.Document.RefName,
+		TaskKind:                 models.TaskKindIncrementalRefresh,
+		Engine:                   engine,
+		Priority:                 priority,
+		DocTypesJSON:             datatypes.JSON(docTypesJSON),
+		ReferenceDocSnapshotJSON: refSnapJSON,
+		TargetDocumentID:         &docID,
+		TargetSlotsJSON:          datatypes.JSON(targetSlotsJSON),
+		Status:                   models.TaskStatusPending,
+		ProgressPercent:          0,
+		TriggeredBy:              operatorID,
 	}
 	if err := o.taskRepo.CreateTask(ctx, task); err != nil {
 		return nil, fmt.Errorf("创建增量刷新任务失败: %w", err)
@@ -1184,6 +1247,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 			if exDoc.CurrentRevisionNo > 0 {
 				if prevRev, prevEvs, pErr := o.docRepo.GetRevisionWithSections(dbCtx, exDoc.ID, exDoc.CurrentRevisionNo); pErr == nil && prevRev != nil {
 					plan.priorCommitSHA = prevRev.CommitSHA
+					plan.priorEvRows = prevEvs
 					snaps := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
 					plan.priorOrdered = snaps
 					for _, sn := range snaps {
@@ -1215,14 +1279,19 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 		return
 	}
 
+	refSnaps, refPromptDocs := o.resolveTaskPromptDocs(task)
+	wholeRepoRollup := o.isWholeRepoRollup(dbCtx, repo.ID, task.Subdirectory)
+
 	// 5. 生成前确定性预算熔断（SC-09：保证熔断时 0 次 LLM HTTP 请求发出！）
 	budgetRes := llm.EstimateAndCheckBudget(llm.BudgetCheckInput{
-		IR:               snapReady.IR,
-		DocTypes:         assetsForBudget,
-		GlossaryCached:   o.snapSvc.HasCachedGlossary(dbCtx, snapReady.Loc),
-		MaxTokensPerTask: llmSet.maxTokens,
-		MaxFilesPerTask:  llmSet.maxFiles,
-		LockedSlotsByDoc: lockedByDoc,
+		IR:                snapReady.IR,
+		DocTypes:          assetsForBudget,
+		GlossaryCached:    o.snapSvc.HasCachedGlossary(dbCtx, snapReady.Loc),
+		MaxTokensPerTask:  llmSet.maxTokens,
+		MaxFilesPerTask:   llmSet.maxFiles,
+		RefDocs:           refPromptDocs,
+		IsWholeRepoRollup: wholeRepoRollup,
+		LockedSlotsByDoc:  lockedByDoc,
 	})
 	if budgetRes.Exceeded {
 		adviceModel := toModelBudgetAdvice(budgetRes.Advice)
@@ -1399,20 +1468,22 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 					}
 
 					resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-						RepoID:           repo.ID,
-						Subdirectory:     task.Subdirectory,
-						DocType:          planCopy.asset,
-						Slot:             slotSpecForCall,
-						Glossary:         glossary,
-						IR:               snapReady.IR,
-						ModuleContext:    modCtxForCall,
-						ModuleDigests:    planCopy.moduleDigests,
-						CrossModuleGraph: planCopy.crossModuleGraph,
-						PriorHybridMD:    priorHybrid,
-						ReviewGuidance:   guidanceForSlot(planCopy.reviewGuidance, slotSpec.SlotID),
-						Nonce:            batchNonce,
-						Endpoint:         epCfg,
-						MaxTokens:        maxOut,
+						RepoID:            repo.ID,
+						Subdirectory:      task.Subdirectory,
+						DocType:           planCopy.asset,
+						Slot:              slotSpecForCall,
+						Glossary:          glossary,
+						IR:                snapReady.IR,
+						ModuleContext:     modCtxForCall,
+						ModuleDigests:     planCopy.moduleDigests,
+						CrossModuleGraph:  planCopy.crossModuleGraph,
+						RefDocs:           refPromptDocs,
+						IsWholeRepoRollup: wholeRepoRollup,
+						PriorHybridMD:     priorHybrid,
+						ReviewGuidance:    guidanceForSlot(planCopy.reviewGuidance, slotSpec.SlotID),
+						Nonce:             batchNonce,
+						Endpoint:          epCfg,
+						MaxTokens:         maxOut,
 					})
 					finAt := time.Now()
 					slotRow.FinishedAt = &finAt
@@ -1479,7 +1550,7 @@ func (o *GenerationOrchestrator) executeGenerateTask(
 	// 11. 为每个 DocType 组装草稿章节、运行 Verifier 四重门禁并落库不可变 Revision
 	for _, p := range plans {
 		doc, docErr := o.persistGeneratedDocument(
-			dbCtx, repo, task, snapReady, p.asset, p.revID, slotTaskMap, p.priorOrdered, p.priorEvAnchors, p.priorCommitSHA, p.moduleDigests, operatorID,
+			dbCtx, repo, task, snapReady, p.asset, p.revID, slotTaskMap, p.priorOrdered, p.priorEvAnchors, p.priorEvRows, p.priorCommitSHA, p.moduleDigests, refSnaps, operatorID,
 		)
 		if docErr != nil {
 			o.markTaskFailed(dbCtx, taskID, models.TaskStatusVerifying, "VERIFY_PERSIST_FAILED", docErr.Error(), nil, budgetRes.Advice.EstimatedTokens)
@@ -1549,6 +1620,10 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 		return
 	}
 
+	taskRow, _, _ := o.taskRepo.GetTaskWithSlots(dbCtx, taskID)
+	refSnaps, refPromptDocs := o.resolveTaskPromptDocs(taskRow)
+	wholeRepoRollup := o.isWholeRepoRollup(dbCtx, repo.ID, latestDoc.Subdirectory)
+
 	priorOrdered := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
 	priorBySlot := make(map[string]models.DocumentSectionSnapshot, len(priorOrdered))
 	for _, sn := range priorOrdered {
@@ -1560,6 +1635,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 		_ = json.Unmarshal(ev.EvidencesJSON, &anchors)
 		priorEvBySlot[ev.SlotID] = anchors
 	}
+	priorRefCitsBySlot, _ := collectPriorRefCitationsBySlot(prevEvs)
 
 	// 准备 Code IR 快照：存在 Code Drift 或旧快照不可用时同步最新快照，否则复用旧快照
 	var snapReady *SnapshotReady
@@ -1692,7 +1768,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	if taskEngine == models.EngineOpenCode {
 		completedSlots, failedSlots = o.executeOpenCodeIncrementalRefresh(
 			ctx, dbCtx, taskID, repo, latestDoc, snapReady, asset, dtRev.ID, glossary,
-			moduleDigests, crossModuleGraph, priorBySlot, reviewGuidanceMap, llmSet, slotTaskByID, operatorID,
+			moduleDigests, crossModuleGraph, refPromptDocs, wholeRepoRollup, priorBySlot, reviewGuidanceMap, llmSet, slotTaskByID, operatorID,
 		)
 	} else {
 		for _, sl := range asset.Meta.Slots {
@@ -1743,19 +1819,21 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 				}
 
 				resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-					RepoID:           repo.ID,
-					Subdirectory:     snapReady.Loc.Subdir,
-					DocType:          asset,
-					Slot:             slotSpecForCall,
-					Glossary:         glossary,
-					IR:               snapReady.IR,
-					ModuleContext:    modCtxForCall,
-					ModuleDigests:    moduleDigests,
-					CrossModuleGraph: crossModuleGraph,
-					PriorHybridMD:    priorHybrid,
-					ReviewGuidance:   guidanceForSlot(reviewGuidanceMap, slotSpec.SlotID),
-					Nonce:            batchNonce,
-					Endpoint:         epCfg,
+					RepoID:            repo.ID,
+					Subdirectory:      snapReady.Loc.Subdir,
+					DocType:           asset,
+					Slot:              slotSpecForCall,
+					Glossary:          glossary,
+					IR:                snapReady.IR,
+					ModuleContext:     modCtxForCall,
+					ModuleDigests:     moduleDigests,
+					CrossModuleGraph:  crossModuleGraph,
+					RefDocs:           refPromptDocs,
+					IsWholeRepoRollup: wholeRepoRollup,
+					PriorHybridMD:     priorHybrid,
+					ReviewGuidance:    guidanceForSlot(reviewGuidanceMap, slotSpec.SlotID),
+					Nonce:             batchNonce,
+					Endpoint:          epCfg,
 				})
 				finAt := time.Now()
 				slotRow.FinishedAt = &finAt
@@ -1883,6 +1961,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 					FQSymbol:   a.FQSymbol,
 				})
 			}
+			priorCited = append(priorCited, modelsRefCitationsToCandidates(priorRefCitsBySlot[prev.SlotID])...)
 			mergedInputs = append(mergedInputs, verifier.SectionInput{
 				SlotID:       prev.SlotID,
 				Title:        prev.Title,
@@ -1927,7 +2006,7 @@ func (o *GenerationOrchestrator) executeIncrementalRefreshTask(
 	summary := fmt.Sprintf("章节级增量刷新（更新 %d 个受影响槽位）", completedSlots)
 	if _, err := o.verifyAndAppendRevision(
 		dbCtx, latestDoc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, dtRev.ID,
-		asset, snapReady.IR, snapReady.ModuleContext, moduleDigests, mergedSections, mergedInputs,
+		asset, snapReady.IR, snapReady.ModuleContext, moduleDigests, snapshotsToVerifierSpecs(refSnaps), mergedSections, mergedInputs, prevEvs,
 		models.RevSourceIncrementalRefresh, &taskID, summary, operatorID,
 	); err != nil {
 		o.markTaskFailed(dbCtx, taskID, models.TaskStatusVerifying, "VERIFY_PERSIST_FAILED", err.Error(), nil, 0)
@@ -1951,8 +2030,10 @@ func (o *GenerationOrchestrator) persistGeneratedDocument(
 	slotTaskMap map[string]*models.GenSlotTask,
 	priorOrdered []models.DocumentSectionSnapshot,
 	priorEvAnchors map[string][]models.EvidenceAnchor,
+	priorEvRows []models.SectionEvidence,
 	priorCommitSHA string,
 	moduleDigests []codeir.ModuleDigestInput,
+	refSnaps []models.TaskReferenceDocSnapshot,
 	operatorID uint,
 ) (*models.Document, error) {
 	title := buildDocumentTitle(repo.Name, task.Subdirectory, asset.Meta.DisplayName)
@@ -1990,8 +2071,18 @@ func (o *GenerationOrchestrator) persistGeneratedDocument(
 		NewCommitSHA:   snapReady.Snapshot.CommitSHA,
 		NewIR:          snapReady.IR,
 	})
+	// 将被锁定/跳过的既有槽位的参考文档引用保留至 SectionInput，供 Verifier 对齐并保留或标 stale
+	if len(priorEvRows) > 0 {
+		priorRefBySlot, _ := collectPriorRefCitationsBySlot(priorEvRows)
+		for i := range merged.SectionInputs {
+			sid := merged.SectionInputs[i].SlotID
+			if _, wasGen := generated[sid]; !wasGen || (slotTaskMap[asset.Slug+"::"+sid] != nil && slotTaskMap[asset.Slug+"::"+sid].Status == models.SlotTaskSkippedLocked) {
+				merged.SectionInputs[i].CitedAnchors = append(merged.SectionInputs[i].CitedAnchors, modelsRefCitationsToCandidates(priorRefBySlot[sid])...)
+			}
+		}
+	}
 
-	return o.verifyAndAppendRevision(ctx, doc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, docTypeRevID, asset, snapReady.IR, snapReady.ModuleContext, moduleDigests, merged.Sections, merged.SectionInputs, models.RevSourceAIGenerate, &task.ID, "AI 反推生成初稿", operatorID)
+	return o.verifyAndAppendRevision(ctx, doc, snapReady.Snapshot.ID, snapReady.Snapshot.CommitSHA, docTypeRevID, asset, snapReady.IR, snapReady.ModuleContext, moduleDigests, snapshotsToVerifierSpecs(refSnaps), merged.Sections, merged.SectionInputs, priorEvRows, models.RevSourceAIGenerate, &task.ID, "AI 反推生成初稿", operatorID)
 }
 
 func (o *GenerationOrchestrator) executeSingleSlotRetry(
@@ -2083,6 +2174,10 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		maxOut = maxIntVal(asset.Meta.MaxOutputTokens/maxIntVal(len(asset.Meta.Slots), 1), 4096)
 	}
 
+	// 单槽位重试严格从任务创建期冻结的 ReferenceDocSnapshotJSON 读取锁定版本，禁止重新解析实时绑定（T-ADR10-12）
+	refSnaps, refPromptDocs := o.resolveTaskPromptDocs(task)
+	wholeRepoRollup := o.isWholeRepoRollup(ctx, task.RepoID, task.Subdirectory)
+
 	var (
 		md    string
 		cited []verifier.CitedAnchorCandidate
@@ -2104,7 +2199,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		var retryErr error
 		md, cited, retryErr = o.executeOpenCodeSlotRetry(
 			ctx, task, slotTask, &SnapshotReady{Snapshot: snap, Loc: loc, IR: irBundle, ModuleContext: modCtx},
-			asset, dtRev.ID, slotSpecForCall, glossary, moduleDigests, crossModuleGraph, priorHybrid,
+			asset, dtRev.ID, slotSpecForCall, glossary, moduleDigests, crossModuleGraph, refPromptDocs, wholeRepoRollup, priorHybrid,
 			guidanceForSlot(retryGuidanceMap, targetSlot.SlotID), epCfg, llmSet, operatorID,
 		)
 		if retryErr != nil {
@@ -2118,18 +2213,20 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 			return
 		}
 		resp, callErr := o.executeSlotLLM(ctx, slotExecInput{
-			RepoID:           task.RepoID,
-			Subdirectory:     task.Subdirectory,
-			DocType:          asset,
-			Slot:             slotSpecForCall,
-			Glossary:         glossary,
-			IR:               irBundle,
-			ModuleContext:    modCtxForCall,
-			ModuleDigests:    moduleDigests,
-			CrossModuleGraph: crossModuleGraph,
-			ReviewGuidance:   guidanceForSlot(retryGuidanceMap, targetSlot.SlotID),
-			Endpoint:         epCfg,
-			MaxTokens:        maxOut,
+			RepoID:            task.RepoID,
+			Subdirectory:      task.Subdirectory,
+			DocType:           asset,
+			Slot:              slotSpecForCall,
+			Glossary:          glossary,
+			IR:                irBundle,
+			ModuleContext:     modCtxForCall,
+			ModuleDigests:     moduleDigests,
+			CrossModuleGraph:  crossModuleGraph,
+			RefDocs:           refPromptDocs,
+			IsWholeRepoRollup: wholeRepoRollup,
+			ReviewGuidance:    guidanceForSlot(retryGuidanceMap, targetSlot.SlotID),
+			Endpoint:          epCfg,
+			MaxTokens:         maxOut,
 		})
 		releaseLLMSlot()
 
@@ -2192,7 +2289,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		}
 		createdDoc, persistErr := o.persistGeneratedDocument(
 			ctx, repo, task, snapReady, asset, dtRev.ID, slotTaskMap,
-			nil, nil, "", moduleDigests, operatorID,
+			nil, nil, nil, "", moduleDigests, refSnaps, operatorID,
 		)
 		if persistErr != nil {
 			log.Printf("[%s] 全败任务单槽位重试建档落库失败 (task=%d slot=%s): %v", config.ServiceName, task.ID, slotTask.SlotID, persistErr)
@@ -2230,6 +2327,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 	}
 	sections := overlaySectionMetadata(unmarshalSectionSnapshots(prevRev.SectionsJSON), prevEvs)
 	prevEvBySlot := make(map[string][]verifier.CitedAnchorCandidate, len(prevEvs))
+	prevRefBySlot, _ := collectPriorRefCitationsBySlot(prevEvs)
 	for _, ev := range prevEvs {
 		var anchors []models.EvidenceAnchor
 		_ = json.Unmarshal(ev.EvidencesJSON, &anchors)
@@ -2261,12 +2359,14 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 				CitedAnchors: cited,
 			})
 		} else {
-			// 非目标槽位：原样保留 Markdown、ContentSHA256 与既往 CitedAnchors
+			// 非目标槽位：原样保留 Markdown、ContentSHA256 与既往 CitedAnchors 及参考文档引用
+			priorCands := append([]verifier.CitedAnchorCandidate(nil), prevEvBySlot[sections[i].SlotID]...)
+			priorCands = append(priorCands, modelsRefCitationsToCandidates(prevRefBySlot[sections[i].SlotID])...)
 			sectionInputs = append(sectionInputs, verifier.SectionInput{
 				SlotID:       sections[i].SlotID,
 				Title:        sections[i].Title,
 				Markdown:     sections[i].Markdown,
-				CitedAnchors: prevEvBySlot[sections[i].SlotID],
+				CitedAnchors: priorCands,
 			})
 		}
 	}
@@ -2287,7 +2387,7 @@ func (o *GenerationOrchestrator) executeSingleSlotRetry(
 		})
 	}
 
-	if _, err := o.verifyAndAppendRevision(ctx, doc, snap.ID, snap.CommitSHA, dtRev.ID, asset, irBundle, modCtx, moduleDigests, sections, sectionInputs, models.RevSourceAIGenerate, &task.ID, fmt.Sprintf("单槽位独立重试补齐: %s", targetSlot.SlotID), operatorID); err != nil {
+	if _, err := o.verifyAndAppendRevision(ctx, doc, snap.ID, snap.CommitSHA, dtRev.ID, asset, irBundle, modCtx, moduleDigests, snapshotsToVerifierSpecs(refSnaps), sections, sectionInputs, prevEvs, models.RevSourceAIGenerate, &task.ID, fmt.Sprintf("单槽位独立重试补齐: %s", targetSlot.SlotID), operatorID); err != nil {
 		log.Printf("[%s] 单槽位重试落库新修订失败: %v", config.ServiceName, err)
 		return
 	}
@@ -2312,22 +2412,29 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 	irBundle *codeir.CodeIRBundle,
 	modCtx *codeir.ModuleContextFacet,
 	moduleDigests []codeir.ModuleDigestInput,
+	activeRefSpecs []verifier.RefDocSpec,
 	sectionSnapshots []models.DocumentSectionSnapshot,
 	sectionInputs []verifier.SectionInput,
+	priorEvRows []models.SectionEvidence,
 	source string,
 	sourceRefID *uint,
 	changeSummary string,
 	operatorID uint,
 ) (*models.Document, error) {
+	histRefSpecs := buildHistoricalRefDocSpecs(ctx, o.refDocSvc, priorEvRows, activeRefSpecs)
 	vRes := o.verifier.Verify(verifier.VerifyInput{
-		CommitSHA:     commitSHA,
-		IR:            irBundle,
-		ModuleContext: modCtx,
-		ModuleDigests: moduleDigests,
-		Slots:         asset.Meta.Slots,
-		Policy:        asset.Meta.VerifyPolicy,
-		Sections:      sectionInputs,
+		CommitSHA:         commitSHA,
+		IR:                irBundle,
+		ModuleContext:     modCtx,
+		ModuleDigests:     moduleDigests,
+		ActiveRefDocs:     activeRefSpecs,
+		HistoricalRefDocs: histRefSpecs,
+		Slots:             asset.Meta.Slots,
+		Policy:            asset.Meta.VerifyPolicy,
+		Sections:          sectionInputs,
 	})
+
+	_, priorRefRawMap := collectPriorRefCitationsBySlot(priorEvRows)
 
 	fullMD := assembleFullMarkdown(asset.TemplateMD, sectionSnapshots)
 	sectionsJSON, _ := json.Marshal(sectionSnapshots)
@@ -2356,6 +2463,15 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 			evList = []verifier.EvidenceAnchor{}
 		}
 		evJSON, _ := json.Marshal(evList)
+		var refCitJSON datatypes.JSON
+		if refList := vRes.SectionRefCitations[sn.SlotID]; len(refList) > 0 {
+			raw, _ := json.Marshal(verifierRefCitationsToModels(refList))
+			refCitJSON = datatypes.JSON(raw)
+		} else if len(priorRefRawMap[sn.SlotID]) > 2 {
+			refCitJSON = priorRefRawMap[sn.SlotID]
+		} else {
+			refCitJSON = datatypes.JSON("[]")
+		}
 		sumJSON, _ := json.Marshal(vRes.SectionSummaries[sn.SlotID])
 		secEvidences = append(secEvidences, models.SectionEvidence{
 			SlotID:              sn.SlotID,
@@ -2368,6 +2484,7 @@ func (o *GenerationOrchestrator) verifyAndAppendRevision(
 			ContentSHA256:       sn.ContentSHA256,
 			VerifierSummaryJSON: datatypes.JSON(sumJSON),
 			EvidencesJSON:       datatypes.JSON(evJSON),
+			RefCitationsJSON:    refCitJSON,
 		})
 	}
 
@@ -2716,6 +2833,7 @@ func toGenTaskDetailVO(t *models.GenTask, repoName, commitSHA string, slots []mo
 		ErrorMessage:     t.ErrorMessage,
 		BudgetAdvice:     advicePtr,
 		SlotTasks:        slotVOs,
+		ReferenceDocs:    unmarshalTaskRefDocSnapshots(t.ReferenceDocSnapshotJSON),
 		TriggeredBy:      t.TriggeredBy,
 		StartedAt:        t.StartedAt,
 		FinishedAt:       t.FinishedAt,
@@ -2740,20 +2858,66 @@ func toGenSlotTaskVO(s *models.GenSlotTask) GenSlotTaskVO {
 }
 
 type slotExecInput struct {
-	RepoID           uint
-	Subdirectory     string
-	DocType          *doctype.AssetBundle
-	Slot             doctype.SlotSpec
-	Glossary         *codeir.GlossaryCache
-	IR               *codeir.CodeIRBundle
-	ModuleContext    *codeir.ModuleContextFacet
-	ModuleDigests    []codeir.ModuleDigestInput
-	CrossModuleGraph []codeir.CrossModuleEdge
-	PriorHybridMD    string
-	ReviewGuidance   []string
-	Nonce            string
-	Endpoint         llm.EndpointConfig
-	MaxTokens        int
+	RepoID            uint
+	Subdirectory      string
+	DocType           *doctype.AssetBundle
+	Slot              doctype.SlotSpec
+	Glossary          *codeir.GlossaryCache
+	IR                *codeir.CodeIRBundle
+	ModuleContext     *codeir.ModuleContextFacet
+	ModuleDigests     []codeir.ModuleDigestInput
+	CrossModuleGraph  []codeir.CrossModuleEdge
+	RefDocs           []refdoc.PromptDoc
+	IsWholeRepoRollup bool
+	PriorHybridMD     string
+	ReviewGuidance    []string
+	Nonce             string
+	Endpoint          llm.EndpointConfig
+	MaxTokens         int
+}
+
+func (o *GenerationOrchestrator) resolveTaskPromptDocs(task *models.GenTask) ([]models.TaskReferenceDocSnapshot, []refdoc.PromptDoc) {
+	if task == nil {
+		return nil, nil
+	}
+	snaps := unmarshalTaskRefDocSnapshots(task.ReferenceDocSnapshotJSON)
+	if len(snaps) == 0 || o.refDocSvc == nil {
+		return snaps, nil
+	}
+	return snaps, o.refDocSvc.LoadPromptDocsFromSnapshots(snaps)
+}
+
+func (o *GenerationOrchestrator) isWholeRepoRollup(ctx context.Context, repoID uint, subdir string) bool {
+	if strings.TrimSpace(subdir) != "" {
+		return false
+	}
+	if o.moduleRepo != nil {
+		if mods, err := o.moduleRepo.ListModulesByRepo(ctx, repoID); err == nil {
+			activeCount := 0
+			for _, m := range mods {
+				if m.Status == models.ModuleStatusActive && strings.TrimSpace(m.Subdirectory) != "" {
+					activeCount++
+				}
+			}
+			if activeCount >= 2 {
+				return true
+			}
+		}
+	}
+	if o.masterRepo != nil {
+		if elems, err := o.masterRepo.ListArchElementsByRepo(ctx, repoID); err == nil {
+			subCount := 0
+			for _, el := range elems {
+				if el.Type == models.RefDocScopeModule && el.RepoID != nil && *el.RepoID == repoID && strings.TrimSpace(el.Subdirectory) != "" {
+					subCount++
+				}
+			}
+			if subCount >= 2 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // executeSlotLLM 统一执行单槽位 L2 推理：
@@ -2774,6 +2938,7 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 			RepoRoot:              repoRoot,
 			IR:                    in.IR,
 			ExternalFileWhitelist: extWhitelist,
+			RefDocs:               in.RefDocs,
 		})
 		if tk.HasTools() {
 			toolkit = tk
@@ -2790,6 +2955,8 @@ func (o *GenerationOrchestrator) executeSlotLLM(ctx context.Context, in slotExec
 		ModuleContext:     in.ModuleContext,
 		ModuleDigests:     in.ModuleDigests,
 		CrossModuleGraph:  in.CrossModuleGraph,
+		RefDocs:           in.RefDocs,
+		IsWholeRepoRollup: in.IsWholeRepoRollup,
 		PriorHybridMD:     in.PriorHybridMD,
 		ReviewGuidance:    in.ReviewGuidance,
 		Nonce:             in.Nonce,

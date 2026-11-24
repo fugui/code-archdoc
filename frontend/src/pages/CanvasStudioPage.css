@@ -1851,3 +1851,44 @@
   color: var(--color-text-primary);
   font-size: 0.82rem;
 }
+
+.code-archdoc-refcitation-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.45rem 0.85rem;
+  border-top: 1px dashed var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+}
+
+.code-archdoc-refcitation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-info-subtle);
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.code-archdoc-refcitation-chip:hover {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
+}
+
+.code-archdoc-refcitation-chip--stale {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.code-archdoc-chat-refdocs-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+}

@@ -186,7 +186,7 @@ func (o *GenerationOrchestrator) SubmitBatchGenerateTask(
 	go func() {
 		defer o.wg.Done()
 		defer o.unregisterCancel(parentTask.ID)
-		o.executeBatchGenerateTask(parentCtx, parentTask.ID, repo, targetSubdirs, req.IncludeRepoScope, dedupSlugs, childMode, engine, refName, operatorID)
+		o.executeBatchGenerateTask(parentCtx, parentTask.ID, repo, targetSubdirs, req.IncludeRepoScope, dedupSlugs, childMode, engine, refName, req.ExcludeRefDocIDs, operatorID)
 	}()
 
 	vo := toGenTaskDetailVO(parentTask, repo.Name, "", nil)
@@ -203,6 +203,7 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 	childMode string,
 	engine string,
 	refName string,
+	excludeRefDocIDs []uint,
 	operatorID uint,
 ) {
 	dbCtx := context.Background()
@@ -322,7 +323,7 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 				o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
 				return
 			}
-			childID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, sub, baseSnap.Snapshot.RefName, []string{slug}, childMode, engine, operatorID)
+			childID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, sub, baseSnap.Snapshot.RefName, []string{slug}, childMode, engine, excludeRefDocIDs, operatorID)
 			if subErr != nil {
 				// 队列满等错误记录在父任务并跳过后续创建
 				o.cancelChildTasksByIDs(dbCtx, stage1IDs)
@@ -351,7 +352,7 @@ func (o *GenerationOrchestrator) executeBatchGenerateTask(
 				o.markBatchTaskCanceled(dbCtx, parentTaskID, models.TaskStatusGenerating)
 				return
 			}
-			repoChildID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, "", baseSnap.Snapshot.RefName, []string{slug}, childMode, engine, operatorID)
+			repoChildID, subErr := o.submitBatchChildTask(dbCtx, parentTaskID, repo, "", baseSnap.Snapshot.RefName, []string{slug}, childMode, engine, excludeRefDocIDs, operatorID)
 			if subErr != nil {
 				o.cancelChildTasksByIDs(dbCtx, stage2IDs)
 				o.markBatchTaskFailed(dbCtx, parentTaskID, models.TaskStatusGenerating, "BATCH_CHILD_DISPATCH_FAILED", subErr.Error(), nil, totalEstimated)
@@ -410,22 +411,37 @@ func (o *GenerationOrchestrator) submitBatchChildTask(
 	slugs []string,
 	childMode string,
 	engine string,
+	excludeRefDocIDs []uint,
 	operatorID uint,
 ) (uint, error) {
 	docTypesJSON, _ := json.Marshal(slugs)
+	var refSnapJSON datatypes.JSON
+	if o.refDocSvc != nil && len(slugs) > 0 {
+		repoIDCopy := repo.ID
+		if eff, effErr := o.refDocSvc.ResolveEffectiveRefDocs(ctx, ResolveEffectiveRefDocsRequest{
+			RepoID:        &repoIDCopy,
+			Subdirectory:  subdir,
+			DocTypeSlug:   slugs[0],
+			ExcludeDocIDs: excludeRefDocIDs,
+		}, nil); effErr == nil && eff != nil && len(eff.Snapshots) > 0 {
+			b, _ := json.Marshal(eff.Snapshots)
+			refSnapJSON = datatypes.JSON(b)
+		}
+	}
 	pID := parentTaskID
 	child := &models.GenTask{
-		ParentTaskID:    &pID,
-		RepoID:          repo.ID,
-		Subdirectory:    subdir,
-		RefName:         refName,
-		TaskKind:        childMode,
-		Engine:          models.NormalizeEngine(engine),
-		Priority:        models.TaskPriorityBatch,
-		DocTypesJSON:    datatypes.JSON(docTypesJSON),
-		Status:          models.TaskStatusPending,
-		ProgressPercent: 0,
-		TriggeredBy:     operatorID,
+		ParentTaskID:             &pID,
+		RepoID:                   repo.ID,
+		Subdirectory:             subdir,
+		RefName:                  refName,
+		TaskKind:                 childMode,
+		Engine:                   models.NormalizeEngine(engine),
+		Priority:                 models.TaskPriorityBatch,
+		DocTypesJSON:             datatypes.JSON(docTypesJSON),
+		ReferenceDocSnapshotJSON: refSnapJSON,
+		Status:                   models.TaskStatusPending,
+		ProgressPercent:          0,
+		TriggeredBy:              operatorID,
 	}
 	if err := o.taskRepo.CreateTask(ctx, child); err != nil {
 		return 0, fmt.Errorf("创建批量子任务 (%s) 失败: %w", subdir, err)

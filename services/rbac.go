@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -127,4 +128,87 @@ func ContainsRelatedMember(raw datatypes.JSON, user *commonModels.User) bool {
 		}
 	}
 	return false
+}
+
+// CheckArchScopeWritePermission 判定当前用户对四层架构树作用域的写权限（ADR-10 D-4，不影响既有 SC-12 CheckScopeWritePermission）。
+// - system：仅 super_admin / archdoc_admin；
+// - subsystem / group：管理员，或目标节点及其任意祖先节点（沿 ParentID 回溯 <=16 层，visited 防环）的 OwnerID == user.ID；
+// - module：满足节点/祖先 OwnerID == user.ID，或已绑定活跃仓库时满足 CheckScopeWritePermission(repoID, module.Subdirectory)；
+// - repo：满足 CheckScopeWritePermission(repoID, normSubdir)。
+func (s *RBACService) CheckArchScopeWritePermission(
+	ctx context.Context,
+	user *commonModels.User,
+	scopeLevel string,
+	archElementID *uint,
+	repoID *uint,
+	rawSubdir string,
+) (bool, error) {
+	if user == nil || user.ID == 0 {
+		return false, nil
+	}
+	if user.HasRole(config.AdminRole) {
+		return true, nil
+	}
+
+	switch strings.TrimSpace(scopeLevel) {
+	case models.RefDocScopeSystem:
+		return false, nil
+
+	case models.RefDocScopeSubsystem, models.RefDocScopeGroup, models.RefDocScopeModule:
+		if archElementID == nil || *archElementID == 0 {
+			return false, nil
+		}
+		el, err := s.masterRepo.GetArchElement(ctx, *archElementID)
+		if err != nil {
+			return false, err
+		}
+		if el.Type != strings.TrimSpace(scopeLevel) {
+			return false, nil
+		}
+
+		// 沿 ParentID 向上回溯至多 16 层（带 visited 防环）
+		visited := make(map[uint]bool, 8)
+		cur := el
+		for depth := 0; depth < 16 && cur != nil; depth++ {
+			if visited[cur.ID] {
+				break
+			}
+			visited[cur.ID] = true
+			if cur.OwnerID != nil && *cur.OwnerID == user.ID {
+				return true, nil
+			}
+			if cur.ParentID == nil || *cur.ParentID == 0 {
+				break
+			}
+			parent, pErr := s.masterRepo.GetArchElement(ctx, *cur.ParentID)
+			if pErr != nil {
+				if errors.Is(pErr, models.ErrNotFound) {
+					break
+				}
+				return false, pErr
+			}
+			cur = parent
+		}
+
+		if scopeLevel == models.RefDocScopeModule && el.RepoID != nil && *el.RepoID > 0 {
+			allowed, repoErr := s.CheckScopeWritePermission(ctx, user, *el.RepoID, el.Subdirectory)
+			if repoErr != nil {
+				if errors.Is(repoErr, models.ErrNotFound) {
+					return false, nil
+				}
+				return false, repoErr
+			}
+			return allowed, nil
+		}
+		return false, nil
+
+	case models.RefDocScopeRepo:
+		if repoID == nil || *repoID == 0 {
+			return false, nil
+		}
+		return s.CheckScopeWritePermission(ctx, user, *repoID, rawSubdir)
+
+	default:
+		return false, nil
+	}
 }

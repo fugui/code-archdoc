@@ -12,6 +12,7 @@ import (
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/codeir/treesitter"
 	"code-archdoc/pkg/doctype"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/sandbox"
 	"code-archdoc/pkg/verifier"
 )
@@ -327,4 +328,153 @@ func parseGoldenSections(md string) []verifier.SectionInput {
 		})
 	}
 	return out
+}
+
+func TestVerifierRefDocCitationAlignmentAndStaleCompat_T_ADR10_09(t *testing.T) {
+	v := verifier.New()
+	res := v.Verify(verifier.VerifyInput{
+		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IR:        buildSampleIR(),
+		Slots: []doctype.SlotSpec{
+			{SlotID: "overview", Title: "概览", Ownership: "auto", Required: true, MinChars: 10},
+		},
+		ActiveRefDocs: []verifier.RefDocSpec{{
+			DocID:      12,
+			Title:      "交易域总设",
+			VersionNo:  2,
+			ScopeLevel: "subsystem",
+			TOC: []refdoc.HeadingNode{
+				{SectionID: "sec-3", Title: "交易边界", Level: 2, StartLine: 10, EndLine: 30},
+			},
+		}},
+		HistoricalRefDocs: []verifier.RefDocSpec{{
+			DocID:      9,
+			Title:      "已解绑旧文档",
+			VersionNo:  1,
+			ScopeLevel: "group",
+			TOC: []refdoc.HeadingNode{
+				{SectionID: "sec-1", Title: "历史约定", Level: 2, StartLine: 1, EndLine: 15},
+			},
+		}},
+		Sections: []verifier.SectionInput{{
+			SlotID:   "overview",
+			Markdown: "调用 `src/order/order_service.cpp` 实现交易边界。",
+			CitedAnchors: []verifier.CitedAnchorCandidate{
+				{FilePath: "src/order/order_service.cpp", FQSymbol: "order::OrderService::Pay"},
+				{Scope: "ref_doc", FilePath: "ref_doc:12", FQSymbol: "sec-3", SymbolKind: "ref_doc"},
+				{Scope: "ref_doc", FilePath: "ref_doc:9", FQSymbol: "sec-1", SymbolKind: "ref_doc"},
+			},
+		}},
+	})
+
+	// 1. 合法与历史引用进入 SectionRefCitations，零污染 SectionEvidences
+	for _, ev := range res.SectionEvidences["overview"] {
+		if ev.Scope == "ref_doc" || ev.SymbolKind == "ref_doc" || strings.HasPrefix(ev.FilePath, "ref_doc:") {
+			t.Fatalf("SectionEvidences 不应混入 ref_doc 锚点，实际: %+v", ev)
+		}
+	}
+	cits := res.SectionRefCitations["overview"]
+	if len(cits) != 2 {
+		t.Fatalf("期望对齐 2 条 RefDocCitation，实际 %d: %+v", len(cits), cits)
+	}
+	if cits[0].CitationKey != "ref_doc:12@v2#sec-3" || cits[0].Stale {
+		t.Fatalf("活跃参考引用对齐异常: %+v", cits[0])
+	}
+	if cits[1].CitationKey != "ref_doc:9@v1#sec-1" || !cits[1].Stale {
+		t.Fatalf("历史已解绑引用应保留并标 stale=true: %+v", cits[1])
+	}
+	if !res.Report.CanApprove || res.Report.ErrorCount != 0 {
+		t.Fatalf("历史解绑引用不应阻断审批: report=%+v", res.Report)
+	}
+
+	// 2. 伪造 ref_doc:9999 必须标 error 阻断 can_approve
+	resFake := v.Verify(verifier.VerifyInput{
+		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IR:        buildSampleIR(),
+		Slots: []doctype.SlotSpec{
+			{SlotID: "overview", Title: "概览", Ownership: "auto", Required: true, MinChars: 10},
+		},
+		Sections: []verifier.SectionInput{{
+			SlotID:   "overview",
+			Markdown: "引用伪造参考文档。",
+			CitedAnchors: []verifier.CitedAnchorCandidate{
+				{Scope: "ref_doc", FilePath: "ref_doc:9999", FQSymbol: "sec-1", SymbolKind: "ref_doc"},
+			},
+		}},
+	})
+	if resFake.Report.CanApprove || resFake.Report.ErrorCount == 0 {
+		t.Fatalf("伪造 ref_doc:9999 必须阻断 can_approve: %+v", resFake.Report)
+	}
+	foundRefErr := false
+	for _, u := range resFake.Report.UnverifiedRefs {
+		if u.RefKind == "ref_doc" && u.Severity == "error" {
+			foundRefErr = true
+		}
+	}
+	if !foundRefErr {
+		t.Fatalf("期望记录 RefKind=ref_doc Severity=error，实际: %+v", resFake.Report.UnverifiedRefs)
+	}
+}
+
+func TestVerifierDeclaredTermsWarningDowngradeAndLegacyClassBlock_T_ADR10_10(t *testing.T) {
+	v := verifier.New()
+	res := v.Verify(verifier.VerifyInput{
+		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IR:        buildSampleIR(),
+		Slots: []doctype.SlotSpec{
+			{SlotID: "overview", Title: "概览", Ownership: "auto", Required: true, MinChars: 10},
+		},
+		Policy: &doctype.VerifyPolicy{StrictSymbolCheck: true},
+		ActiveRefDocs: []verifier.RefDocSpec{{
+			DocID:         15,
+			Title:         "领域术语表",
+			VersionNo:     1,
+			ScopeLevel:    "system",
+			DeclaredTerms: []string{"RiskCenter"},
+		}},
+		Sections: []verifier.SectionInput{{
+			SlotID:   "overview",
+			Markdown: "本模块对接外部 `RiskCenter` 平台，未移除旧类 `LegacyOrderMgr`。",
+		}},
+	})
+
+	if res.Report.CanApprove {
+		t.Fatalf("StrictSymbolCheck 下过时类名 LegacyOrderMgr 仍必须阻断审批")
+	}
+	var gotLegacyErr, gotExtWarn bool
+	for _, u := range res.Report.UnverifiedRefs {
+		if u.Value == "LegacyOrderMgr" && u.RefKind == "symbol" && u.Severity == "error" {
+			gotLegacyErr = true
+		}
+		if u.Value == "RiskCenter" && u.RefKind == "external_term" && u.Severity == "warning" {
+			gotExtWarn = true
+		}
+	}
+	if !gotLegacyErr || !gotExtWarn {
+		t.Fatalf("期望 LegacyOrderMgr=error 且 RiskCenter=external_term/warning，实际: %+v", res.Report.UnverifiedRefs)
+	}
+
+	// 仅包含 DeclaredTerms 外部名词时，即使 StrictSymbolCheck=true 亦允许审批
+	resExtOnly := v.Verify(verifier.VerifyInput{
+		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IR:        buildSampleIR(),
+		Slots: []doctype.SlotSpec{
+			{SlotID: "overview", Title: "概览", Ownership: "auto", Required: true, MinChars: 10},
+		},
+		Policy: &doctype.VerifyPolicy{StrictSymbolCheck: true},
+		ActiveRefDocs: []verifier.RefDocSpec{{
+			DocID:         15,
+			Title:         "领域术语表",
+			VersionNo:     1,
+			ScopeLevel:    "system",
+			DeclaredTerms: []string{"RiskCenter"},
+		}},
+		Sections: []verifier.SectionInput{{
+			SlotID:   "overview",
+			Markdown: "调用 `src/order/order_service.cpp` 并通知外部系统 `RiskCenter`。",
+		}},
+	})
+	if !resExtOnly.Report.CanApprove || resExtOnly.Report.WarningCount == 0 {
+		t.Fatalf("仅命中 DeclaredTerms 外部术语应降级为 warning 且不阻断审批: %+v", resExtOnly.Report)
+	}
 }

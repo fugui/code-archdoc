@@ -14,6 +14,7 @@ import (
 	"code-archdoc/pkg/codeir"
 	"code-archdoc/pkg/doctype"
 	"code-archdoc/pkg/llm"
+	"code-archdoc/pkg/refdoc"
 	"code-archdoc/pkg/verifier"
 )
 
@@ -711,5 +712,160 @@ func TestStructuredFacetTruncationAndBudgetScopeFiltering(t *testing.T) {
 		if strings.HasPrefix(dir.Path, "test") {
 			t.Fatalf("include_tests=false 时 TopDirectories 不应包含 test 目录，实际 %+v", bRes.Advice.TopDirectories)
 		}
+	}
+}
+
+func TestNativeRefDocPrefixKVCacheToolsAndNonToolExcerpts_T_ADR10_07_14(t *testing.T) {
+	dts := loadBuiltinDocTypesForTest(t)
+	sysArch := dts[0]
+
+	// 构造 > 1800 Tokens 的长参考文档以触发 L0 共享前缀 + 工具按节检索 / 非工具尾部摘录
+	var longBody strings.Builder
+	longBody.WriteString("# 全系统分布式架构\n\n## 1. 总体边界\n支撑跨区交易。\n\n## 2. 订单与风控幂等规则\n")
+	for i := 0; i < 180; i++ {
+		longBody.WriteString(fmt.Sprintf("第 %d 条订单幂等与风控限流策略说明：使用幂等键防止重复扣款，调用 RiskCenter 校验额度。\n", i))
+	}
+	parsed, fail, err := refdoc.ValidateAndParse(longBody.String(), 524288, false, "arch_design", nil)
+	if err != nil || fail != nil {
+		t.Fatalf("解析测试参考文档失败: fail=%+v err=%v", fail, err)
+	}
+
+	refDocs := []refdoc.PromptDoc{{
+		DocID:            101,
+		Title:            "电商交易总体设计",
+		DocKind:          "arch_design",
+		VersionNo:        3,
+		ScopeLevel:       "subsystem",
+		ScopeRank:        2,
+		SourceScopeLabel: "交易子系统",
+		SummaryMD:        "阐述交易链路与幂等风控边界。",
+		TOC:              parsed.TOC,
+		EstimatedTokens:  parsed.EstimatedTokens,
+		Markdown:         parsed.Markdown,
+	}}
+
+	fixedNonce := "11223344556677889900aabbccddeeff"
+	slotA := doctype.SlotSpec{SlotID: "slot_a", Title: "1. 总体边界", Ownership: "auto", EnableSourceTools: false}
+	slotB := doctype.SlotSpec{SlotID: "slot_b", Title: "2. 订单与风控幂等", InstructionHint: "说明幂等键与 RiskCenter 规则", Ownership: "auto", EnableSourceTools: false}
+
+	msgsA, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
+		DocType:           sysArch,
+		Slot:              slotA,
+		Nonce:             fixedNonce,
+		EnableSourceTools: false,
+		RefDocs:           refDocs,
+	})
+	msgsB, _ := llm.BuildSlotMessages(llm.SlotPromptInput{
+		DocType:           sysArch,
+		Slot:              slotB,
+		Nonce:             fixedNonce,
+		EnableSourceTools: false,
+		RefDocs:           refDocs,
+	})
+
+	// 1. 多槽位第 2 段（当前目标章节槽位之前）共享前缀字节 100% 一致
+	splitMarker := "## 当前目标章节槽位"
+	idxA := strings.Index(msgsA[1].Content, splitMarker)
+	idxB := strings.Index(msgsB[1].Content, splitMarker)
+	if idxA <= 0 || idxB <= 0 {
+		t.Fatalf("未找到槽位边界标记")
+	}
+	prefixA := msgsA[1].Content[:idxA]
+	prefixB := msgsB[1].Content[:idxB]
+	if prefixA != prefixB {
+		t.Fatalf("T-ADR10-07 违规：多槽位第 2 段共享前缀（含 arch_reference_docs）必须字节级 100%% 一致")
+	}
+	if !strings.Contains(prefixA, `label="arch_reference_docs"`) || !strings.Contains(prefixA, "电商交易总体设计") {
+		t.Fatalf("共享前缀缺失 arch_reference_docs L0 块: %s", prefixA)
+	}
+
+	// 2. EnableSourceTools=false 第 3 段尾部获得 <= 1500 Tokens 相关章节摘录
+	tailB := msgsB[1].Content[idxB:]
+	if !strings.Contains(tailB, `label="arch_ref_excerpts:slot_b"`) || !strings.Contains(tailB, "RiskCenter") {
+		t.Fatalf("非工具槽位第 3 段尾部未获得相关参考章节摘录: %s", tailB)
+	}
+
+	// 3. EnableSourceTools=true 时，即使无本地 FS/IR，Toolkit 仍 HasTools()==true 并可执行 read_ref_doc_section / search_ref_docs（输出脱敏+nonce）
+	refDocsWithSecret := []refdoc.PromptDoc{{
+		DocID:            102,
+		Title:            "含示例密钥参考",
+		DocKind:          "arch_design",
+		VersionNo:        1,
+		ScopeLevel:       "system",
+		ScopeRank:        1,
+		SourceScopeLabel: "全系统",
+		SummaryMD:        "系统配置说明",
+		TOC:              []refdoc.HeadingNode{{SectionID: "sec-1", Title: "配置", Level: 1, StartLine: 1, EndLine: 2}},
+		Markdown:         "# 配置\npassword: \"inline_tool_secret_val\"\n",
+	}}
+	tk := llm.NewSandboxSourceToolkit(llm.SandboxToolkitConfig{
+		RefDocs: refDocsWithSecret,
+	})
+	if !tk.HasTools() {
+		t.Fatal("仅有 RefDocs（无本地 FS 与 IR）时 Toolkit.HasTools() 仍必须为 true")
+	}
+	defs := tk.Definitions()
+	hasRead, hasSearch := false, false
+	for _, d := range defs {
+		if d.Function.Name == llm.ToolNameReadRefDocSection {
+			hasRead = true
+		}
+		if d.Function.Name == llm.ToolNameSearchRefDocs {
+			hasSearch = true
+		}
+	}
+	if !hasRead || !hasSearch {
+		t.Fatalf("Toolkit 未注册参考文档检索工具: %+v", defs)
+	}
+	readOut, _, isErr := tk.Execute(context.Background(), llm.ToolCall{
+		ID:   "call_1",
+		Type: "function",
+		Function: llm.ToolCallFunction{
+			Name:      llm.ToolNameReadRefDocSection,
+			Arguments: `{"doc_id":102,"section_id":"sec-1"}`,
+		},
+	})
+	if isErr || strings.Contains(readOut, "inline_tool_secret_val") || !strings.Contains(readOut, "<untrusted_repo_data") {
+		t.Fatalf("read_ref_doc_section 输出未脱敏或未包 nonce 栅栏: err=%v out=%s", isErr, readOut)
+	}
+	searchOut, _, isSearchErr := tk.Execute(context.Background(), llm.ToolCall{
+		ID:   "call_2",
+		Type: "function",
+		Function: llm.ToolCallFunction{
+			Name:      llm.ToolNameSearchRefDocs,
+			Arguments: `{"query":"配置"}`,
+		},
+	})
+	if isSearchErr || !strings.Contains(searchOut, "sec-1") {
+		t.Fatalf("search_ref_docs 检索失败: err=%v out=%s", isSearchErr, searchOut)
+	}
+
+	// 4. T-ADR10-14: EstimateAndCheckBudget 纳入参考文档 L0 前缀与非工具摘录预算，并遵守 Monorepo 12 篇 / 3600T 上限
+	var manyDocs []refdoc.PromptDoc
+	for i := 1; i <= 15; i++ {
+		manyDocs = append(manyDocs, refdoc.PromptDoc{
+			DocID:           uint(i),
+			Title:           fmt.Sprintf("参考文档-%d", i),
+			ScopeLevel:      "subsystem",
+			ScopeRank:       2,
+			SummaryMD:       strings.Repeat("系统边界描述。", 40),
+			EstimatedTokens: 2500,
+			Markdown:        "# 标题\n" + strings.Repeat("正文内容行。\n", 100),
+		})
+	}
+	bWithoutRef := llm.EstimateAndCheckBudget(llm.BudgetCheckInput{
+		DocTypes:         []*doctype.AssetBundle{sysArch},
+		GlossaryCached:   true,
+		MaxTokensPerTask: 500000,
+	})
+	bWithRef := llm.EstimateAndCheckBudget(llm.BudgetCheckInput{
+		DocTypes:          []*doctype.AssetBundle{sysArch},
+		GlossaryCached:    true,
+		MaxTokensPerTask:  500000,
+		RefDocs:           manyDocs,
+		IsWholeRepoRollup: true,
+	})
+	if bWithRef.Advice.EstimatedTokens <= bWithoutRef.Advice.EstimatedTokens {
+		t.Fatalf("EstimateAndCheckBudget 应计入参考文档预算: without=%d with=%d", bWithoutRef.Advice.EstimatedTokens, bWithRef.Advice.EstimatedTokens)
 	}
 }

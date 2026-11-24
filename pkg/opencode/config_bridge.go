@@ -6,20 +6,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"code-archdoc/pkg/refdoc"
+	"code-archdoc/pkg/security"
 )
 
 // ReadOnlyAgentName OpenCode 隔离配置文件中声明的强制只读文档反推 Agent 名称。
 const ReadOnlyAgentName = "archdoc-readonly-docgen"
 
+// StagedRefDocFile 描述在 OpenCode v2 平级隔离目录中落盘的只读脱敏参考文档副本。
+type StagedRefDocFile struct {
+	DocID    uint
+	Title    string
+	FileName string
+	FullPath string
+}
+
 type sessionEnv struct {
-	RootDir  string
-	ModelArg string
-	EnvList  []string
+	RootDir         string
+	RefDir          string
+	CanonicalRefDir string
+	StagedRefFiles  []StagedRefDocFile
+	ModelArg        string
+	EnvList         []string
 }
 
 func (s *sessionEnv) Cleanup() {
-	if s != nil && s.RootDir != "" {
+	if s == nil {
+		return
+	}
+	if s.RootDir != "" {
 		_ = os.RemoveAll(s.RootDir)
+	}
+	if s.RefDir != "" {
+		_ = os.RemoveAll(s.RefDir)
 	}
 }
 
@@ -35,6 +55,52 @@ func prepareSessionEnv(req DocGenRequest, isV2 bool) (*sessionEnv, error) {
 
 	cleanupOnErr := func() {
 		_ = os.RemoveAll(rootDir)
+	}
+
+	var refDir, canonicalRefDir string
+	var stagedRefFiles []StagedRefDocFile
+	if isV2 && hasNonInlineRefDocs(req.RefDocs) {
+		rDir, rErr := os.MkdirTemp("", "archdoc-ocref-*")
+		if rErr != nil {
+			cleanupOnErr()
+			return nil, fmt.Errorf("创建参考文档平级隔离目录失败: %w", rErr)
+		}
+		if chmodErr := os.Chmod(rDir, 0o700); chmodErr != nil {
+			_ = os.RemoveAll(rDir)
+			cleanupOnErr()
+			return nil, fmt.Errorf("设置参考文档隔离目录权限 0700 失败: %w", chmodErr)
+		}
+		refDir = rDir
+		cleanupWithRef := func() {
+			_ = os.RemoveAll(refDir)
+			cleanupOnErr()
+		}
+		cleanupOnErr = cleanupWithRef
+
+		canon, eErr := filepath.EvalSymlinks(refDir)
+		if eErr != nil {
+			canon = refDir
+		}
+		canonicalRefDir = canon
+
+		redactor := security.NewSecretRedactor()
+		stagedRefFiles = make([]StagedRefDocFile, 0, len(req.RefDocs))
+		for _, rd := range req.RefDocs {
+			safeSlug := sanitizeRefDocSlug(rd.Title)
+			fileName := fmt.Sprintf("%d_v%d_%s.md", rd.DocID, rd.VersionNo, safeSlug)
+			fullPath := filepath.Join(canonicalRefDir, fileName)
+			sanitized, _ := redactor.RedactText(rd.Markdown)
+			if wErr := writeSecureFile(fullPath, []byte(sanitized), 0o600); wErr != nil {
+				cleanupOnErr()
+				return nil, fmt.Errorf("写入参考文档副本失败: %w", wErr)
+			}
+			stagedRefFiles = append(stagedRefFiles, StagedRefDocFile{
+				DocID:    rd.DocID,
+				Title:    rd.Title,
+				FileName: fileName,
+				FullPath: fullPath,
+			})
+		}
 	}
 
 	xdgConfig := filepath.Join(rootDir, "xdg_config")
@@ -70,7 +136,7 @@ func prepareSessionEnv(req DocGenRequest, isV2 bool) (*sessionEnv, error) {
 		copyHostOpenCodeAuth(filepath.Join(xdgData, "opencode", "auth.json"))
 	}
 
-	cfgBytes, err := buildOpenCodeConfigJSON(req, isModeA, isV2)
+	cfgBytes, err := buildOpenCodeConfigJSON(req, isModeA, isV2, canonicalRefDir)
 	if err != nil {
 		cleanupOnErr()
 		return nil, err
@@ -84,15 +150,18 @@ func prepareSessionEnv(req DocGenRequest, isV2 bool) (*sessionEnv, error) {
 
 	envList := buildIsolatedEnv(cfgPath, xdgConfig, xdgData, xdgState, xdgCache, req.WorkDir)
 	return &sessionEnv{
-		RootDir:  rootDir,
-		ModelArg: modelArg,
-		EnvList:  envList,
+		RootDir:         rootDir,
+		RefDir:          refDir,
+		CanonicalRefDir: canonicalRefDir,
+		StagedRefFiles:  stagedRefFiles,
+		ModelArg:        modelArg,
+		EnvList:         envList,
 	}, nil
 }
 
-func buildOpenCodeConfigJSON(req DocGenRequest, isModeA bool, isV2 bool) ([]byte, error) {
+func buildOpenCodeConfigJSON(req DocGenRequest, isModeA bool, isV2 bool, canonicalRefDir string) ([]byte, error) {
 	if isV2 {
-		return buildOpenCodeV2ConfigJSON(req, isModeA)
+		return buildOpenCodeV2ConfigJSON(req, isModeA, canonicalRefDir)
 	}
 
 	root := map[string]any{
@@ -161,7 +230,7 @@ func buildOpenCodeConfigJSON(req DocGenRequest, isModeA bool, isV2 bool) ([]byte
 
 // buildOpenCodeV2ConfigJSON 生成 OpenCode v2.x 原生配置：
 // v2 权限求值采用后匹配优先（findLast），必须把默认 "*:deny" 放在首位，再依次放行只读工具并覆写禁用敏感/越权操作。
-func buildOpenCodeV2ConfigJSON(req DocGenRequest, isModeA bool) ([]byte, error) {
+func buildOpenCodeV2ConfigJSON(req DocGenRequest, isModeA bool, canonicalRefDir string) ([]byte, error) {
 	permissions := []map[string]string{
 		{"action": "*", "resource": "*", "effect": "deny"},
 		{"action": "read", "resource": "*", "effect": "allow"},
@@ -180,6 +249,13 @@ func buildOpenCodeV2ConfigJSON(req DocGenRequest, isModeA bool) ([]byte, error) 
 		{"action": "browser", "resource": "*", "effect": "deny"},
 		{"action": "question", "resource": "*", "effect": "deny"},
 		{"action": "external_directory", "resource": "*", "effect": "deny"},
+	}
+	if strings.TrimSpace(canonicalRefDir) != "" {
+		permissions = append(permissions, map[string]string{
+			"action":   "external_directory",
+			"resource": strings.TrimRight(canonicalRefDir, "/") + "/*",
+			"effect":   "allow",
+		})
 	}
 
 	root := map[string]any{
@@ -393,4 +469,41 @@ func SanitizeArgsForLog(args []string, apiKey string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+func hasNonInlineRefDocs(docs []refdoc.PromptDoc) bool {
+	if len(docs) == 0 {
+		return false
+	}
+	total := 0
+	for _, d := range docs {
+		t := d.EstimatedTokens
+		if t <= 0 {
+			t = refdoc.EstimateTextTokens(d.Markdown)
+		}
+		if t > 1000 || strings.TrimSpace(d.Markdown) == "" {
+			return true
+		}
+		total += t
+	}
+	return total > 1800
+}
+
+func sanitizeRefDocSlug(title string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(title)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else if r == '-' || r == '_' || r == ' ' {
+			b.WriteByte('-')
+		}
+		if b.Len() >= 32 {
+			break
+		}
+	}
+	res := strings.Trim(b.String(), "-")
+	if res == "" {
+		return "ref"
+	}
+	return res
 }

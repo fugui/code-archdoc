@@ -5,10 +5,34 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	"code-archdoc/pkg/codeir"
+	"code-archdoc/pkg/refdoc"
 )
+
+// RefDocSpec 描述供 Verifier 对齐的参考文档元数据与目录快照（ADR-10）。
+type RefDocSpec struct {
+	DocID         uint
+	Title         string
+	VersionNo     int
+	ScopeLevel    string
+	TOC           []refdoc.HeadingNode
+	DeclaredTerms []string
+}
+
+// RefDocCitation 规范化架构参考文档溯源锚点（独立存入 SectionEvidence.RefCitationsJSON）。
+type RefDocCitation struct {
+	CitationKey  string `json:"citation_key"`
+	DocID        uint   `json:"doc_id"`
+	VersionNo    int    `json:"version_no"`
+	SectionID    string `json:"section_id,omitempty"`
+	SectionTitle string `json:"section_title,omitempty"`
+	DocTitle     string `json:"doc_title"`
+	ScopeLevel   string `json:"scope_level"`
+	Stale        bool   `json:"stale"`
+}
 
 // CitedAnchorCandidate L2 模型输出的候选证据引用。
 type CitedAnchorCandidate struct {
@@ -560,4 +584,164 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// AlignRefDocCandidates 对齐 scope=="ref_doc" / symbol_kind=="ref_doc" 的候选引用（ADR-10 §3.3.4）：
+// - 命中 ActiveRefDocs 且 section_id 合法（或为空）-> RefDocCitation(stale=false)
+// - 仅命中 HistoricalRefDocs -> RefDocCitation(stale=true) + warning（永不阻断审批）
+// - 均未命中 -> UnverifiedRef(ref_kind="ref_doc", severity="error") 阻断 can_approve
+func AlignRefDocCandidates(
+	activeDocs []RefDocSpec,
+	historicalDocs []RefDocSpec,
+	slotID string,
+	candidates []CitedAnchorCandidate,
+) ([]RefDocCitation, []UnverifiedRef) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	activeByID := make(map[uint]RefDocSpec, len(activeDocs))
+	for _, d := range activeDocs {
+		if d.DocID > 0 {
+			activeByID[d.DocID] = d
+		}
+	}
+	histByID := make(map[uint]RefDocSpec, len(historicalDocs))
+	for _, d := range historicalDocs {
+		if d.DocID > 0 {
+			histByID[d.DocID] = d
+		}
+	}
+
+	var citations []RefDocCitation
+	var unverified []UnverifiedRef
+	seenKey := make(map[string]bool)
+
+	for _, c := range candidates {
+		docID, secFromPath := parseRefDocCandidateTarget(c.FilePath)
+		secID := strings.TrimSpace(c.FQSymbol)
+		if secID == "" {
+			secID = secFromPath
+		}
+
+		rawVal := strings.TrimSpace(c.FilePath)
+		if secID != "" {
+			rawVal = rawVal + "#" + secID
+		}
+		if docID == 0 {
+			unverified = append(unverified, UnverifiedRef{
+				SlotID:   slotID,
+				RefKind:  "ref_doc",
+				Value:    rawVal,
+				Severity: "error",
+			})
+			continue
+		}
+
+		if doc, ok := activeByID[docID]; ok {
+			secTitle, secValid := lookupRefDocSectionTitle(doc.TOC, secID)
+			if !secValid {
+				unverified = append(unverified, UnverifiedRef{
+					SlotID:   slotID,
+					RefKind:  "ref_doc",
+					Value:    fmt.Sprintf("ref_doc:%d@v%d#%s", doc.DocID, doc.VersionNo, secID),
+					Severity: "error",
+				})
+				continue
+			}
+			citKey := buildRefDocCitationKey(doc.DocID, doc.VersionNo, secID)
+			if !seenKey[citKey] {
+				seenKey[citKey] = true
+				citations = append(citations, RefDocCitation{
+					CitationKey:  citKey,
+					DocID:        doc.DocID,
+					VersionNo:    doc.VersionNo,
+					SectionID:    secID,
+					SectionTitle: secTitle,
+					DocTitle:     doc.Title,
+					ScopeLevel:   doc.ScopeLevel,
+					Stale:        false,
+				})
+			}
+			continue
+		}
+
+		if hDoc, ok := histByID[docID]; ok {
+			secTitle := ""
+			if secID != "" {
+				if t, valid := lookupRefDocSectionTitle(hDoc.TOC, secID); valid {
+					secTitle = t
+				}
+			}
+			citKey := buildRefDocCitationKey(hDoc.DocID, hDoc.VersionNo, secID)
+			if !seenKey[citKey] {
+				seenKey[citKey] = true
+				citations = append(citations, RefDocCitation{
+					CitationKey:  citKey,
+					DocID:        hDoc.DocID,
+					VersionNo:    hDoc.VersionNo,
+					SectionID:    secID,
+					SectionTitle: secTitle,
+					DocTitle:     hDoc.Title,
+					ScopeLevel:   hDoc.ScopeLevel,
+					Stale:        true,
+				})
+			}
+			unverified = append(unverified, UnverifiedRef{
+				SlotID:   slotID,
+				RefKind:  "ref_doc",
+				Value:    citKey,
+				Severity: "warning",
+			})
+			continue
+		}
+
+		unverified = append(unverified, UnverifiedRef{
+			SlotID:   slotID,
+			RefKind:  "ref_doc",
+			Value:    rawVal,
+			Severity: "error",
+		})
+	}
+	return citations, unverified
+}
+
+func parseRefDocCandidateTarget(raw string) (uint, string) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, ""
+	}
+	sec := ""
+	if hashIdx := strings.IndexByte(s, '#'); hashIdx >= 0 {
+		sec = strings.TrimSpace(s[hashIdx+1:])
+		s = s[:hashIdx]
+	}
+	if atIdx := strings.IndexByte(s, '@'); atIdx >= 0 {
+		s = s[:atIdx]
+	}
+	s = strings.TrimPrefix(s, "ref_doc:")
+	v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
+	if err != nil || v == 0 {
+		return 0, sec
+	}
+	return uint(v), sec
+}
+
+func lookupRefDocSectionTitle(toc []refdoc.HeadingNode, secID string) (string, bool) {
+	if secID == "" {
+		return "", true
+	}
+	for _, n := range toc {
+		if n.SectionID == secID {
+			return n.Title, true
+		}
+	}
+	return "", false
+}
+
+func buildRefDocCitationKey(docID uint, versionNo int, secID string) string {
+	if secID == "" {
+		return fmt.Sprintf("ref_doc:%d@v%d", docID, versionNo)
+	}
+	return fmt.Sprintf("ref_doc:%d@v%d#%s", docID, versionNo, secID)
 }
