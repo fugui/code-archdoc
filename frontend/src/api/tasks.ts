@@ -6,6 +6,7 @@ import type {
   GenTaskDetailVO,
   GenerateTaskPayload,
   GenerateTaskSubmitResponse,
+  RetryTaskPayload,
   TaskListQuery,
   TaskListResponse,
 } from '../types';
@@ -56,6 +57,16 @@ export async function getTaskDetail(taskId: number): Promise<GenTaskDetailVO> {
 export async function cancelTask(taskId: number): Promise<CancelTaskResponse> {
   return apiRequest<CancelTaskResponse>(`/tasks/${taskId}/cancel`, {
     method: 'POST',
+  });
+}
+
+export async function retryTask(
+  taskId: number,
+  payload?: RetryTaskPayload,
+): Promise<GenerateTaskSubmitResponse> {
+  return apiRequest<GenerateTaskSubmitResponse>(`/tasks/${taskId}/retry`, {
+    method: 'POST',
+    bodyData: payload ?? {},
   });
 }
 

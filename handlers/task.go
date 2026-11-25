@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -326,6 +327,91 @@ func (h *AppHandlers) CancelTask(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, vo)
+}
+
+// RetryTask 对已终态（失败/取消/已完成）的任务发起任务级重试或重新生成（POST /api/tasks/:task_id/retry -> 202）。
+func (h *AppHandlers) RetryTask(c *gin.Context) {
+	taskIDVal, err := strconv.ParseUint(c.Param("task_id"), 10, 64)
+	if err != nil || taskIDVal == 0 {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "task_id 参数非法", nil)
+		return
+	}
+	taskID := uint(taskIDVal)
+
+	var req services.RetryTaskRequest
+	if bindErr := c.ShouldBindJSON(&req); bindErr != nil && !errors.Is(bindErr, io.EOF) {
+		WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, "请求体 JSON 格式非法", nil)
+		return
+	}
+
+	user, ok := CurrentUserFromContext(c)
+	if !ok {
+		WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "未登录或会话已失效", nil)
+		return
+	}
+
+	repoID, scopes, err := h.genSvc.GetTaskScopesForCancel(c.Request.Context(), taskID)
+	if err != nil {
+		if errors.Is(err, models.ErrNotFound) {
+			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标任务不存在", nil)
+			return
+		}
+		WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "查询任务归属范围失败", nil)
+		return
+	}
+	for _, sc := range scopes {
+		if _, _, scopeOK := h.CheckScopeWriteOrAbort(c, repoID, sc); !scopeOK {
+			return
+		}
+	}
+
+	vo, err := h.genSvc.RetryTask(c.Request.Context(), taskID, req, user)
+	if err != nil {
+		var forbErr *services.BatchForbiddenError
+		var engErr *services.EngineUnavailableError
+		switch {
+		case errors.As(err, &forbErr):
+			WriteError(c, http.StatusForbidden, ErrCodeForbidden, forbErr.Error(), gin.H{
+				"forbidden_scopes": forbErr.ForbiddenScopes,
+			})
+		case errors.As(err, &engErr):
+			WriteError(c, http.StatusBadRequest, ErrCodeEngineUnavailable, engErr.Error(), gin.H{
+				"engine": engErr.Engine,
+				"reason": engErr.Reason,
+			})
+		case errors.Is(err, services.ErrTaskNotRetryable):
+			WriteError(c, http.StatusConflict, ErrCodeConflict, err.Error(), nil)
+		case errors.Is(err, sandbox.ErrInvalidSubdir):
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidSubdir, err.Error(), nil)
+		case errors.Is(err, services.ErrDocTypeInactive):
+			WriteError(c, http.StatusBadRequest, ErrCodeDocTypeInactive, err.Error(), nil)
+		case errors.Is(err, services.ErrInvalidTaskParam):
+			WriteError(c, http.StatusBadRequest, ErrCodeInvalidParam, err.Error(), nil)
+		case errors.Is(err, models.ErrNotFound):
+			WriteError(c, http.StatusNotFound, ErrCodeNotFound, "目标任务不存在", nil)
+		case errors.Is(err, services.ErrQueueFull):
+			WriteError(c, http.StatusTooManyRequests, ErrCodeQueueFull, err.Error(), nil)
+		default:
+			log.Printf("[%s] 重试生成任务失败 (task_id=%d): %v", config.ServiceName, taskID, err)
+			WriteError(c, http.StatusInternalServerError, ErrCodeInternalError, "重试生成任务失败", nil)
+		}
+		return
+	}
+
+	commonAudit.SetAuditContext(
+		c,
+		config.ModuleKey,
+		"retry",
+		commonModels.AuditLevelP1,
+		fmt.Sprintf("重试/重新生成任务 #%d -> 新任务 #%d (kind=%s, mode=%q)", taskID, vo.ID, vo.TaskKind, req.Mode),
+		"gen_task",
+		strconv.FormatUint(uint64(vo.ID), 10),
+		fmt.Sprintf("task#%d", vo.ID),
+		nil,
+		vo,
+	)
+
+	c.JSON(http.StatusAccepted, vo)
 }
 
 // RetrySlotTask 对单个失败槽位发起独立重试（POST /api/tasks/:task_id/slots/:slot_task_id/retry -> 202）。

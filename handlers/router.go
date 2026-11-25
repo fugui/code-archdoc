@@ -176,6 +176,7 @@ func (h *AppHandlers) RegisterRoutes(r *gin.Engine, authDB *gorm.DB) {
 			protected.GET("/tasks", h.ListTasks)
 			protected.GET("/tasks/:task_id", h.GetTaskDetail)
 			protected.POST("/tasks/:task_id/cancel", h.CancelTask)
+			protected.POST("/tasks/:task_id/retry", h.RetryTask)
 			protected.POST("/tasks/:task_id/slots/:slot_task_id/retry", h.RetrySlotTask)
 		}
 

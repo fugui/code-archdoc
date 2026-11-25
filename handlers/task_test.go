@@ -1221,3 +1221,287 @@ func TestSplitTasksQueueFullAndAllFailedSlotRetryRecovery(t *testing.T) {
 		t.Fatalf("第 2 槽位重试后应无损保留兄弟槽位 %s 的非内联 cited_anchors，实际 evs=%+v", slot1.SlotID, rev2Evs)
 	}
 }
+
+func TestRetryTaskLifecycleRBACAndKinds(t *testing.T) {
+	env := setupM2TestEnv(t, 2)
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		userMsg := ""
+		if len(payload.Messages) >= 2 {
+			userMsg = payload.Messages[1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(userMsg, "repo_structure_for_glossary") {
+			_, _ = w.Write([]byte(`{"model":"mock-fast","choices":[{"message":{"content":"{\"module_summaries\":[],\"terms\":[]}"}}]}`))
+			return
+		}
+		contentObj := map[string]any{
+			"markdown": "重试后成功生成的内容 `src/order/order_service.cpp` `order::OrderService::Pay`。",
+			"cited_anchors": []map[string]string{
+				{"file_path": "src/order/order_service.cpp", "fq_symbol": "order::OrderService::Pay"},
+			},
+		}
+		contentBytes, _ := json.Marshal(contentObj)
+		respBytes, _ := json.Marshal(map[string]any{
+			"model":   "mock-fast",
+			"choices": []map[string]any{{"message": map[string]string{"role": "assistant", "content": string(contentBytes)}}},
+			"usage":   map[string]any{"prompt_tokens": 100, "completion_tokens": 40},
+		})
+		_, _ = w.Write(respBytes)
+	}))
+	defer mockLLM.Close()
+	configureMockLLMInDB(t, env, mockLLM.URL, 500000, 2000)
+
+	doRetry := func(tok string, taskPath string, payload any) *httptest.ResponseRecorder {
+		var bodyReader *bytes.Reader
+		if payload != nil {
+			b, _ := json.Marshal(payload)
+			bodyReader = bytes.NewReader(b)
+		} else {
+			bodyReader = bytes.NewReader(nil)
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/tasks/%s/retry", taskPath), bodyReader)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. 失败单任务重试 -> 202，沿用原范围/文档类型/引擎并执行至 ready
+	failedTask := models.GenTask{
+		RepoID:       env.repo.ID,
+		Subdirectory: "",
+		RefName:      "master",
+		TaskKind:     models.TaskKindGenerate,
+		Engine:       models.EngineNative,
+		Priority:     models.TaskPriorityInteractive,
+		DocTypesJSON: []byte(`["code-walkthrough"]`),
+		Status:       models.TaskStatusFailed,
+		ErrorCode:    "LLM_TIMEOUT",
+		ErrorMessage: "上游推理超时",
+		TriggeredBy:  env.owner.ID,
+	}
+	if err := env.db.Create(&failedTask).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 非法参数、越权、不存在任务校验
+	if recBadID := doRetry(env.ownerTok, "abc", nil); recBadID.Code != http.StatusBadRequest || !strings.Contains(recBadID.Body.String(), handlers.ErrCodeInvalidParam) {
+		t.Fatalf("非法 task_id 期望 400 INVALID_PARAM，实际 %d (%s)", recBadID.Code, recBadID.Body.String())
+	}
+	if recBadMode := doRetry(env.ownerTok, fmt.Sprintf("%d", failedTask.ID), map[string]any{"mode": "invalid"}); recBadMode.Code != http.StatusBadRequest || !strings.Contains(recBadMode.Body.String(), handlers.ErrCodeInvalidParam) {
+		t.Fatalf("非法 mode 期望 400 INVALID_PARAM，实际 %d (%s)", recBadMode.Code, recBadMode.Body.String())
+	}
+	if rec404 := doRetry(env.ownerTok, "999999", nil); rec404.Code != http.StatusNotFound {
+		t.Fatalf("不存在任务期望 404，实际 %d", rec404.Code)
+	}
+	if rec403 := doRetry(env.otherTok, fmt.Sprintf("%d", failedTask.ID), nil); rec403.Code != http.StatusForbidden {
+		t.Fatalf("非写权限用户越权重试期望 403，实际 %d (%s)", rec403.Code, rec403.Body.String())
+	}
+
+	recRetryFail := doRetry(env.ownerTok, fmt.Sprintf("%d", failedTask.ID), map[string]any{})
+	if recRetryFail.Code != http.StatusAccepted {
+		t.Fatalf("失败单任务重试期望 202，实际 %d (%s)", recRetryFail.Code, recRetryFail.Body.String())
+	}
+	var retriedResp services.GenerateTaskSubmitResponse
+	if err := json.Unmarshal(recRetryFail.Body.Bytes(), &retriedResp); err != nil {
+		t.Fatal(err)
+	}
+	if retriedResp.ID == failedTask.ID || retriedResp.TaskKind != models.TaskKindGenerate || len(retriedResp.DocTypes) != 1 || retriedResp.DocTypes[0] != "code-walkthrough" {
+		t.Fatalf("重试新任务字段不符合预期: %+v", retriedResp)
+	}
+	env.genSvc.WaitAll()
+
+	retriedDetail, err := env.genSvc.GetTaskDetail(context.Background(), retriedResp.ID)
+	if err != nil || retriedDetail.Status != models.TaskStatusReady {
+		t.Fatalf("重试任务 #%d 期望执行至 ready，实际 detail=%+v err=%v", retriedResp.ID, retriedDetail, err)
+	}
+
+	// 2. 已完成任务重新生成 -> 202，task_kind 为 regenerate
+	recRegen := doRetry(env.ownerTok, fmt.Sprintf("%d", retriedDetail.ID), nil)
+	if recRegen.Code != http.StatusAccepted {
+		t.Fatalf("已完成任务重新生成期望 202，实际 %d (%s)", recRegen.Code, recRegen.Body.String())
+	}
+	var regenResp services.GenerateTaskSubmitResponse
+	if err := json.Unmarshal(recRegen.Body.Bytes(), &regenResp); err != nil {
+		t.Fatal(err)
+	}
+	if regenResp.TaskKind != models.TaskKindRegenerate {
+		t.Fatalf("已完成任务重新生成期望 task_kind=regenerate，实际 %s", regenResp.TaskKind)
+	}
+	env.genSvc.WaitAll()
+
+	// 3. 已取消任务重试 -> 202；运行中/排队中任务重试 -> 409 CONFLICT
+	canceledTask := models.GenTask{
+		RepoID:       env.repo.ID,
+		Subdirectory: "",
+		RefName:      "master",
+		TaskKind:     models.TaskKindGenerate,
+		Engine:       models.EngineNative,
+		Priority:     models.TaskPriorityInteractive,
+		DocTypesJSON: []byte(`["system-architecture"]`),
+		Status:       models.TaskStatusCanceled,
+		TriggeredBy:  env.owner.ID,
+	}
+	runningTask := models.GenTask{
+		RepoID:       env.repo.ID,
+		Subdirectory: "",
+		RefName:      "master",
+		TaskKind:     models.TaskKindGenerate,
+		Engine:       models.EngineNative,
+		Priority:     models.TaskPriorityInteractive,
+		DocTypesJSON: []byte(`["system-architecture"]`),
+		Status:       models.TaskStatusGenerating,
+		TriggeredBy:  env.owner.ID,
+	}
+	for _, tk := range []*models.GenTask{&canceledTask, &runningTask} {
+		if err := env.db.Create(tk).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recRunning := doRetry(env.ownerTok, fmt.Sprintf("%d", runningTask.ID), nil); recRunning.Code != http.StatusConflict {
+		t.Fatalf("运行中任务重试期望 409 CONFLICT，实际 %d (%s)", recRunning.Code, recRunning.Body.String())
+	}
+	recCanceled := doRetry(env.ownerTok, fmt.Sprintf("%d", canceledTask.ID), nil)
+	if recCanceled.Code != http.StatusAccepted {
+		t.Fatalf("已取消任务重试期望 202，实际 %d (%s)", recCanceled.Code, recCanceled.Body.String())
+	}
+	env.genSvc.WaitAll()
+
+	// 4. 批量任务部分失败：默认仅重试失败子目录；传 only_failed=false + mode=regenerate 全量重跑原批量范围
+	batchParent := models.GenTask{
+		RepoID:       env.repo.ID,
+		Subdirectory: "",
+		RefName:      "master",
+		TaskKind:     models.TaskKindBatch,
+		Engine:       models.EngineNative,
+		Priority:     models.TaskPriorityBatch,
+		DocTypesJSON: []byte(`["code-walkthrough"]`),
+		Status:       models.TaskStatusReady,
+		TriggeredBy:  env.owner.ID,
+	}
+	if err := env.db.Create(&batchParent).Error; err != nil {
+		t.Fatal(err)
+	}
+	readyChild := models.GenTask{
+		ParentTaskID: &batchParent.ID,
+		RepoID:       env.repo.ID,
+		Subdirectory: "include",
+		RefName:      "master",
+		TaskKind:     models.TaskKindGenerate,
+		Engine:       models.EngineNative,
+		Priority:     models.TaskPriorityBatch,
+		DocTypesJSON: []byte(`["code-walkthrough"]`),
+		Status:       models.TaskStatusReady,
+		TriggeredBy:  env.owner.ID,
+	}
+	failedChild := models.GenTask{
+		ParentTaskID: &batchParent.ID,
+		RepoID:       env.repo.ID,
+		Subdirectory: "src",
+		RefName:      "master",
+		TaskKind:     models.TaskKindGenerate,
+		Engine:       models.EngineNative,
+		Priority:     models.TaskPriorityBatch,
+		DocTypesJSON: []byte(`["code-walkthrough"]`),
+		Status:       models.TaskStatusFailed,
+		ErrorCode:    "ALL_SLOTS_FAILED",
+		TriggeredBy:  env.owner.ID,
+	}
+	for _, ch := range []*models.GenTask{&readyChild, &failedChild} {
+		if err := env.db.Create(ch).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recBatchOnlyFailed := doRetry(env.ownerTok, fmt.Sprintf("%d", batchParent.ID), map[string]any{})
+	if recBatchOnlyFailed.Code != http.StatusAccepted {
+		t.Fatalf("批量部分失败默认重试期望 202，实际 %d (%s)", recBatchOnlyFailed.Code, recBatchOnlyFailed.Body.String())
+	}
+	var batchOnlyFailedResp services.GenerateTaskSubmitResponse
+	_ = json.Unmarshal(recBatchOnlyFailed.Body.Bytes(), &batchOnlyFailedResp)
+	env.genSvc.WaitAll()
+
+	batchOnlyFailedDetail, err := env.genSvc.GetTaskDetail(context.Background(), batchOnlyFailedResp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batchOnlyFailedDetail.ChildTasks) != 1 || batchOnlyFailedDetail.ChildTasks[0].Subdirectory != "src" {
+		t.Fatalf("批量仅重试失败子任务期望仅包含 src，实际 children=%+v", batchOnlyFailedDetail.ChildTasks)
+	}
+
+	recBatchFull := doRetry(env.ownerTok, fmt.Sprintf("%d", batchParent.ID), map[string]any{
+		"only_failed": false,
+		"mode":        "regenerate",
+	})
+	if recBatchFull.Code != http.StatusAccepted {
+		t.Fatalf("批量全量重跑期望 202，实际 %d (%s)", recBatchFull.Code, recBatchFull.Body.String())
+	}
+	var batchFullResp services.GenerateTaskSubmitResponse
+	_ = json.Unmarshal(recBatchFull.Body.Bytes(), &batchFullResp)
+	env.genSvc.WaitAll()
+
+	batchFullDetail, err := env.genSvc.GetTaskDetail(context.Background(), batchFullResp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batchFullDetail.ChildTasks) != 2 {
+		t.Fatalf("批量全量重跑期望 2 个子任务，实际 %d", len(batchFullDetail.ChildTasks))
+	}
+	for _, ch := range batchFullDetail.ChildTasks {
+		if ch.TaskKind != models.TaskKindRegenerate {
+			t.Fatalf("批量全量重跑子任务期望 task_kind=regenerate，实际 %s", ch.TaskKind)
+		}
+	}
+
+	// 5. 失败的增量刷新任务重试 -> 202，保持 incremental_refresh 并自动剔除当前已锁定槽位
+	docStore := models.NewDocumentStore(env.db)
+	doc, err := docStore.GetByScope(context.Background(), env.repo.ID, "", "master", "code-walkthrough")
+	if err != nil || doc == nil {
+		t.Fatalf("查询前置生成文档失败: doc=%+v err=%v", doc, err)
+	}
+	rev, _, err := docStore.GetRevisionWithSections(context.Background(), doc.ID, doc.CurrentRevisionNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := docStore.UpdateSectionOwnership(context.Background(), doc.ID, rev.ID, "directory_map", models.OwnershipLocked, false); err != nil {
+		t.Fatal(err)
+	}
+	incFailed := models.GenTask{
+		RepoID:           env.repo.ID,
+		Subdirectory:     "",
+		RefName:          "master",
+		TaskKind:         models.TaskKindIncrementalRefresh,
+		Engine:           models.EngineNative,
+		Priority:         models.TaskPriorityInteractive,
+		DocTypesJSON:     []byte(`["code-walkthrough"]`),
+		TargetDocumentID: &doc.ID,
+		TargetSlotsJSON:  []byte(`["directory_map","call_chain_guide"]`),
+		Status:           models.TaskStatusFailed,
+		ErrorCode:        "ALL_SLOTS_FAILED",
+		TriggeredBy:      env.owner.ID,
+	}
+	if err := env.db.Create(&incFailed).Error; err != nil {
+		t.Fatal(err)
+	}
+	recInc := doRetry(env.ownerTok, fmt.Sprintf("%d", incFailed.ID), nil)
+	if recInc.Code != http.StatusAccepted {
+		t.Fatalf("增量刷新失败任务重试期望 202，实际 %d (%s)", recInc.Code, recInc.Body.String())
+	}
+	var incResp services.GenerateTaskSubmitResponse
+	_ = json.Unmarshal(recInc.Body.Bytes(), &incResp)
+	if incResp.TaskKind != models.TaskKindIncrementalRefresh || incResp.TargetDocumentID == nil || *incResp.TargetDocumentID != doc.ID {
+		t.Fatalf("增量刷新重试应保留 task_kind 与 target_document_id: %+v", incResp)
+	}
+	if len(incResp.TargetSlots) != 1 || incResp.TargetSlots[0] != "call_chain_guide" {
+		t.Fatalf("增量刷新重试应剔除已锁定槽位 directory_map，实际 target_slots=%v", incResp.TargetSlots)
+	}
+	env.genSvc.WaitAll()
+}

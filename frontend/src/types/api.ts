@@ -107,6 +107,12 @@ export interface BatchGenerateTaskPayload {
   exclude_ref_doc_ids?: number[];
 }
 
+export interface RetryTaskPayload {
+  mode?: 'generate' | 'regenerate';
+  engine?: GenEngine;
+  only_failed?: boolean;
+}
+
 export interface UpdateRepoModulePolicyPayload {
   strategy: ModuleDiscoveryStrategy;
   exclude_globs: string[];

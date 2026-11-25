@@ -20,7 +20,7 @@ import {
   type StatusType,
 } from '@code/common';
 import { getRepoScopes, listDocTypes, listRepos } from '../api/repos';
-import { cancelTask, listTasks } from '../api/tasks';
+import { cancelTask, listTasks, retryTask } from '../api/tasks';
 import GenerateTaskModal, { type GenerateTaskScope } from '../components/GenerateTaskModal';
 import OverviewMicroPills from '../components/OverviewMicroPills';
 import { useModuleUser } from '../context/ModuleUserContext';
@@ -37,7 +37,11 @@ import type {
 } from '../types';
 import { getDocTypeShortName } from '../utils/docTypeUtils';
 import { formatApiError } from '../utils/errorMessages';
-import { formatEngineLabel } from '../utils/taskSubmitUtils';
+import {
+  formatEngineLabel,
+  getTaskRetryActionMeta,
+  normalizeSubmittedTasks,
+} from '../utils/taskSubmitUtils';
 import {
   DEFAULT_ARCHDOC_PAGE_SIZE,
   buildStudioPath,
@@ -118,6 +122,7 @@ export const TaskCenterPage: React.FC = () => {
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [cancelingId, setCancelingId] = useState<number | null>(null);
+  const [retryingId, setRetryingId] = useState<number | null>(null);
 
   // 任务监控/发起弹窗状态
   const [taskModal, setTaskModal] = useState<{
@@ -380,6 +385,36 @@ export const TaskCenterPage: React.FC = () => {
     }
   };
 
+  const handleRetryRowTask = async (task: GenTaskDetailVO) => {
+    const retryMeta = getTaskRetryActionMeta(task);
+    if (!retryMeta.canRetry) return;
+    const ok = await confirm({
+      title: retryMeta.confirmTitle,
+      content: retryMeta.confirmContent,
+      confirmText: retryMeta.confirmText,
+      cancelText: '取消',
+      type: 'info',
+    });
+    if (!ok) return;
+
+    setRetryingId(task.id);
+    try {
+      const created = await retryTask(task.id, retryMeta.payload);
+      const newTask = normalizeSubmittedTasks(created)[0] ?? created;
+      showToast(
+        `已提交${retryMeta.isFailureRetry ? '重试' : '重新生成'}任务 #${newTask.id}`,
+        'success',
+      );
+      await loadTasks(false);
+      openTaskDetailModal({ ...newTask, can_write: task.can_write });
+    } catch (err: unknown) {
+      const formatted = formatApiError(err, `发起${retryMeta.label}失败`);
+      showToast(`${formatted.title}：${formatted.message}`, 'error');
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
   const hasActiveFilters = Boolean(
     filterState.repoId ||
       filterState.status ||
@@ -616,6 +651,11 @@ export const TaskCenterPage: React.FC = () => {
                     const canOpenStudio =
                       Boolean(task.target_document_id) ||
                       (task.status === 'ready' && task.task_kind !== 'batch');
+                    const retryMeta = getTaskRetryActionMeta(task);
+                    const studioButtonClass =
+                      retryMeta.canRetry && retryMeta.buttonVariant === 'btn-primary'
+                        ? 'btn btn-secondary btn-small'
+                        : 'btn btn-primary btn-small';
 
                     return (
                       <tr key={task.id}>
@@ -760,10 +800,27 @@ export const TaskCenterPage: React.FC = () => {
                               </button>
                             )}
 
+                            {retryMeta.canRetry && (
+                              <button
+                                type="button"
+                                className={`btn ${retryMeta.buttonVariant} btn-small`}
+                                disabled={retryingId === task.id}
+                                onClick={() => void handleRetryRowTask(task)}
+                                title={retryMeta.tooltip}
+                              >
+                                {retryingId === task.id ? (
+                                  <Loader2 size={13} className="code-archdoc-spin" />
+                                ) : (
+                                  <RotateCcw size={13} />
+                                )}
+                                <span>{retryMeta.label}</span>
+                              </button>
+                            )}
+
                             {canOpenStudio && (
                               <button
                                 type="button"
-                                className="btn btn-primary btn-small"
+                                className={studioButtonClass}
                                 onClick={() =>
                                   navigate(
                                     buildStudioPath(isEmbedded, task.repo_id, {

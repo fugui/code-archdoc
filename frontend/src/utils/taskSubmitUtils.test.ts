@@ -6,6 +6,7 @@ import {
   formatEngineLabel,
   getNonTerminalTaskIds,
   getSubmitButtonLabel,
+  getTaskRetryActionMeta,
   normalizeSubmittedTasks,
   resolvePreferredEngine,
   summarizeSplitTasks,
@@ -114,5 +115,102 @@ describe('T-ADR08-16：ENGINE_UNAVAILABLE 错误映射与引擎标签格式化',
     assert.equal(formatEngineLabel('opencode'), 'OpenCode');
     assert.equal(formatEngineLabel('native'), 'Native');
     assert.equal(formatEngineLabel(undefined), 'Native');
+  });
+});
+
+describe('任务中心重试与重新生成动作元数据推导 (getTaskRetryActionMeta)', () => {
+  it('失败与取消任务展示「重试」，其中失败任务高亮主按钮，无写权限或非终态不可操作', () => {
+    const failedTask: GenTaskDetailVO = {
+      ...makeTask(201, 'system-architecture', 'failed', 40),
+      repo_name: 'order-service',
+      can_write: true,
+    };
+    const failMeta = getTaskRetryActionMeta(failedTask);
+    assert.equal(failMeta.canRetry, true);
+    assert.equal(failMeta.isFailureRetry, true);
+    assert.equal(failMeta.label, '重试');
+    assert.equal(failMeta.modalLabel, '重试任务');
+    assert.equal(failMeta.buttonVariant, 'btn-primary');
+    assert.deepEqual(failMeta.payload, {});
+
+    const canceledMeta = getTaskRetryActionMeta({
+      ...failedTask,
+      status: 'canceled',
+    });
+    assert.equal(canceledMeta.canRetry, true);
+    assert.equal(canceledMeta.isFailureRetry, true);
+    assert.equal(canceledMeta.label, '重试');
+    assert.equal(canceledMeta.buttonVariant, 'btn-outline');
+
+    const noPermMeta = getTaskRetryActionMeta({ ...failedTask, can_write: false });
+    assert.equal(noPermMeta.canRetry, false);
+
+    const runningMeta = getTaskRetryActionMeta({
+      ...failedTask,
+      status: 'generating',
+      can_write: true,
+    });
+    assert.equal(runningMeta.canRetry, false);
+  });
+
+  it('已完成单任务与增量刷新任务展示「重新生成」并推导对应请求负载', () => {
+    const readyTask: GenTaskDetailVO = {
+      ...makeTask(202, 'data-and-contract', 'ready', 100),
+      repo_name: 'order-service',
+      can_write: true,
+    };
+    const readyMeta = getTaskRetryActionMeta(readyTask);
+    assert.equal(readyMeta.canRetry, true);
+    assert.equal(readyMeta.isFailureRetry, false);
+    assert.equal(readyMeta.label, '重新生成');
+    assert.equal(readyMeta.buttonVariant, 'btn-outline');
+    assert.deepEqual(readyMeta.payload, { mode: 'regenerate' });
+
+    const incReadyMeta = getTaskRetryActionMeta({
+      ...readyTask,
+      task_kind: 'incremental_refresh',
+    });
+    assert.equal(incReadyMeta.canRetry, true);
+    assert.equal(incReadyMeta.label, '重新生成');
+    assert.deepEqual(incReadyMeta.payload, {});
+  });
+
+  it('批量任务存在失败或取消子任务时展示「重试」并传 only_failed=true，全成功时展示「重新生成」', () => {
+    const batchPartialFail: GenTaskDetailVO = {
+      ...makeTask(301, 'system-architecture', 'ready', 100),
+      task_kind: 'batch',
+      can_write: true,
+      batch_summary: {
+        total_children: 3,
+        completed_children: 2,
+        failed_children: 1,
+        canceled_children: 0,
+        running_children: 0,
+      },
+    };
+    const partialMeta = getTaskRetryActionMeta(batchPartialFail);
+    assert.equal(partialMeta.canRetry, true);
+    assert.equal(partialMeta.isFailureRetry, true);
+    assert.equal(partialMeta.label, '重试');
+    assert.equal(partialMeta.modalLabel, '重试失败子任务');
+    assert.equal(partialMeta.buttonVariant, 'btn-primary');
+    assert.deepEqual(partialMeta.payload, { only_failed: true });
+
+    const batchAllReady: GenTaskDetailVO = {
+      ...batchPartialFail,
+      batch_summary: {
+        total_children: 3,
+        completed_children: 3,
+        failed_children: 0,
+        canceled_children: 0,
+        running_children: 0,
+      },
+    };
+    const fullRegenMeta = getTaskRetryActionMeta(batchAllReady);
+    assert.equal(fullRegenMeta.canRetry, true);
+    assert.equal(fullRegenMeta.isFailureRetry, false);
+    assert.equal(fullRegenMeta.label, '重新生成');
+    assert.equal(fullRegenMeta.buttonVariant, 'btn-outline');
+    assert.deepEqual(fullRegenMeta.payload, { mode: 'regenerate', only_failed: false });
   });
 });

@@ -34,6 +34,8 @@ var (
 	ErrInvalidTaskParam = errors.New("任务请求参数非法")
 	// ErrTaskAlreadyTerminal 任务已处于终态不可取消（HTTP 409 CONFLICT）。
 	ErrTaskAlreadyTerminal = errors.New("任务已处于终态，不可取消")
+	// ErrTaskNotRetryable 任务非终态不可重试或重新生成（HTTP 409 CONFLICT）。
+	ErrTaskNotRetryable = errors.New("仅允许对已完成、失败或已取消的终态任务发起重试或重新生成")
 	// ErrSlotNotRetryable 槽位子任务非失败状态不可重试（HTTP 409 CONFLICT）。
 	ErrSlotNotRetryable = errors.New("仅允许对失败状态的槽位子任务发起独立重试")
 	// ErrBatchForbidden 批量生成包含当前用户无写权限的范围（HTTP 403 FORBIDDEN）。
@@ -121,6 +123,13 @@ type GenerateTaskRequest struct {
 	Engine           string   `json:"engine"`
 	ArchElementID    *uint    `json:"arch_element_id,omitempty"`
 	ExcludeRefDocIDs []uint   `json:"exclude_ref_doc_ids,omitempty"`
+}
+
+// RetryTaskRequest 对应 POST /api/tasks/:task_id/retry 入参（任务级重试或重新生成）。
+type RetryTaskRequest struct {
+	Mode       string `json:"mode,omitempty"`
+	Engine     string `json:"engine,omitempty"`
+	OnlyFailed *bool  `json:"only_failed,omitempty"`
 }
 
 // GenerateTaskSubmitResponse 对应 POST /api/tasks/generate (202) 响应：
@@ -1123,6 +1132,275 @@ func (o *GenerationOrchestrator) CancelTask(ctx context.Context, taskID uint) (*
 	return &CancelTaskVO{
 		ID:     taskID,
 		Status: models.TaskStatusCanceled,
+	}, nil
+}
+
+// RetryTask 对已终态（failed / canceled / ready）的主任务或子任务发起任务级重试或重新生成，创建新任务并保留既有执行历史（202）。
+func (o *GenerationOrchestrator) RetryTask(
+	ctx context.Context,
+	taskID uint,
+	req RetryTaskRequest,
+	operator *commonModels.User,
+) (*GenerateTaskSubmitResponse, error) {
+	task, _, err := o.taskRepo.GetTaskWithSlots(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status != models.TaskStatusFailed && task.Status != models.TaskStatusCanceled && task.Status != models.TaskStatusReady {
+		return nil, ErrTaskNotRetryable
+	}
+
+	reqMode := strings.TrimSpace(req.Mode)
+	if reqMode != "" && reqMode != models.TaskKindGenerate && reqMode != models.TaskKindRegenerate {
+		return nil, fmt.Errorf("%w: mode 仅支持 generate 或 regenerate", ErrInvalidTaskParam)
+	}
+
+	engineInput := strings.TrimSpace(req.Engine)
+	if engineInput == "" {
+		engineInput = models.NormalizeEngine(task.Engine)
+	}
+
+	repo, err := o.masterRepo.GetRepository(ctx, task.RepoID)
+	if err != nil {
+		return nil, err
+	}
+
+	refName, branchErr := o.resolveAndValidateTaskBranch(ctx, repo, task.RefName)
+	if branchErr != nil {
+		refName = o.resolveEffectiveBranch(ctx, repo)
+	}
+
+	var operatorID uint
+	if operator != nil {
+		operatorID = operator.ID
+	}
+
+	var docTypes []string
+	_ = json.Unmarshal(task.DocTypesJSON, &docTypes)
+
+	switch task.TaskKind {
+	case models.TaskKindBatch:
+		return o.retryBatchTask(ctx, task, docTypes, req, reqMode, engineInput, refName, operator)
+	case models.TaskKindIncrementalRefresh:
+		return o.retryIncrementalRefreshTask(ctx, task, docTypes, engineInput, refName, operatorID)
+	default:
+		if len(docTypes) == 0 {
+			return nil, fmt.Errorf("%w: 原任务缺少文档类型配置", ErrInvalidTaskParam)
+		}
+		mode := reqMode
+		if mode == "" {
+			if task.Status == models.TaskStatusReady {
+				mode = models.TaskKindRegenerate
+			} else if task.TaskKind == models.TaskKindRegenerate {
+				mode = models.TaskKindRegenerate
+			} else {
+				mode = models.TaskKindGenerate
+			}
+		}
+		return o.SubmitGenerateTask(ctx, GenerateTaskRequest{
+			RepoID:       task.RepoID,
+			Subdirectory: task.Subdirectory,
+			RefName:      refName,
+			DocTypes:     docTypes,
+			Mode:         mode,
+			Engine:       engineInput,
+		}, operatorID)
+	}
+}
+
+func (o *GenerationOrchestrator) retryBatchTask(
+	ctx context.Context,
+	task *models.GenTask,
+	docTypes []string,
+	req RetryTaskRequest,
+	reqMode string,
+	engineInput string,
+	refName string,
+	operator *commonModels.User,
+) (*GenerateTaskSubmitResponse, error) {
+	children, err := o.taskRepo.ListChildTasks(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		allModules       bool
+		subdirectories   []string
+		includeRepoScope bool
+		batchDocTypes    = docTypes
+		hasAbnormalChild bool
+		firstChildMode   string
+	)
+
+	if len(children) == 0 {
+		allModules = true
+		includeRepoScope = true
+	} else {
+		var (
+			allSubdirs      []string
+			seenAllSub      = make(map[string]bool)
+			hadRepoScope    bool
+			failedSubdirs   []string
+			seenFailSub     = make(map[string]bool)
+			repoScopeFailed bool
+			failedDocTypes  []string
+			seenFailDT      = make(map[string]bool)
+		)
+		for i := range children {
+			ch := &children[i]
+			if firstChildMode == "" && (ch.TaskKind == models.TaskKindGenerate || ch.TaskKind == models.TaskKindRegenerate) {
+				firstChildMode = ch.TaskKind
+			}
+			if ch.Subdirectory == "" {
+				hadRepoScope = true
+			} else if !seenAllSub[ch.Subdirectory] {
+				seenAllSub[ch.Subdirectory] = true
+				allSubdirs = append(allSubdirs, ch.Subdirectory)
+			}
+			if ch.Status == models.TaskStatusFailed || ch.Status == models.TaskStatusCanceled {
+				hasAbnormalChild = true
+				if ch.Subdirectory == "" {
+					repoScopeFailed = true
+				} else if !seenFailSub[ch.Subdirectory] {
+					seenFailSub[ch.Subdirectory] = true
+					failedSubdirs = append(failedSubdirs, ch.Subdirectory)
+				}
+				var chDTs []string
+				_ = json.Unmarshal(ch.DocTypesJSON, &chDTs)
+				for _, slug := range chDTs {
+					s := strings.TrimSpace(slug)
+					if s != "" && !seenFailDT[s] {
+						seenFailDT[s] = true
+						failedDocTypes = append(failedDocTypes, s)
+					}
+				}
+			}
+		}
+
+		onlyFailed := req.OnlyFailed == nil || *req.OnlyFailed
+		if onlyFailed && (len(failedSubdirs) > 0 || repoScopeFailed) {
+			subdirectories = failedSubdirs
+			includeRepoScope = repoScopeFailed
+			if len(failedDocTypes) > 0 {
+				batchDocTypes = failedDocTypes
+			}
+		} else {
+			subdirectories = allSubdirs
+			includeRepoScope = hadRepoScope
+			if len(subdirectories) == 0 && !includeRepoScope {
+				allModules = true
+				includeRepoScope = true
+			}
+		}
+	}
+
+	mode := reqMode
+	if mode == "" {
+		if task.Status == models.TaskStatusReady && !hasAbnormalChild {
+			mode = models.TaskKindRegenerate
+		} else if firstChildMode != "" {
+			mode = firstChildMode
+		} else {
+			mode = models.TaskKindGenerate
+		}
+	}
+
+	vo, err := o.SubmitBatchGenerateTask(ctx, BatchGenerateRequest{
+		RepoID:           task.RepoID,
+		RefName:          refName,
+		Subdirectories:   subdirectories,
+		AllModules:       allModules,
+		IncludeRepoScope: includeRepoScope,
+		DocTypes:         batchDocTypes,
+		Mode:             mode,
+		Engine:           engineInput,
+	}, operator)
+	if err != nil {
+		return nil, err
+	}
+	return &GenerateTaskSubmitResponse{
+		GenTaskDetailVO: *vo,
+		CreatedCount:    1,
+		Tasks:           []GenTaskDetailVO{*vo},
+	}, nil
+}
+
+func (o *GenerationOrchestrator) retryIncrementalRefreshTask(
+	ctx context.Context,
+	task *models.GenTask,
+	docTypes []string,
+	engineInput string,
+	refName string,
+	operatorID uint,
+) (*GenerateTaskSubmitResponse, error) {
+	var (
+		doc *models.Document
+		err error
+	)
+	if task.TargetDocumentID != nil && *task.TargetDocumentID > 0 {
+		doc, err = o.docRepo.GetByID(ctx, *task.TargetDocumentID)
+	} else if len(docTypes) > 0 && strings.TrimSpace(docTypes[0]) != "" {
+		doc, err = o.docRepo.GetByScope(ctx, task.RepoID, task.Subdirectory, refName, strings.TrimSpace(docTypes[0]))
+	} else {
+		return nil, fmt.Errorf("%w: 原增量刷新任务缺少目标文档信息", ErrInvalidTaskParam)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil || doc.CurrentRevisionNo <= 0 {
+		return nil, fmt.Errorf("%w: 目标文档尚无基础修订，无法重试增量刷新", ErrInvalidTaskParam)
+	}
+
+	var targetSlots []string
+	_ = json.Unmarshal(task.TargetSlotsJSON, &targetSlots)
+	if len(targetSlots) == 0 {
+		return nil, fmt.Errorf("%w: 原增量刷新任务缺少目标槽位列表", ErrInvalidTaskParam)
+	}
+
+	curRev, curEvs, err := o.docRepo.GetRevisionWithSections(ctx, doc.ID, doc.CurrentRevisionNo)
+	if err != nil {
+		return nil, err
+	}
+	snaps := overlaySectionMetadata(unmarshalSectionSnapshots(curRev.SectionsJSON), curEvs)
+	ownershipBySlot := make(map[string]string, len(snaps))
+	for _, sn := range snaps {
+		ownershipBySlot[sn.SlotID] = sn.Ownership
+	}
+
+	refreshSlots := make([]string, 0, len(targetSlots))
+	driftedLocked := make(map[string]bool)
+	seenSlot := make(map[string]bool, len(targetSlots))
+	for _, rawSid := range targetSlots {
+		sid := strings.TrimSpace(rawSid)
+		if sid == "" || seenSlot[sid] {
+			continue
+		}
+		seenSlot[sid] = true
+		if ownershipBySlot[sid] == models.OwnershipLocked {
+			driftedLocked[sid] = true
+			continue
+		}
+		refreshSlots = append(refreshSlots, sid)
+	}
+	if len(refreshSlots) == 0 {
+		return nil, fmt.Errorf("%w: 目标槽位均已被人工锁定，无可刷新的非锁定槽位", ErrInvalidTaskParam)
+	}
+
+	vo, err := o.SubmitIncrementalRefreshTask(ctx, IncrementalRefreshTaskInput{
+		Document:           doc,
+		TargetSlots:        refreshSlots,
+		DriftedLockedSlots: driftedLocked,
+		NeedSyncCode:       true,
+		Priority:           models.TaskPriorityInteractive,
+		Engine:             engineInput,
+	}, operatorID)
+	if err != nil {
+		return nil, err
+	}
+	return &GenerateTaskSubmitResponse{
+		GenTaskDetailVO: *vo,
+		CreatedCount:    1,
+		Tasks:           []GenTaskDetailVO{*vo},
 	}, nil
 }
 

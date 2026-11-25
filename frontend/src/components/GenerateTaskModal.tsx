@@ -9,6 +9,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  RotateCcw,
   Square,
 } from 'lucide-react';
 import { Modal, StatusTag, useConfirm, useToast, type StatusType } from '@code/common';
@@ -19,6 +20,7 @@ import {
   getTaskDetail,
   listEngines,
   retrySlotTask,
+  retryTask,
   triggerBatchGenerateTask,
   triggerGenerateTask,
 } from '../api/tasks';
@@ -48,6 +50,7 @@ import {
   formatEngineLabel,
   getNonTerminalTaskIds,
   getSubmitButtonLabel,
+  getTaskRetryActionMeta,
   normalizeSubmittedTasks,
   resolvePreferredEngine,
   summarizeSplitTasks,
@@ -190,6 +193,7 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [canceling, setCanceling] = useState<boolean>(false);
   const [retryingSlotId, setRetryingSlotId] = useState<number | null>(null);
+  const [retryingTaskId, setRetryingTaskId] = useState<number | null>(null);
   const [taskDetail, setTaskDetail] = useState<GenTaskDetailVO | null>(null);
   const [splitTasks, setSplitTasks] = useState<GenTaskDetailVO[]>([]);
   const [drilldownTaskId, setDrilldownTaskId] = useState<number | null>(null);
@@ -594,6 +598,53 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
     }
   };
 
+  const handleRetryTaskAction = async (
+    target: GenTaskDetailVO,
+    options?: { replaceInSplitList?: boolean },
+  ) => {
+    const meta = getTaskRetryActionMeta(target, scope?.canWrite);
+    if (!meta.canRetry) return;
+    const ok = await confirm({
+      title: meta.confirmTitle,
+      content: meta.confirmContent,
+      confirmText: meta.confirmText,
+      cancelText: '取消',
+      type: 'info',
+    });
+    if (!ok) return;
+
+    setRetryingTaskId(target.id);
+    setPollError('');
+    try {
+      const created = await retryTask(target.id, meta.payload);
+      const newTask = normalizeSubmittedTasks(created)[0] ?? created;
+      showToast(
+        `已提交${meta.isFailureRetry ? '重试' : '重新生成'}任务 #${newTask.id}`,
+        'success',
+      );
+      notifiedReadyRef.current = null;
+      notifiedReadyIdsRef.current.delete(newTask.id);
+      if (options?.replaceInSplitList) {
+        setSplitTasks((prev) => prev.map((item) => (item.id === target.id ? newTask : item)));
+      } else {
+        setSplitTasks([]);
+        setDrilldownTaskId(null);
+        setTaskDetail(newTask);
+      }
+      onTaskCompleted?.();
+    } catch (err: unknown) {
+      const formatted = formatApiError(err, `发起${meta.label}失败`);
+      showToast(`${formatted.title}：${formatted.message}`, 'error');
+    } finally {
+      setRetryingTaskId(null);
+    }
+  };
+
+  const taskRetryMeta = useMemo(
+    () => (taskDetail ? getTaskRetryActionMeta(taskDetail, scope?.canWrite) : null),
+    [taskDetail, scope?.canWrite],
+  );
+
   const firstGeneratedDocId = useMemo(() => {
     if (!taskDetail?.slot_tasks) return undefined;
     const found = taskDetail.slot_tasks.find((s) => typeof s.document_id === 'number' && s.document_id > 0);
@@ -698,10 +749,31 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
               </button>
             )}
 
+            {!isSplitMonitor && taskDetail && taskRetryMeta?.canRetry && (
+              <button
+                type="button"
+                className={`btn ${taskRetryMeta.buttonVariant}`}
+                disabled={retryingTaskId === taskDetail.id}
+                onClick={() => void handleRetryTaskAction(taskDetail)}
+                title={taskRetryMeta.tooltip}
+              >
+                {retryingTaskId === taskDetail.id ? (
+                  <Loader2 size={15} className="code-archdoc-spin" />
+                ) : (
+                  <RotateCcw size={15} />
+                )}
+                <span>{retryingTaskId === taskDetail.id ? '提交中...' : taskRetryMeta.modalLabel}</span>
+              </button>
+            )}
+
             {!isSplitMonitor && taskDetail && taskDetail.status === 'ready' && scope && onOpenStudio && (
               <button
                 type="button"
-                className="btn btn-primary"
+                className={`btn ${
+                  taskRetryMeta?.canRetry && taskRetryMeta.buttonVariant === 'btn-primary'
+                    ? 'btn-secondary'
+                    : 'btn-primary'
+                }`}
                 onClick={() => {
                   onClose();
                   onOpenStudio(scope.repoId, firstGeneratedDocId, scope.subdirectory);
@@ -1150,6 +1222,22 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                           取消
                         </button>
                       )}
+                      {(item.status === 'failed' || item.status === 'canceled') && scope?.canWrite && (
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-small"
+                          disabled={retryingTaskId === item.id}
+                          onClick={() => void handleRetryTaskAction(item, { replaceInSplitList: true })}
+                          title="基于原配置重新提交该失败文档任务"
+                        >
+                          {retryingTaskId === item.id ? (
+                            <Loader2 size={13} className="code-archdoc-spin" />
+                          ) : (
+                            <RotateCcw size={13} />
+                          )}
+                          <span>重试</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -1376,13 +1464,32 @@ export const GenerateTaskModal: React.FC<GenerateTaskModalProps> = ({
                             <span className="code-archdoc-mono">{child.progress_percent}%</span>
                           </td>
                           <td>
-                            <button
-                              type="button"
-                              className="btn btn-text btn-small"
-                              onClick={() => void refreshTask(child.id)}
-                            >
-                              查看明细
-                            </button>
+                            <div className="code-archdoc-row-actions">
+                              <button
+                                type="button"
+                                className="btn btn-text btn-small"
+                                onClick={() => void refreshTask(child.id)}
+                              >
+                                查看明细
+                              </button>
+                              {(child.status === 'failed' || child.status === 'canceled') &&
+                                Boolean(scope?.canWrite) && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-outline btn-small"
+                                    disabled={retryingTaskId === child.id}
+                                    onClick={() => void handleRetryTaskAction(child)}
+                                    title="重试该失败子任务"
+                                  >
+                                    {retryingTaskId === child.id ? (
+                                      <Loader2 size={13} className="code-archdoc-spin" />
+                                    ) : (
+                                      <RotateCcw size={13} />
+                                    )}
+                                    <span>重试</span>
+                                  </button>
+                                )}
+                            </div>
                           </td>
                         </tr>
                       );
