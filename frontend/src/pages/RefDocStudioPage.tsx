@@ -1079,148 +1079,154 @@ export const RefDocStudioPage: React.FC = () => {
 
         {/* 中栏：分节画布 / 分栏实时编辑 / 划词交互 */}
         <main className="code-archdoc-refstudio-canvas-scroll">
-          {fullEditMode ? (
-            <section className="code-card code-archdoc-section-card">
-              <div className="code-archdoc-section-header">
-                <div className="code-archdoc-section-title-group">
-                  <h2 className="code-archdoc-section-title">全文分栏编辑</h2>
-                  <span className="code-badge code-badge--info">
-                    {formatRefDocTokenBadge(draftEstimatedTokens)}
-                  </span>
+          <div className="code-archdoc-refstudio-canvas-inner">
+            {fullEditMode ? (
+              <section className="code-card code-archdoc-section-card">
+                <div className="code-archdoc-section-header">
+                  <div className="code-archdoc-section-title-group">
+                    <h2 className="code-archdoc-section-title">全文分栏编辑</h2>
+                    <span className="code-badge code-badge--info">
+                      {formatRefDocTokenBadge(draftEstimatedTokens)}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <RefDocSplitEditor
-                initialMarkdown={draftContent}
-                title={`全文 v${doc.current_version} 草稿`}
-                saveLabel="更新本地草稿"
-                rows={24}
-                onApply={(nextMD) => {
-                  setDraftContent(nextMD.replace(/\r\n/g, '\n'));
-                  setFullEditMode(false);
-                  showToast('已更新本地全文草稿，请点击顶部保存发布', 'info');
-                }}
-                onCancel={() => setFullEditMode(false)}
+                <div className="code-archdoc-section-body">
+                  <RefDocSplitEditor
+                    initialMarkdown={draftContent}
+                    title={`全文 v${doc.current_version} 草稿`}
+                    saveLabel="更新本地草稿"
+                    rows={24}
+                    onApply={(nextMD) => {
+                      setDraftContent(nextMD.replace(/\r\n/g, '\n'));
+                      setFullEditMode(false);
+                      showToast('已更新本地全文草稿，请点击顶部保存发布', 'info');
+                    }}
+                    onCancel={() => setFullEditMode(false)}
+                  />
+                </div>
+              </section>
+            ) : displaySections.length === 0 ? (
+              <EmptyState
+                title="参考文档正文为空"
+                description={doc.can_edit ? '点击右上角「全文分栏编辑」或「导入 .md」开始编写' : '暂无正文内容'}
               />
-            </section>
-          ) : displaySections.length === 0 ? (
-            <EmptyState
-              title="参考文档正文为空"
-              description={doc.can_edit ? '点击右上角「全文分栏编辑」或「导入 .md」开始编写' : '暂无正文内容'}
-            />
-          ) : (
-            displaySections.map((sec) => {
-              const isEditingThis = editingSectionId === sec.section_id;
-              return (
-                <article
-                  key={sec.section_id}
-                  id={`refdoc-sec-${sec.section_id}`}
-                  ref={(el) => {
-                    sectionRefs.current[sec.section_id] = el;
-                  }}
-                  className="code-card code-archdoc-section-card code-archdoc-refstudio-section-card"
-                >
-                  <div className="code-archdoc-section-header">
-                    <div className="code-archdoc-section-title-group">
-                      <h2 className="code-archdoc-section-title">{sec.title}</h2>
-                      <code className="code-archdoc-mono">{sec.section_id}</code>
-                      <span className="code-badge code-badge--muted">
-                        L{sec.start_line}-L{sec.end_line}
-                      </span>
-                      {sec.is_preamble && <span className="code-badge code-badge--info">导言</span>}
-                      {sec.is_chunk && <span className="code-badge code-badge--muted">自动分段</span>}
-                    </div>
+            ) : (
+              displaySections.map((sec) => {
+                const isEditingThis = editingSectionId === sec.section_id;
+                return (
+                  <article
+                    key={sec.section_id}
+                    id={`refdoc-sec-${sec.section_id}`}
+                    ref={(el) => {
+                      sectionRefs.current[sec.section_id] = el;
+                    }}
+                    className="code-card code-archdoc-section-card code-archdoc-refstudio-section-card"
+                  >
+                    <div className="code-archdoc-section-header">
+                      <div className="code-archdoc-section-title-group">
+                        <h2 className="code-archdoc-section-title">{sec.title}</h2>
+                        <code className="code-archdoc-mono">{sec.section_id}</code>
+                        <span className="code-badge code-badge--muted">
+                          L{sec.start_line}-L{sec.end_line}
+                        </span>
+                        {sec.is_preamble && <span className="code-badge code-badge--info">导言</span>}
+                        {sec.is_chunk && <span className="code-badge code-badge--muted">自动分段</span>}
+                      </div>
 
-                    <div className="flex-center gap-xs">
-                      {doc.can_edit && !isEditingThis && (
+                      <div className="flex-center gap-xs">
+                        {doc.can_edit && !isEditingThis && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-small"
+                            onClick={() => {
+                              setActiveSectionId(sec.section_id);
+                              setEditingSectionId(sec.section_id);
+                            }}
+                          >
+                            <Edit3 size={13} />
+                            <span>编辑本节</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn btn-secondary btn-small"
                           onClick={() => {
                             setActiveSectionId(sec.section_id);
-                            setEditingSectionId(sec.section_id);
+                            setRefineScope('section');
+                            setRefineMode(doc.can_edit ? 'revise' : 'ask');
+                            setRightTab('refine');
+                            setDrawerOpen(true);
                           }}
                         >
-                          <Edit3 size={13} />
-                          <span>编辑本节</span>
+                          <Sparkles size={13} />
+                          <span>{doc.can_edit ? 'AI 精修本节' : '问 AI 本节'}</span>
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-small"
-                        onClick={() => {
-                          setActiveSectionId(sec.section_id);
-                          setRefineScope('section');
-                          setRefineMode(doc.can_edit ? 'revise' : 'ask');
-                          setRightTab('refine');
-                          setDrawerOpen(true);
-                        }}
-                      >
-                        <Sparkles size={13} />
-                        <span>{doc.can_edit ? 'AI 精修本节' : '问 AI 本节'}</span>
-                      </button>
+                      </div>
                     </div>
-                  </div>
 
-                  {isEditingThis ? (
-                    <RefDocSplitEditor
-                      initialMarkdown={sec.markdown}
-                      title={`${sec.section_id} (L${sec.start_line}-L${sec.end_line})`}
-                      saveLabel="应用本节至草稿"
-                      onApply={(nextFrag) => {
-                        const nextFull = replaceLinesInDraft(
-                          draftContent,
-                          sec.start_line,
-                          sec.end_line,
-                          nextFrag,
-                        );
-                        setDraftContent(nextFull);
-                        setEditingSectionId(null);
-                        showToast(`已将章节「${sec.title}」写入本地草稿`, 'info');
-                      }}
-                      onCancel={() => setEditingSectionId(null)}
-                    />
-                  ) : (
-                    <div
-                      className="code-archdoc-refstudio-section-body"
-                      onMouseUp={(e) => handleSectionMouseUp(sec, e)}
-                    >
-                      <SectionMarkdownRenderer markdown={sec.markdown} />
-
-                      {selPopover && selPopover.section.section_id === sec.section_id && (
-                        <SelectionReviewPopover
-                          visible
-                          position={selPopover.position}
-                          quote={selPopover.selection.quote_text || ''}
-                          canWrite={doc.can_edit}
-                          showCommentButton={false}
-                          canAsk
-                          onQuickRefine={() => {
-                            setActiveSectionId(sec.section_id);
-                            setSelectionRange(selPopover.selection);
-                            setRefineScope('selection');
-                            setRefineMode('revise');
-                            setRightTab('refine');
-                            setDrawerOpen(true);
-                            setSelPopover(null);
+                    {isEditingThis ? (
+                      <div className="code-archdoc-section-body">
+                        <RefDocSplitEditor
+                          initialMarkdown={sec.markdown}
+                          title={`${sec.section_id} (L${sec.start_line}-L${sec.end_line})`}
+                          saveLabel="应用本节至草稿"
+                          onApply={(nextFrag) => {
+                            const nextFull = replaceLinesInDraft(
+                              draftContent,
+                              sec.start_line,
+                              sec.end_line,
+                              nextFrag,
+                            );
+                            setDraftContent(nextFull);
+                            setEditingSectionId(null);
+                            showToast(`已将章节「${sec.title}」写入本地草稿`, 'info');
                           }}
-                          onAskAI={() => {
-                            setActiveSectionId(sec.section_id);
-                            setSelectionRange(selPopover.selection);
-                            setRefineScope('selection');
-                            setRefineMode('ask');
-                            setRightTab('refine');
-                            setDrawerOpen(true);
-                            setSelPopover(null);
-                          }}
-                          onClose={() => setSelPopover(null)}
+                          onCancel={() => setEditingSectionId(null)}
                         />
-                      )}
-                    </div>
-                  )}
-                </article>
-              );
-            })
-          )}
+                      </div>
+                    ) : (
+                      <div
+                        className="code-archdoc-section-body code-archdoc-refstudio-section-body"
+                        onMouseUp={(e) => handleSectionMouseUp(sec, e)}
+                      >
+                        <SectionMarkdownRenderer markdown={sec.markdown} />
+
+                        {selPopover && selPopover.section.section_id === sec.section_id && (
+                          <SelectionReviewPopover
+                            visible
+                            position={selPopover.position}
+                            quote={selPopover.selection.quote_text || ''}
+                            canWrite={doc.can_edit}
+                            showCommentButton={false}
+                            canAsk
+                            onQuickRefine={() => {
+                              setActiveSectionId(sec.section_id);
+                              setSelectionRange(selPopover.selection);
+                              setRefineScope('selection');
+                              setRefineMode('revise');
+                              setRightTab('refine');
+                              setDrawerOpen(true);
+                              setSelPopover(null);
+                            }}
+                            onAskAI={() => {
+                              setActiveSectionId(sec.section_id);
+                              setSelectionRange(selPopover.selection);
+                              setRefineScope('selection');
+                              setRefineMode('ask');
+                              setRightTab('refine');
+                              setDrawerOpen(true);
+                              setSelPopover(null);
+                            }}
+                            onClose={() => setSelPopover(null)}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })
+            )}
+          </div>
         </main>
 
         {/* 右栏：AI 精修提案 | 版本历史与 Diff */}

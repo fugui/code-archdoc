@@ -466,6 +466,7 @@
 
 /* ── 章节卡片 (SectionCard) ── */
 .code-archdoc-section-card {
+  flex-shrink: 0;
   overflow: hidden;
 }
 
